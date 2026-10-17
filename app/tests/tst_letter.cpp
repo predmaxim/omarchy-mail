@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -57,28 +58,50 @@ static QList<QJsonObject> sent(const FakeMaild &d, const QString &cmd)
     return out;
 }
 
-// Serves the fixture logo for any path.
+// Serves the fixture logo for any path; with `hold`, answers wait for release().
 class ImageServer : public QTcpServer {
 public:
-    int hits = 0;
+    int hits = 0;   // requests, counted once the head is complete (it may come in several reads)
+    bool hold = false;
     ImageServer()
     {
         QVERIFY(listen(QHostAddress::LocalHost));
         connect(this, &QTcpServer::newConnection, this, [this] {
             while (QTcpSocket *s = nextPendingConnection()) {
-                connect(s, &QTcpSocket::readyRead, s, [this, s] {
-                    s->readAll();
+                auto head = std::make_shared<QByteArray>();
+                connect(s, &QTcpSocket::readyRead, s, [this, s, head] {
+                    const bool before = head->contains("\r\n\r\n");
+                    *head += s->readAll();
+                    if (before || !head->contains("\r\n\r\n"))
+                        return;
                     ++hits;
-                    const QByteArray body = readFile(fixture("logo.png"));
-                    s->write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nConnection: close\r\nContent-Length: "
-                             + QByteArray::number(body.size()) + "\r\n\r\n" + body);
-                    s->disconnectFromHost();
+                    if (hold)
+                        m_held << s;
+                    else
+                        answer(s);
                 });
                 connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
             }
         });
     }
     QString url(const QString &path) const { return QStringLiteral("http://127.0.0.1:%1%2").arg(serverPort()).arg(path); }
+    void release()
+    {
+        hold = false;
+        for (const QPointer<QTcpSocket> &s : std::exchange(m_held, {}))
+            if (s)
+                answer(s);
+    }
+
+private:
+    QList<QPointer<QTcpSocket>> m_held;
+    static void answer(QTcpSocket *s)
+    {
+        const QByteArray body = readFile(fixture("logo.png"));
+        s->write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nConnection: close\r\nContent-Length: "
+                 + QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        s->disconnectFromHost();
+    }
 };
 
 class TstLetter : public QObject {
@@ -316,6 +339,30 @@ private Q_SLOTS:
         QCOMPARE(docs.at(0).at(0).toBool(), false);
         QCOMPARE(docs.at(1).at(0).toBool(), true);
         QCOMPARE(srv.hits, 1);
+        QVERIFY(QFile::exists(Images::pathFor(imgDir->path(), QUrl(url))));
+    }
+    void reload_keeps_image_batch()
+    {
+        // an unread letter is reloaded ~1 s after opening, often while its images are still on the way
+        ImageServer srv;
+        srv.hold = true;
+        const QString url = srv.url("/a.png");
+        d->on("message", [url](const QJsonObject &req) {
+            QJsonObject f = full(req.value("message").toInteger());
+            f.insert("html", QStringLiteral("<p>hi</p><img src=\"%1\" width=\"10\" height=\"10\">").arg(url));
+            return QJsonObject{{"result", f}};
+        });
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->show({{"id", 42}});
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
+        QTRY_COMPARE(srv.hits, 1);
+        letter->reload();
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 2, 10000);
+        srv.release();
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 3, 10000); // the first batch's images are laid out
+        QCOMPARE(docs.at(1).at(0).toBool(), true);
+        QCOMPARE(docs.at(2).at(0).toBool(), true);
+        QCOMPARE(srv.hits, 1); // not requested again by the reload
         QVERIFY(QFile::exists(Images::pathFor(imgDir->path(), QUrl(url))));
     }
 };

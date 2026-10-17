@@ -47,8 +47,8 @@ Letter::Letter(Client *client, Images *images, Renderer *renderer, Theme *theme,
     m_widthTimer.setInterval(150);
     connect(&m_widthTimer, &QTimer::timeout, this, &Letter::layout);
     connect(renderer, &Renderer::rendered, this, &Letter::rendered);
-    connect(images, &Images::fetched, this, [this](quint64 gen) {
-        if (gen == m_gen)
+    connect(images, &Images::fetched, this, [this](quint64 letter) {
+        if (letter == m_letter)
             layout();
     });
     connect(theme, &Theme::changed, this, &Letter::layout);   // font size
@@ -114,6 +114,7 @@ QVariantList Letter::attachments() const
 void Letter::reset(const QJsonObject &summary)
 {
     ++m_gen;
+    ++m_letter;
     ++m_job;   // a layout in flight belongs to the previous letter
     m_remoteTimer.stop();
     m_widthTimer.stop();
@@ -242,9 +243,10 @@ void Letter::rendered(const Rendered &r)
     m_doc = r.doc;
     m_dark = r.dark;
     m_links = r.links;
-    if (!r.wanted.isEmpty() && m_imagesGen != m_gen) {   // once per load: failed images aren't retried on resize
-        m_imagesGen = m_gen;
-        m_images->fetch(r.wanted, m_gen);
+    // once per letter: a reload or resize neither repeats a batch in flight nor retries failed images
+    if (!r.wanted.isEmpty() && m_imagesLetter != m_letter) {
+        m_imagesLetter = m_letter;
+        m_images->fetch(r.wanted, m_letter);
     }
     Q_EMIT changed();
     Q_EMIT documentChanged(same);

@@ -82,9 +82,10 @@ private:
     Images *m_images;
     Renderer *m_renderer;
     Theme *m_theme;
-    quint64 m_gen = 0;          // letter loads: stale replies and image batches are dropped
+    quint64 m_gen = 0;          // message requests (show, reload): stale replies are dropped
+    quint64 m_letter = 0;       // letters shown (not reloads): image batches of another letter are dropped
     quint64 m_job = 0;          // layout jobs
-    quint64 m_imagesGen = 0;    // the load whose images were fetched already
+    quint64 m_imagesLetter = 0; // the letter whose images were fetched already
     qint64 m_id = 0;
     QJsonObject m_summary, m_full;
     QString m_state, m_error;

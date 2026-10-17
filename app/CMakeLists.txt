@@ -31,7 +31,7 @@ function(om_test name)
     target_compile_definitions(${name} PRIVATE OM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES ENVIRONMENT_MODIFICATION
-        "QT_QPA_PLATFORM=set:offscreen;QT_QPA_OFFSCREEN_NO_GLX=set:1;QT_QUICK_BACKEND=set:software;QT_QPA_PLATFORMTHEME=unset:;HYPRLAND_INSTANCE_SIGNATURE=unset:;QT_IM_MODULE=unset:;LC_ALL=unset:;LC_MESSAGES=unset:;LC_TIME=unset:;LANG=set:en_US.UTF-8;XDG_RUNTIME_DIR=set:${OM_TEST_HOME}/run;XDG_CACHE_HOME=set:${OM_TEST_HOME}/cache;XDG_STATE_HOME=set:${OM_TEST_HOME}/state;XDG_CONFIG_HOME=set:${OM_TEST_HOME}/config;XDG_DATA_HOME=set:${OM_TEST_HOME}/data")
+        "QT_QPA_PLATFORM=set:offscreen;QT_QPA_OFFSCREEN_NO_GLX=set:1;QT_QUICK_BACKEND=set:software;QT_QPA_PLATFORMTHEME=unset:;HYPRLAND_INSTANCE_SIGNATURE=unset:;QT_IM_MODULE=unset:;LC_ALL=unset:;LC_MESSAGES=unset:;LC_TIME=unset:;LANG=set:en_US.UTF-8;XDG_RUNTIME_DIR=set:${OM_TEST_HOME}/run;XDG_CACHE_HOME=set:${OM_TEST_HOME}/cache;XDG_STATE_HOME=set:${OM_TEST_HOME}/state;XDG_CONFIG_HOME=set:${OM_TEST_HOME}/config;XDG_DATA_HOME=set:${OM_TEST_HOME}/data;DBUS_SESSION_BUS_ADDRESS=set:unix:path=${CMAKE_BINARY_DIR}/no-session-bus")
 endfunction()
 
 # ---- sources and tests: every task appends its own lines below ----
