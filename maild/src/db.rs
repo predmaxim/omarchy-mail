@@ -254,13 +254,13 @@ impl Db {
 
     /// Outbox rows as summaries: negative `id`, `queued = true`, newest first.
     fn queued(&self, account: Option<&str>) -> Result<Vec<Summary>, String> {
-        let mut st = self.c.prepare("SELECT id, account, date, subject, COALESCE(state, '') = 'failed' FROM outbox WHERE (?1 IS NULL OR account = ?1) ORDER BY date DESC, id DESC").map_err(e)?;
+        let mut st = self.c.prepare("SELECT id, account, date, subject, COALESCE(state, '') = 'failed', COALESCE(state, '') <> 'sent' FROM outbox WHERE (?1 IS NULL OR account = ?1) ORDER BY date DESC, id DESC").map_err(e)?;
         st.query_map([account], |r| {
             let acc: String = r.get(1)?;
             Ok(Summary {
                 id: -r.get::<_, i64>(0)?, account: acc.clone(), role: Role::Sent, folder_path: String::new(), date: r.get(2)?,
                 from: Addr { name: String::new(), addr: acc }, subject: r.get(3)?, preview: String::new(),
-                seen: true, flagged: false, has_attachments: false, queued: true, failed: r.get(4)?, remote: None,
+                seen: true, flagged: false, has_attachments: false, queued: r.get(5)?, failed: r.get(4)?, remote: None,
             })
         }).map_err(e)?.collect::<Result<_, _>>().map_err(e)
     }
@@ -354,6 +354,55 @@ impl Db {
         let mut st = self.c.prepare("SELECT id, account, to_json, raw FROM outbox WHERE state = 'queued' ORDER BY id").map_err(e)?;
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default(), r.get(3)?)))
             .map_err(e)?.collect::<Result<_, _>>().map_err(e)
+    }
+
+    /// The server has the message: it must never go out again. Stays in Sent until its copy is filed.
+    pub fn outbox_sent(&self, id: i64) -> Result<(), String> {
+        self.c.execute("UPDATE outbox SET state = 'sent' WHERE id = ?1", [id]).map(drop).map_err(e)
+    }
+
+    /// `(id, raw)` of the account's sent rows whose copy is not in its Sent folder yet.
+    pub fn outbox_unfiled(&self, account: &str) -> Result<Vec<(i64, Vec<u8>)>, String> {
+        let mut st = self.c.prepare("SELECT id, raw FROM outbox WHERE account = ?1 AND state = 'sent' ORDER BY id").map_err(e)?;
+        st.query_map([account], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?.collect::<Result<_, _>>().map_err(e)
+    }
+
+    /// failed -> queued.
+    pub fn outbox_retry(&self, id: i64) -> Result<(), String> {
+        match self.c.execute("UPDATE outbox SET state = 'queued', error = NULL WHERE id = ?1 AND state = 'failed'", [id]).map_err(e)? {
+            0 => Err("not a failed message".into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Drops a queued or failed row.
+    pub fn outbox_discard(&self, id: i64) -> Result<(), String> {
+        match self.c.execute("DELETE FROM outbox WHERE id = ?1 AND COALESCE(state, '') IN ('queued', 'failed')", [id]).map_err(e)? {
+            0 => Err("message not found".into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// An outbox row as a message (`id` = `-id`), parsed from its raw text; with the error of a failed one.
+    pub fn outbox_full(&self, id: i64) -> Result<Option<(Full, Option<String>)>, String> {
+        let row = self.c.query_row("SELECT account, raw, date, COALESCE(state, ''), error FROM outbox WHERE id = ?1", [id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)));
+        let (account, raw, date, state, error) = match row {
+            Ok(x) => x,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(x) => return Err(e(x)),
+        };
+        let p = mime::parse(&raw);
+        let summary = Summary {
+            id: -id, account, role: Role::Sent, folder_path: String::new(), date, from: p.from, subject: p.subject, preview: p.preview,
+            seen: true, flagged: false, has_attachments: p.attachments.iter().any(|a| !a.inline),
+            queued: state != "sent", failed: state == "failed", remote: None,
+        };
+        let full = Full {
+            summary, to: p.to, text: p.text, html: p.html, attachments: p.attachments, has_body: true,
+            message_id: p.message_id, in_reply_to: p.in_reply_to, refs: p.references.join(" "), folder: 0, uid: None,
+        };
+        Ok(Some((full, error)))
     }
 
     pub fn outbox_done(&self, id: i64) -> Result<(), String> {

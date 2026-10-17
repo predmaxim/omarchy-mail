@@ -79,6 +79,9 @@ enum Req {
     Act { ids: Vec<i64>, op: Op },
     Undo { batch: i64 },
     Send(Draft),
+    /// `outbox`: the positive id `send` returned (a negative one, as `list` shows it, works too).
+    OutboxRetry { outbox: i64 },
+    OutboxDiscard { outbox: i64 },
 }
 
 /// No `Debug`: it holds the password.
@@ -163,6 +166,17 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
             let id = ask(st, &account, |reply| Job::FetchRemote { folder_path, uid, reply })?;
             Ok(json!({"id": id}))
         }
+        Req::OutboxRetry { outbox } => {
+            st.db.outbox_retry(outbox.abs())?;
+            st.hub.emit(Event::Changed { folders: false, ids: vec![] });
+            smtp::wake();
+            Ok(Value::Null)
+        }
+        Req::OutboxDiscard { outbox } => {
+            st.db.outbox_discard(outbox.abs())?;
+            st.hub.emit(Event::Changed { folders: true, ids: vec![] });
+            Ok(Value::Null)
+        }
         Req::Send(d) => {
             let acc = config::load(&st.paths.config)?.into_iter().find(|a| a.email == d.account).ok_or_else(no_account)?;
             let outbox = smtp::queue(&st.db, &acc, &d)?;
@@ -199,6 +213,15 @@ fn retry_due(dir: &Path) -> bool {
 
 /// The message with its body (fetched if it is a big one) and `inline`: `cid` → cached image file.
 fn message_full(st: &State, id: i64) -> Result<Value, String> {
+    if id < 0 {
+        let (full, error) = st.db.outbox_full(-id)?.ok_or_else(|| tr("message not found", "письмо не найдено"))?;
+        let mut v = val(&full)?;
+        v["inline"] = json!({});
+        if let Some(e) = error {
+            v["send_error"] = e.into();
+        }
+        return Ok(v);
+    }
     let get = || st.db.message(id)?.ok_or_else(|| tr("message not found", "письмо не найдено"));
     let mut full = get()?;
     let dir = fetch::msg_dir(&st.paths.cache, id);
@@ -639,6 +662,41 @@ mod tests {
         assert_eq!(call(&mut st, draft("no@x", json!([{"name": "", "addr": "b@y.org"}])))["ok"], false);
         assert_eq!(call(&mut st, draft("a@x", json!([])))["ok"], false);
         assert_eq!(st.db.queued_count("a@x").unwrap(), 1);
+    }
+
+    #[test]
+    fn outbox_retry_discard_and_message() {
+        let mut st = state("outbox");
+        let acc = Account { email: "a@x".into(), name: "A".into(), provider: Provider::Imap, login: "a".into(), imap: Server { host: "h".into(), port: 1 }, smtp: Server { host: "h".into(), port: 465 }, append_sent: false };
+        config::save(&st.paths.config, &[acc]).unwrap();
+        let send = |st: &mut State, subject: &str| {
+            let r = call(st, json!({"id": 1, "cmd": "send", "account": "a@x", "to": [{"name": "", "addr": "b@y.org"}], "subject": subject, "text": "body text"}));
+            r["result"]["outbox"].as_i64().unwrap()
+        };
+        let (one, two) = (send(&mut st, "one"), send(&mut st, "two"));
+        // the negative id shows the mail
+        let r = call(&mut st, json!({"id": 2, "cmd": "message", "message": -one}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!((r["result"]["summary"]["subject"].clone(), r["result"]["summary"]["queued"].clone(), r["result"]["summary"]["id"].clone()), (json!("one"), json!(true), json!(-one)), "{r}");
+        assert_eq!(r["result"]["text"].as_str().unwrap().trim(), "body text");
+        assert_eq!(call(&mut st, json!({"id": 3, "cmd": "message", "message": -999}))["ok"], false);
+        // retry: only a failed row
+        assert_eq!(call(&mut st, json!({"id": 4, "cmd": "outbox_retry", "outbox": one}))["ok"], false);
+        st.db.outbox_fail(one, "550 no").unwrap();
+        let r = call(&mut st, json!({"id": 5, "cmd": "message", "message": -one}));
+        assert_eq!((r["result"]["summary"]["failed"].clone(), r["result"]["send_error"].clone()), (json!(true), json!("550 no")), "{r}");
+        assert_eq!(call(&mut st, json!({"id": 6, "cmd": "outbox_retry", "outbox": one}))["ok"], true);
+        assert_eq!(st.db.queued_count("a@x").unwrap(), 2);
+        // discard: queued or failed
+        st.db.outbox_fail(two, "x").unwrap();
+        assert_eq!(call(&mut st, json!({"id": 7, "cmd": "outbox_discard", "outbox": two}))["ok"], true);
+        assert_eq!(call(&mut st, json!({"id": 8, "cmd": "outbox_discard", "outbox": -one}))["ok"], true);
+        assert_eq!(call(&mut st, json!({"id": 9, "cmd": "outbox_discard", "outbox": one}))["ok"], false);
+        assert_eq!(st.db.queued_count("a@x").unwrap(), 0);
+        // a sent row is not discarded
+        let three = send(&mut st, "three");
+        st.db.outbox_sent(three).unwrap();
+        assert_eq!(call(&mut st, json!({"id": 10, "cmd": "outbox_discard", "outbox": three}))["ok"], false);
     }
 
     #[test]

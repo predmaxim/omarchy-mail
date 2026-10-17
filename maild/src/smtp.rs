@@ -168,13 +168,21 @@ fn pass(db: &Db, hub: &Hub, accounts: &[Account], deliver: &Deliver) -> Result<b
         let Some(acc) = accounts.iter().find(|a| a.email == account) else { continue };
         match deliver(acc, &to, &raw) {
             Ok(()) => {
-                // ponytail: a crash between the server's OK and this delete sends the row again;
-                // closing it needs a 'sending' state and a way to decide what to do with it on start.
-                db.outbox_done(id)?;
-                hub.emit(Event::Changed { folders: true, ids: vec![] });
-                if acc.append_sent && let Some(h) = hub.handles().into_iter().find(|h| h.email == account) {
-                    let _ = h.jobs.send(Job::Append { role: Role::Sent, raw });
+                // First of all: a row the server has accepted is never `queued` again, whatever fails next.
+                // ponytail: a crash right before this update still sends the row again; no way to know.
+                if let Err(e) = db.outbox_sent(id) {
+                    eprintln!("{account}: send #{id}: marking sent: {e}");
                 }
+                // The copy for the Sent folder (servers that file nothing themselves) is filed by the
+                // worker, which then drops the row; until then it stays in Sent.
+                if acc.append_sent {
+                    if let Some(h) = hub.handles().into_iter().find(|h| h.email == account) {
+                        let _ = h.jobs.send(Job::Append { outbox: id, role: Role::Sent, raw });
+                    }
+                } else if let Err(e) = db.outbox_done(id) {
+                    eprintln!("{account}: send #{id}: {e}");
+                }
+                hub.emit(Event::Changed { folders: true, ids: vec![] });
             }
             Err(Fail::Retry(e)) => {
                 eprintln!("{account}: send #{id}: {e}");
@@ -190,6 +198,20 @@ fn pass(db: &Db, hub: &Hub, accounts: &[Account], deliver: &Deliver) -> Result<b
         }
     }
     Ok(left)
+}
+
+/// Files one sent mail with `append` (the Sent folder of its account); the row goes after that.
+pub fn append_row(db: &Db, id: i64, raw: &[u8], append: impl FnOnce(&[u8]) -> Result<(), String>) -> Result<(), String> {
+    append(raw)?;
+    db.outbox_done(id)
+}
+
+/// `append_row` for every sent mail of the account still unfiled, until one fails.
+pub fn flush_unfiled(db: &Db, account: &str, mut append: impl FnMut(&[u8]) -> Result<(), String>) -> Result<(), String> {
+    for (id, raw) in db.outbox_unfiled(account)? {
+        append_row(db, id, &raw, &mut append)?;
+    }
+    Ok(())
 }
 
 static WAKE: Mutex<Option<Sender<()>>> = Mutex::new(None);
@@ -411,5 +433,75 @@ mod tests {
         let deliver = move |_: &Account, _: &[Addr], _: &[u8]| { *lock(&k) += 1; Err(Fail::Retry("down".into())) };
         assert!(pass(&db, &Hub::default(), &accounts, &deliver).unwrap());
         assert_eq!(*lock(&n), 1);
+    }
+
+    #[test]
+    fn sent_copy_survives_failed_append() {
+        let db = Db::memory();
+        let accounts = [acc(true)];
+        let id = queue(&db, &accounts[0], &draft("keep")).unwrap();
+        let calls = Arc::new(Mutex::new(0));
+        let k = calls.clone();
+        let deliver = move |_: &Account, _: &[Addr], _: &[u8]| { *lock(&k) += 1; Ok(()) };
+        let sent = || db.list(&crate::db::ListQuery { role: Some(Role::Sent), ..Default::default() }).unwrap();
+        // no worker to take the Append: the row stays, filed under Sent as a normal (not queued) mail
+        assert!(!pass(&db, &Hub::default(), &accounts, &deliver).unwrap());
+        let l = sent();
+        assert_eq!((l.len(), l[0].id, l[0].queued, l[0].failed), (1, -id, false, false));
+        // the APPEND fails once: the row is still there
+        let n = Mutex::new(0);
+        let flaky = |_: &[u8]| { *lock(&n) += 1; if *lock(&n) == 1 { Err("offline".to_string()) } else { Ok(()) } };
+        assert!(flush_unfiled(&db, "me@x.org", flaky).is_err());
+        assert_eq!(sent().len(), 1);
+        // the next try files it and drops the row; SMTP was used exactly once
+        flush_unfiled(&db, "me@x.org", flaky).unwrap();
+        assert!(sent().is_empty());
+        assert!(!pass(&db, &Hub::default(), &accounts, &deliver).unwrap());
+        assert_eq!(*lock(&calls), 1);
+    }
+
+    #[test]
+    fn sent_row_is_never_sent_again() {
+        let db = Db::memory();
+        let accounts = [acc(true)];
+        queue(&db, &accounts[0], &draft("once")).unwrap();
+        let n = Arc::new(Mutex::new(0));
+        let k = n.clone();
+        let deliver = move |_: &Account, _: &[Addr], _: &[u8]| { *lock(&k) += 1; Ok(()) };
+        for _ in 0..3 {
+            pass(&db, &Hub::default(), &accounts, &deliver).unwrap();
+        }
+        assert_eq!(*lock(&n), 1);
+    }
+
+    #[test]
+    fn build_non_ascii_and_no_header_injection() {
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-smtp-cyr", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("отчёт.pdf");
+        std::fs::write(&file, [1]).unwrap();
+        let mut a = acc(false);
+        a.name = "Иван Петров".into();
+        let mut d = draft("Привет, мир");
+        d.text = "Текст письма".into();
+        d.to = vec![Addr { name: "Анна".into(), addr: "anna@y.org".into() }];
+        d.attachments = vec![file];
+        let raw = build(&a, &d, None).unwrap();
+        let t = text(&raw);
+        let head = &t[..t.find("\r\n\r\n").unwrap()];
+        assert!(head.contains("Subject: =?utf-8?"), "{head}");
+        assert!(head.contains("From: =?utf-8?"), "{head}");
+        assert!(head.contains("To: =?utf-8?"), "{head}");
+        assert!(t.contains("charset=utf-8"), "{t}");
+        let parsed = crate::mime::parse(&raw);
+        assert_eq!((parsed.subject.as_str(), parsed.from.name.as_str(), parsed.text.trim()), ("Привет, мир", "Иван Петров", "Текст письма"));
+        assert_eq!(parsed.attachments[0].name, "отчёт.pdf");
+        assert!(t.contains("filename*") || t.contains("filename=\"=?utf-8?"), "{t}");
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let evil = draft("hi\r\nBcc: x@example.org");
+        let t = text(&build(&acc(false), &evil, None).unwrap());
+        let head = &t[..t.find("\r\n\r\n").unwrap()];
+        assert!(!head.lines().any(|l| l.starts_with("Bcc:")), "{head}");
     }
 }

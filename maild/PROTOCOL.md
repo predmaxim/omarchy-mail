@@ -351,6 +351,12 @@ live in the keyring only.
 
 ### Later stages
 
+- `outbox_retry {outbox}` → `{}`. Queues a failed message again. `outbox` is the id `send`
+  returned (a negative id as `list` shows it works too). Error if the message is not failed.
+- `outbox_discard {outbox}` → `{}`. Deletes a queued or failed message from the outbox.
+- `message {message: <negative id>}` returns an outbox message (parsed from its text) in the same
+  shape as any other, with `summary.queued` / `summary.failed`, and `send_error: string` for a
+  failed one; `inline` is `{}`. Attachments of outbox messages are not served.
 - `open_remote {account, folder_path, uid}` → `{id}`.
   - Downloads a server search hit (`Summary.remote`) into the account's `remote` folders.
   - Returns the local id for `message`; opening the same hit again returns the same id.
@@ -364,6 +370,9 @@ live in the keyring only.
   - The message is queued: it shows in `list {role: "sent"}` as `queued` (negative `id` =
     `-outbox`), and is sent when online; a network error retries every 30 s. Mail on servers that
     do not file sent mail themselves (`append_sent`) is copied to the Sent folder afterwards.
+  - With `append_sent`, after the server took the mail the row stays in Sent (`queued: false`)
+    until `maild` has copied it to the Sent folder; a failed copy is retried at the next sync.
+    The mail is never sent twice.
   - When the server refuses it permanently, `send_failed {outbox, error}` is sent and the row
     stays in Sent with `failed: true` (and still `queued: true`: it is an outbox row).
 

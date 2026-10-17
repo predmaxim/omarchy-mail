@@ -5,7 +5,7 @@ use crate::config::{Account, Paths};
 use crate::db::{Db, Role};
 use crate::hub::{Event, Hub, lock};
 use crate::imap::{self, AUTH_FAILED, Conn, KillSlot};
-use crate::{actions, fetch, notify, search, secret, sync};
+use crate::{actions, fetch, notify, search, secret, smtp, sync};
 use serde::Serialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ pub enum Job {
     FetchRemote { folder_path: String, uid: u32, reply: Sender<Result<i64, String>> },
     Attachment { message: i64, index: u32, reply: Sender<Result<PathBuf, String>> },
     Search { query: String, token: u64 },
-    Append { role: Role, raw: Vec<u8> },
+    Append { outbox: i64, role: Role, raw: Vec<u8> },
 }
 
 /// The watcher's connection state.
@@ -304,6 +304,9 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
         let r = match job {
             Job::SyncAll => {
                 due = Instant::now() + PERIOD;
+                if acc.append_sent && !auth_failed && let Some(f) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == Role::Sent)) {
+                    let _ = smtp::flush_unfiled(&db, &acc.email, |raw| attempt(sh, &mut conn, |c| c.append(&f.path, raw).map_err(String::from)));
+                }
                 attempt(sh, &mut conn, |c| sync::sync_account(c, &db, acc))
             }
             Job::SyncFolder(id) => attempt(sh, &mut conn, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
@@ -350,9 +353,10 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
             }
             // The copy for servers that do not file sent mail themselves; then the folder is synced.
             // ponytail: not retried — a failed APPEND (offline) loses only the Sent copy, the mail went out.
-            Job::Append { role, raw } => {
+            Job::Append { outbox, role, raw } => {
                 let Some(f) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == role)) else { continue };
-                match attempt(sh, &mut conn, |c| c.append(&f.path, &raw).map_err(String::from)) {
+                // A failure keeps the row (state `sent`); the next SyncAll files it.
+                match smtp::append_row(&db, outbox, &raw, |raw| attempt(sh, &mut conn, |c| c.append(&f.path, raw).map_err(String::from))) {
                     Ok(()) => next = Some(Job::SyncFolder(f.id)),
                     Err(e) => eprintln!("{}: append to {}: {e}", acc.email, f.path),
                 }
