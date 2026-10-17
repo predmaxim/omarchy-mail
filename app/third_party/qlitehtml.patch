@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..f4e5472 100644
+index 6fa2c82..82f125b 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,6 +20,7 @@
@@ -32,7 +32,49 @@ index 6fa2c82..f4e5472 100644
  {
      return {toQColor(border.color), qreal(border.width), borderPenStyle(border.style)};
  }
-@@ -570,8 +572,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
+@@ -491,6 +493,9 @@ DocumentContainer::DocumentContainer()
+ 
+ DocumentContainer::~DocumentContainer() = default;
+ 
++// the minimum font size of the letter text, CSS px, as Firefox's setting
++static constexpr litehtml::pixel_t kMinFontPx = 13;
++
+ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_description &descr,
+                                                          const litehtml::document *doc,
+                                                          litehtml::font_metrics *fm)
+@@ -517,9 +522,11 @@ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_de
+                            return monospaceFont();
+                        return name;
+                    });
++    // never below kMinFontPx; the metrics carry the raised size (litehtml reads font_size from them)
++    const litehtml::pixel_t size = std::max<litehtml::pixel_t>(descr.size, kMinFontPx);
+     auto font = new QFont();
+     font->setFamilies(familyNames);
+-    font->setPixelSize(descr.size);
++    font->setPixelSize(size);
+     font->setWeight(cssWeightToQtWeight(descr.weight));
+     font->setStyle(toQFontStyle(descr.style));
+     font->setStyleStrategy(m_antialias ? QFont::PreferAntialias : QFont::NoAntialias);
+@@ -531,15 +538,15 @@ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_de
+         font->setStrikeOut(true);
+     if (fm) {
+         const QFontMetrics metrics(*font);
+-        fm->font_size = descr.size;
++        fm->font_size = size;
+         fm->height = metrics.height();
+         fm->ascent = metrics.ascent();
+         fm->descent = metrics.descent();
+         fm->x_height = metrics.xHeight();
+         fm->draw_spaces = true;
+         // The same values as used by the litehtml built-in containers.
+-        fm->sub_shift = descr.size / 5;
+-        fm->super_shift = descr.size / 3;
++        fm->sub_shift = size / 5;
++        fm->super_shift = size / 3;
+     }
+     return reinterpret_cast<litehtml::uint_ptr>(font);
+ }
+@@ -570,8 +577,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
  
  litehtml::pixel_t DocumentContainerPrivate::pt_to_px(float pt) const
  {
@@ -43,7 +85,7 @@ index 6fa2c82..f4e5472 100644
  }
  
  litehtml::pixel_t DocumentContainerPrivate::get_default_font_size() const
-@@ -632,7 +634,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
+@@ -632,7 +639,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
      QPixmap pixmap;
      pixmap.loadFromData(data);
      m_pixmaps.insert(url, pixmap);
@@ -52,7 +94,7 @@ index 6fa2c82..f4e5472 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
-@@ -1073,15 +1075,50 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
+@@ -1073,15 +1080,50 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
      Q_UNUSED(tt)
  }
  
@@ -108,7 +150,7 @@ index 6fa2c82..f4e5472 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1118,8 +1155,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
+@@ -1118,8 +1160,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
  
  void DocumentContainerPrivate::get_media_features(litehtml::media_features &media) const
  {
@@ -123,7 +165,7 @@ index 6fa2c82..f4e5472 100644
  }
  
  void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
-@@ -1152,7 +1194,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
+@@ -1152,7 +1199,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
      d->m_pixmaps.clear();
      d->m_animations.clear();
      d->clearSelection();
@@ -133,7 +175,7 @@ index 6fa2c82..f4e5472 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
      d->buildIndex();
-@@ -1589,6 +1632,37 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,6 +1637,37 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  

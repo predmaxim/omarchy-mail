@@ -280,6 +280,23 @@ private Q_SLOTS:
         QCOMPARE(height("height:6pc;overflow:hidden"), 96);
     }
 
+    // letter text is never below 13 px (a minimum font size): a payslip in 8pt looked 2/3 the size of others
+    void text_is_at_least_13px()
+    {
+        const auto line = [&](const QString &style) {
+            const Rendered r = run(job(QStringLiteral("<body style=\"margin:0\"><a href=\"https://x.org/\" style=\"display:block;%1\">"
+                                                      "Hg word<br>Hg word</a></body>").arg(style)));
+            return r.links.size() == 1 ? r.links.at(0).rect.height() : -1;
+        };
+        const int small = line("font-size:8pt"), ref = line("font-size:13px");
+        QVERIFY(ref > 0);
+        QVERIFY2(small >= ref, qPrintable(QString("%1 < %2").arg(small).arg(ref)));
+        QVERIFY(small >= 2 * 13);   // two lines, none squeezed below the font
+        QCOMPARE(line("font-size:20px"), 2 * 34);   // larger text is untouched (line-height 1.7)
+        const Rendered r = run(job(QStringLiteral("<div style=\"font-size:8pt\">Payslip total</div>")));
+        QVERIFY(has(r, QStringLiteral("Payslip total")));
+    }
+
     // A newsletter's 600 px shell: its rule for phones applies only in a narrow window, and a centred
     // cell or <center> centres it, as in browsers (HTML "align descendants", WebKit's -webkit-center)
     void fixed_width_shell_centred()
