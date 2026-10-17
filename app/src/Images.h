@@ -17,6 +17,7 @@ public:
     static QString defaultDir();
     // Pure: the layout thread calls it.
     static QString pathFor(const QString &dir, const QUrl &url);
+    QString dir() const { return m_dir; }
 
     void fetch(const QStringList &urls, quint64 generation);
     void prune(int days = 30);

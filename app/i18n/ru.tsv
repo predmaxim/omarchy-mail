@@ -24,3 +24,8 @@ Press Ctrl+D again to discard	Ctrl+D ещё раз — выбросить
 Add a recipient	Укажите получателя
 Invalid address: %1	Неверный адрес: %1
 Could not save draft	Не удалось сохранить черновик
+Saved to %1	Сохранено в %1
+Attachments of unsent mail can't be opened	Вложения неотправленного письма не открываются
+Downloading from the server…	Загрузка с сервера…
+Loading…	Загрузка…
+Could not save the file	Не удалось сохранить файл

@@ -1,0 +1,16 @@
+{
+  "summary": {"id": 42, "account": "me@gmail.com", "role": "inbox", "folder_path": "INBOX", "date": 1767312000,
+              "from": {"name": "Анна Смирнова", "addr": "anna@example.com"}, "subject": "Счёт за октябрь",
+              "preview": "Добрый день", "seen": false, "flagged": false, "has_attachments": true,
+              "queued": false, "failed": false},
+  "to": [{"name": "Me", "addr": "me@gmail.com"}, {"name": "", "addr": "boss@example.com"}],
+  "text": "Добрый день!\n\nСчёт во вложении.\n\nАнна",
+  "html": "<p>Добрый день!</p><p><img src=\"cid:logo@x\" width=\"10\" height=\"10\"> Счёт во вложении.</p><p>Анна</p>",
+  "attachments": [
+    {"index": 0, "name": "a.pdf", "mime": "application/pdf", "size": 48213, "cid": null, "inline": false},
+    {"index": 1, "name": "logo.png", "mime": "image/png", "size": 120, "cid": "logo@x", "inline": true},
+    {"index": 2, "name": "photo.jpg", "mime": "image/jpeg", "size": 2048000, "cid": null, "inline": false}
+  ],
+  "inline": {},
+  "has_body": true, "message_id": "abc@example.com", "in_reply_to": "", "refs": "", "folder": 3, "uid": 1234
+}

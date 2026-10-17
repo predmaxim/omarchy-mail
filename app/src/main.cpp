@@ -1,4 +1,5 @@
 // Skeleton: the window arrives in a later task.
+#include "Launch.h"
 #include <QGuiApplication>
 #include <QProcessEnvironment>
 
@@ -8,6 +9,7 @@ int main(int argc, char *argv[])
 {
     launchEnv = QProcessEnvironment::systemEnvironment();
     qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+    om::launch::setEnvironment(launchEnv);
     QGuiApplication app(argc, argv);
     QGuiApplication::setDesktopFileName(QStringLiteral("omarchy-mail"));
     QString openId;
