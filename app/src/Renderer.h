@@ -32,6 +32,7 @@ struct Rendered
     QStringList wanted; // remote images not in the cache yet
     QList<DocumentContainer::Link> links;
     QSize size;
+    bool blank = false; // no text and no image: nothing to show
 };
 
 // Data callback of the layout thread: cid:, data:image/*, cached http(s); never the network.

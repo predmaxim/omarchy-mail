@@ -125,7 +125,7 @@ void Letter::reset(const QJsonObject &summary)
     m_error.clear();
     m_busy.clear();
     m_links.clear();
-    m_dark = false;
+    m_dark = m_blank = false;
     if (std::exchange(m_doc, nullptr))
         Q_EMIT documentChanged(false);
 }
@@ -242,6 +242,7 @@ void Letter::rendered(const Rendered &r)
     const bool same = bool(m_doc);
     m_doc = r.doc;
     m_dark = r.dark;
+    m_blank = r.blank;
     m_links.clear();
     for (const DocumentContainer::Link &l : r.links)
         if (!l.rect.isEmpty())   // an empty anchor, or an image one whose image isn't there: nowhere to go

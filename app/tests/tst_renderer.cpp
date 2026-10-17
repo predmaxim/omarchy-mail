@@ -253,6 +253,27 @@ private Q_SLOTS:
         QCOMPARE(pieces.size(), 1);   // one piece of text
     }
 
+    void blank_letters_known()
+    {
+        // nothing to read or see: the window says so instead of an empty letter
+        const struct
+        {
+            const char *html;
+            bool blank;
+        } cases[] = {
+            {"<pre style=\"white-space:pre-wrap\"> \n\t </pre>", true},
+            {"<html><head><title>News</title><style>p{color:red}</style></head>"
+             "<body><p>&nbsp;&zwnj;&#8203;</p><script>go()</script></body></html>", true},
+            {"<p><img src=\"cid:logo\"></p>", false},
+            {"<p> Hi </p>", false},
+        };
+        for (const auto &c : cases) {
+            const Rendered r = run(job(QString::fromUtf8(c.html)));
+            QVERIFY(r.doc);
+            QVERIFY2(r.blank == c.blank, c.html);
+        }
+    }
+
     void garbage_html_renders()
     {
         const Rendered nested = run(job(QStringLiteral("<table><tr><td><div><b><i>").repeated(5000)), 30000);

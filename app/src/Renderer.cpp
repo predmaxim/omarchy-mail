@@ -9,6 +9,7 @@
 #include <QPalette>
 #include <gumbo.h>
 #include <litehtml/master_css.h>
+#include <algorithm>
 #include <vector>
 
 namespace om {
@@ -46,8 +47,8 @@ QByteArray loadData(const QUrl &url, const RenderJob &job, QStringList *wanted)
 // litehtml recurses per nesting level (parse, layout, draw, and the tree's destruction on the main
 // thread) and lays nested tables out in ~3^n time: 16000 nested divs overflow 8 MiB, 14 nested
 // tables take 46 s (measured 2026-10-17). gumbo, its own parser, measures the tree first; a letter
-// past the caps is shown as its text.
-static bool tooDeep(const QByteArray &html, QString *text)
+// past the caps is shown as its text. On the way it notes the text and whether there is an image.
+static bool tooDeep(const QByteArray &html, QString *text, bool *image)
 {
     constexpr int maxDepth = 1000, maxTables = 12;
     GumboOutput *out = gumbo_parse_with_options(&kGumboDefaultOptions, html.constData(), size_t(html.size()));
@@ -67,8 +68,10 @@ static bool tooDeep(const QByteArray &html, QString *text)
             continue;
         }
         const GumboElement &e = it.node->v.element;
-        if (it.node->type != GUMBO_NODE_ELEMENT || e.tag == GUMBO_TAG_STYLE || e.tag == GUMBO_TAG_SCRIPT)
+        if (it.node->type != GUMBO_NODE_ELEMENT || e.tag == GUMBO_TAG_STYLE || e.tag == GUMBO_TAG_SCRIPT
+            || e.tag == GUMBO_TAG_TITLE)
             continue;
+        *image = *image || e.tag == GUMBO_TAG_IMG;
         if (e.tag == GUMBO_TAG_BR)
             *text += QLatin1Char('\n');
         const int tables = it.tables + (e.tag == GUMBO_TAG_TABLE);
@@ -124,9 +127,15 @@ void Renderer::render(const RenderJob &job)
         });
         doc.setDataCallback([&job, &r](const QUrl &url) { return loadData(url, job, &r.wanted); });
         QByteArray html = job.html.toUtf8();
-        if (QString text; tooDeep(html, &text))
+        QString text;
+        bool image = false;
+        if (tooDeep(html, &text, &image))
             html = (QStringLiteral("<pre style=\"white-space:pre-wrap\">") + text.toHtmlEscaped()
                     + QStringLiteral("</pre>")).toUtf8();
+        // spaces and invisible marks (&zwnj;, U+200B) only: nothing to read
+        r.blank = !image && std::all_of(text.cbegin(), text.cend(), [](QChar c) {
+            return c.isSpace() || c.category() == QChar::Other_Format;
+        });
         doc.setDocument(html, &ctx);
         doc.render(job.width, job.viewportHeight);
         doc.setDataCallback([](const QUrl &) { return QByteArray(); }); // job and r are gone after this task

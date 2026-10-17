@@ -168,6 +168,15 @@ Item {
         currentLink: nav.row === 6 ? nav.col : -1
     }
 
+    Text {
+        objectName: "noText"
+        anchors.centerIn: body
+        visible: letter.blank
+        text: attachments.count > 0 ? i18n.t("No text — only attachments") : i18n.t("No text in this letter")
+        color: theme.dim
+        font.pixelSize: theme.fontBody
+    }
+
     T.ScrollBar {
         anchors.top: body.top
         anchors.bottom: body.bottom

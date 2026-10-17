@@ -31,6 +31,7 @@ class Letter : public QObject {
     Q_PROPERTY(QString state READ state NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     Q_PROPERTY(int linkCount READ linkCount NOTIFY changed)
+    Q_PROPERTY(bool blank READ blank NOTIFY changed)
 public:
     Letter(Client *client, Images *images, Renderer *renderer, Theme *theme, QObject *parent = nullptr);
 
@@ -46,6 +47,7 @@ public:
     QString state() const { return m_state; }   // "", "loading", "remote"
     QString error() const { return m_error; }
     int linkCount() const { return int(m_links.size()); }   // links with a box: the keyboard steps through these
+    bool blank() const { return m_blank; }                   // laid out with no text and no image
 
     void show(const QJsonObject &summary);
     void reload();
@@ -95,7 +97,7 @@ private:
     QStringList m_words;
     int m_width = 0;
     std::shared_ptr<DocumentContainer> m_doc;
-    bool m_dark = false;
+    bool m_dark = false, m_blank = false;
     QList<DocumentContainer::Link> m_links;
     QTimer m_remoteTimer, m_widthTimer;
 };
