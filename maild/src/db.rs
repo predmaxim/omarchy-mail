@@ -3,7 +3,7 @@
 
 use crate::mime::{self, Addr, Attachment, Parsed};
 use rusqlite::functions::FunctionFlags;
-use rusqlite::{Connection, Row, params, params_from_iter, types::Value};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -377,6 +377,11 @@ impl Db {
     /// The server has the message: it must never go out again. Stays in Sent until its copy is filed.
     pub fn outbox_sent(&self, id: i64) -> Result<(), String> {
         self.c.execute("UPDATE outbox SET state = 'sent' WHERE id = ?1", [id]).map(drop).map_err(e)
+    }
+
+    /// `queued`, `sent` or `failed`; `None` once the row is gone.
+    pub fn outbox_state(&self, id: i64) -> Result<Option<String>, String> {
+        self.c.query_row("SELECT COALESCE(state, '') FROM outbox WHERE id = ?1", [id], |r| r.get(0)).optional().map_err(e)
     }
 
     /// `(id, raw)` of the account's sent rows whose copy is not in its Sent folder yet.

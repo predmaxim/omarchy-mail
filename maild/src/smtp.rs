@@ -12,6 +12,7 @@ use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart, header::Conten
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Address, Message, SmtpTransport, Transport, address::Envelope};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -154,10 +155,9 @@ fn deliver_smtp(acc: &Account, to: &[Addr], raw: &[u8]) -> Result<(), Fail> {
     send_via(&t, &acc.email, to, raw)
 }
 
-type Deliver = dyn Fn(&Account, &[Addr], &[u8]) -> Result<(), Fail>;
-
-/// One walk over the queued rows. True if some are left for a later try.
-fn pass(db: &Db, hub: &Hub, accounts: &[Account], deliver: &Deliver) -> Result<bool, String> {
+/// One walk over the queued rows. True if some are left for a later try. `accepted`: rows the
+/// server took that could not be marked `sent` yet, kept across passes.
+fn pass(db: &Db, hub: &Hub, accounts: &[Account], deliver: &dyn Fn(&Account, &[Addr], &[u8]) -> Result<(), Fail>, accepted: &mut HashSet<i64>) -> Result<bool, String> {
     let (mut blocked, mut left) = (vec![], false);
     for (id, account, to, raw) in db.outbox_queued()? {
         // A row waits behind an earlier one of its account that has a network problem.
@@ -166,21 +166,40 @@ fn pass(db: &Db, hub: &Hub, accounts: &[Account], deliver: &Deliver) -> Result<b
             continue;
         }
         let Some(acc) = accounts.iter().find(|a| a.email == account) else { continue };
-        match deliver(acc, &to, &raw) {
+        let r = if accepted.contains(&id) {
+            Ok(()) // the server has it; marking it `sent` failed last time
+        } else if db.outbox_state(id)?.as_deref() == Some("queued") {
+            deliver(acc, &to, &raw)
+        } else {
+            continue; // discarded while an earlier row was being sent
+        };
+        match r {
             Ok(()) => {
                 // First of all: a row the server has accepted is never `queued` again, whatever fails next.
                 // ponytail: a crash right before this update still sends the row again; no way to know.
+                accepted.insert(id);
                 if let Err(e) = db.outbox_sent(id) {
                     eprintln!("{account}: send #{id}: marking sent: {e}");
+                    left = true; // marked on the next pass, never delivered again
+                    continue;
                 }
+                accepted.remove(&id);
+                let worker = hub.handles().into_iter().find(|h| h.email == account);
                 // The copy for the Sent folder (servers that file nothing themselves) is filed by the
                 // worker, which then drops the row; until then it stays in Sent.
                 if acc.append_sent {
-                    if let Some(h) = hub.handles().into_iter().find(|h| h.email == account) {
+                    if let Some(h) = worker {
                         let _ = h.jobs.send(Job::Append { outbox: id, role: Role::Sent, raw });
                     }
-                } else if let Err(e) = db.outbox_done(id) {
-                    eprintln!("{account}: send #{id}: {e}");
+                } else {
+                    if let Err(e) = db.outbox_done(id) {
+                        eprintln!("{account}: send #{id}: {e}");
+                    }
+                    // The server filed it: its Sent folder shows it now, not at the next SyncAll.
+                    let sent = db.folders_of(&account).ok().and_then(|v| v.into_iter().find(|f| f.role == Role::Sent));
+                    if let (Some(h), Some(f)) = (worker, sent) {
+                        let _ = h.jobs.send(Job::SyncFolder(f.id));
+                    }
                 }
                 hub.emit(Event::Changed { folders: true, ids: vec![] });
             }
@@ -201,7 +220,11 @@ fn pass(db: &Db, hub: &Hub, accounts: &[Account], deliver: &Deliver) -> Result<b
 }
 
 /// Files one sent mail with `append` (the Sent folder of its account); the row goes after that.
+/// Only while the row is still `sent`: a SyncAll's `flush_unfiled` may have filed it already.
 pub fn append_row(db: &Db, id: i64, raw: &[u8], append: impl FnOnce(&[u8]) -> Result<(), String>) -> Result<(), String> {
+    if db.outbox_state(id)?.as_deref() != Some("sent") {
+        return Ok(());
+    }
     append(raw)?;
     db.outbox_done(id)
 }
@@ -235,9 +258,10 @@ fn run(paths: &Paths, hub: &Hub, rx: &Receiver<()>) {
         Ok(db) => db,
         Err(e) => return eprintln!("maild: outbox: {e}"),
     };
+    let mut accepted = HashSet::new();
     loop {
         let accounts = config::load(&paths.config).unwrap_or_default();
-        let left = pass(&db, hub, &accounts, &deliver_smtp).unwrap_or_else(|e| {
+        let left = pass(&db, hub, &accounts, &deliver_smtp, &mut accepted).unwrap_or_else(|e| {
             eprintln!("maild: outbox: {e}");
             true
         });
@@ -408,7 +432,7 @@ mod tests {
             lock(&seen).push(t.lines().find(|l| l.starts_with("Subject")).unwrap().to_string());
             if t.contains("Subject: a") { Ok(()) } else if t.contains("Subject: b") { Err(Fail::Permanent("550 no".into())) } else { Err(Fail::Retry("down".into())) }
         };
-        assert!(pass(&db, &hub, &accounts, &deliver).unwrap(), "c is left");
+        assert!(pass(&db, &hub, &accounts, &deliver, &mut HashSet::new()).unwrap(), "c is left");
         let l = db.list(&crate::db::ListQuery { role: Some(Role::Sent), ..Default::default() }).unwrap();
         let rows: Vec<(i64, bool)> = l.iter().map(|s| (s.id, s.failed)).collect();
         assert_eq!(rows, [(-c, false), (-b, true)], "a is gone, b stays failed");
@@ -417,7 +441,7 @@ mod tests {
         assert!(ev.iter().any(|e| e.contains(r#""event":"changed","folders":true"#)), "{ev:?}");
         // the next pass tries only c; behind a network error nothing else is tried
         lock(&calls).clear();
-        assert!(pass(&db, &hub, &accounts, &deliver).unwrap());
+        assert!(pass(&db, &hub, &accounts, &deliver, &mut HashSet::new()).unwrap());
         assert_eq!(*lock(&calls), ["Subject: c"]);
         let _ = a;
     }
@@ -431,7 +455,7 @@ mod tests {
         let n = Arc::new(Mutex::new(0));
         let k = n.clone();
         let deliver = move |_: &Account, _: &[Addr], _: &[u8]| { *lock(&k) += 1; Err(Fail::Retry("down".into())) };
-        assert!(pass(&db, &Hub::default(), &accounts, &deliver).unwrap());
+        assert!(pass(&db, &Hub::default(), &accounts, &deliver, &mut HashSet::new()).unwrap());
         assert_eq!(*lock(&n), 1);
     }
 
@@ -445,7 +469,7 @@ mod tests {
         let deliver = move |_: &Account, _: &[Addr], _: &[u8]| { *lock(&k) += 1; Ok(()) };
         let sent = || db.list(&crate::db::ListQuery { role: Some(Role::Sent), ..Default::default() }).unwrap();
         // no worker to take the Append: the row stays, filed under Sent as a normal (not queued) mail
-        assert!(!pass(&db, &Hub::default(), &accounts, &deliver).unwrap());
+        assert!(!pass(&db, &Hub::default(), &accounts, &deliver, &mut HashSet::new()).unwrap());
         let l = sent();
         assert_eq!((l.len(), l[0].id, l[0].queued, l[0].failed), (1, -id, false, false));
         // the APPEND fails once: the row is still there
@@ -456,7 +480,7 @@ mod tests {
         // the next try files it and drops the row; SMTP was used exactly once
         flush_unfiled(&db, "me@x.org", flaky).unwrap();
         assert!(sent().is_empty());
-        assert!(!pass(&db, &Hub::default(), &accounts, &deliver).unwrap());
+        assert!(!pass(&db, &Hub::default(), &accounts, &deliver, &mut HashSet::new()).unwrap());
         assert_eq!(*lock(&calls), 1);
     }
 
@@ -469,9 +493,69 @@ mod tests {
         let k = n.clone();
         let deliver = move |_: &Account, _: &[Addr], _: &[u8]| { *lock(&k) += 1; Ok(()) };
         for _ in 0..3 {
-            pass(&db, &Hub::default(), &accounts, &deliver).unwrap();
+            pass(&db, &Hub::default(), &accounts, &deliver, &mut HashSet::new()).unwrap();
         }
         assert_eq!(*lock(&n), 1);
+    }
+
+    #[test]
+    fn append_after_flush_is_skipped() {
+        let db = Db::memory();
+        let id = queue(&db, &acc(true), &draft("once")).unwrap();
+        db.outbox_sent(id).unwrap();
+        let raw = db.outbox_unfiled("me@x.org").unwrap()[0].1.clone();
+        let n = Mutex::new(0);
+        let append = |_: &[u8]| { *lock(&n) += 1; Ok(()) };
+        // a SyncAll files it before the queued Job::Append of the outbox thread runs
+        flush_unfiled(&db, "me@x.org", append).unwrap();
+        append_row(&db, id, &raw, append).unwrap();
+        assert_eq!(*lock(&n), 1);
+    }
+
+    #[test]
+    fn sent_folder_synced_when_the_server_files_it() {
+        let db = Db::memory();
+        let hub = Hub::default();
+        let (h, jobs) = crate::account::Handle::detached("me@x.org");
+        hub.add_handle(h);
+        let sent = db.upsert_folder("me@x.org", "Sent", Role::Sent).unwrap();
+        db.upsert_folder("me@x.org", "INBOX", Role::Inbox).unwrap();
+        queue(&db, &acc(false), &draft("s")).unwrap();
+        assert!(!pass(&db, &hub, &[acc(false)], &|_, _, _| Ok(()), &mut HashSet::new()).unwrap());
+        assert!(matches!(jobs.try_recv(), Ok(Job::SyncFolder(f)) if f == sent));
+    }
+
+    #[test]
+    fn accepted_row_is_not_sent_again_when_marking_fails() {
+        let db = Db::memory();
+        let accounts = [acc(false)];
+        queue(&db, &accounts[0], &draft("once")).unwrap();
+        db.c.execute_batch("CREATE TRIGGER no_mark BEFORE UPDATE OF state ON outbox WHEN new.state = 'sent' BEGIN SELECT RAISE(ABORT, 'disk full'); END;").unwrap();
+        let n = Mutex::new(0);
+        let deliver = |_: &Account, _: &[Addr], _: &[u8]| { *lock(&n) += 1; Ok(()) };
+        let mut accepted = HashSet::new();
+        assert!(pass(&db, &Hub::default(), &accounts, &deliver, &mut accepted).unwrap(), "marking is tried again");
+        assert!(pass(&db, &Hub::default(), &accounts, &deliver, &mut accepted).unwrap());
+        db.c.execute_batch("DROP TRIGGER no_mark").unwrap();
+        assert!(!pass(&db, &Hub::default(), &accounts, &deliver, &mut accepted).unwrap());
+        assert_eq!((*lock(&n), db.queued_count("me@x.org").unwrap()), (1, 0));
+    }
+
+    #[test]
+    fn row_discarded_meanwhile_is_not_sent() {
+        let db = Db::memory();
+        let accounts = [acc(false)];
+        queue(&db, &accounts[0], &draft("a")).unwrap();
+        let b = queue(&db, &accounts[0], &draft("b")).unwrap();
+        let calls = Mutex::new(vec![]);
+        // the user discards b while a is being sent
+        let deliver = |_: &Account, _: &[Addr], raw: &[u8]| {
+            lock(&calls).push(text(raw).lines().find(|l| l.starts_with("Subject")).unwrap().to_string());
+            let _ = db.outbox_discard(b);
+            Ok(())
+        };
+        pass(&db, &Hub::default(), &accounts, &deliver, &mut HashSet::new()).unwrap();
+        assert_eq!(*lock(&calls), ["Subject: a"]);
     }
 
     #[test]

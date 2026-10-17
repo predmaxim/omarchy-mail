@@ -375,6 +375,9 @@ live in the keyring only.
   - With `append_sent`, after the server took the mail the row stays in Sent (`queued: false`)
     until `maild` has copied it to the Sent folder; a failed copy is retried at the next sync.
     The mail is never sent twice.
+  - Without `append_sent` (the server files sent mail itself, as Gmail does) the row leaves the
+    outbox once the server took the mail, and the account's Sent folder is synced right away.
+  - A queued message discarded before its turn is not sent.
   - When the server refuses it permanently, `send_failed {outbox, error}` is sent and the row
     stays in Sent with `failed: true` (and still `queued: true`: it is an outbox row).
 

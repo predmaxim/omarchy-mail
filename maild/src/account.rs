@@ -129,6 +129,19 @@ impl Handle {
     }
 }
 
+#[cfg(test)]
+impl Handle {
+    /// A handle without threads: the test reads its jobs.
+    pub(crate) fn detached(email: &str) -> (Handle, Receiver<Job>) {
+        let (jobs, queue) = channel();
+        let shared = Arc::new(Shared {
+            email: email.into(), hub: Hub::default(), connect: Arc::new(|| Err("detached".into())), cache: PathBuf::new(),
+            stop: Mutex::new(false), watch_kill: KillSlot::default(), work_kill: KillSlot::default(),
+        });
+        (Handle { email: email.into(), jobs, retry: channel().0, shared, threads: Arc::default() }, queue)
+    }
+}
+
 pub(crate) type Connector = Arc<dyn Fn() -> Result<Conn, String> + Send + Sync>;
 
 pub fn spawn(acc: Account, paths: Paths, hub: Hub) -> Handle {
