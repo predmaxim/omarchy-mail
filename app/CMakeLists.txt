@@ -81,6 +81,10 @@ om_test(tst_letterview)
 target_sources(mailcore PRIVATE src/App.h src/App.cpp)
 om_test(tst_app_data)
 om_test(tst_app_actions)
+target_sources(mailcore PRIVATE src/Session.h src/Session.cpp)
+qt_add_resources(mailcore "qml_main" PREFIX "/" FILES
+    qml/Main.qml qml/ActionBar.qml qml/Picker.qml qml/MailRow.qml qml/LetterPane.qml)
+om_test(tst_ui)
 
 # ---- packaging checks ----
 add_test(NAME install_script COMMAND bash -n ${CMAKE_SOURCE_DIR}/../install.sh)

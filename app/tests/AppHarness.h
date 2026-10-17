@@ -93,7 +93,8 @@ struct AppHarness {
         QTRY_COMPARE(sent("contacts").size(), n + 1);
     }
 
-    void setUp()
+    // FakeMaild serving the fixtures; the handlers read `accounts`, `rows`, `folders` and `offline` per request.
+    void serve()
     {
         launch::setProgramForTests("/nonexistent/uwsm-app");   // never the real uwsm-app / browser
         accounts = fixture("accounts.json").array();
@@ -121,6 +122,10 @@ struct AppHarness {
             return QJsonObject{{"result", QJsonObject{{"summary", QJsonObject{{"id", r.value("message")}}},
                                                       {"text", "hi"}, {"html", QJsonValue::Null}}}};
         });
+    }
+    void setUp()
+    {
+        serve();
         c = new Client(d->path());
         c->setRetryInterval(50);
         dir = new QTemporaryDir(scratch());

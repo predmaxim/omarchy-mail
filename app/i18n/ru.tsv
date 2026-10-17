@@ -38,3 +38,19 @@ Press d again to discard the unsent message	Нажмите d ещё раз — �
 Server search results can't be changed	Находки с серверов нельзя изменить
 Nothing to undo	Нечего отменять
 Sending…	Отправляется…
+Mail	Почта
+Compose	Написать
+Reply	Ответить
+Delete	Удалить
+Unread	Непрочитанные
+Search all mailboxes	Поиск по всем ящикам
+Selected: %n	Выбрано: %n|Выбрано: %n|Выбрано: %n
+searching servers…	ищем на серверах…
+On servers, before 2026	На серверах, до 2026
+queued	в очереди
+not sent	не отправлено
+Queued — will be sent when online	В очереди — уйдёт при подключении
+Send again	Отправить ещё раз
+Discard	Выбросить
+No mail here	Писем нет
+to: %1	кому: %1

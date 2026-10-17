@@ -3,7 +3,9 @@
 #include "Letter.h"
 #include "Recolor.h"
 #include "Theme.h"
+#include <QClipboard>
 #include <QCursor>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QPointer>
 #include <QQuickWindow>
@@ -138,6 +140,12 @@ QString LetterView::selectedText() const
 {
     const auto doc = m_letter ? m_letter->document() : nullptr;
     return doc ? doc->selectedText() : QString();
+}
+
+void LetterView::copySelection() const
+{
+    if (const QString text = selectedText(); !text.isEmpty())
+        QGuiApplication::clipboard()->setText(text);
 }
 
 void LetterView::openCurrentLink()

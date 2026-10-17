@@ -35,6 +35,7 @@ public:
     Q_INVOKABLE void toTop() { setScrollY(0); }
     Q_INVOKABLE void toEnd() { setScrollY(m_contentHeight); }
     Q_INVOKABLE QString selectedText() const;
+    Q_INVOKABLE void copySelection() const;   // Ctrl+C: QML has no clipboard
     Q_INVOKABLE void openCurrentLink();
 
     void paint(QPainter *painter) override;
