@@ -1,6 +1,8 @@
 #define QTEST_THROW_ON_FAIL   // helpers below verify too
 #include "AppHarness.h"
 #include "Session.h"
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QPointer>
 #include <QScopeGuard>
 #include <QQmlApplicationEngine>
@@ -201,6 +203,90 @@ private Q_SLOTS:
         start();
         QVERIFY(!item("accountPicker")->isVisible());
         QCOMPARE(item("folderPicker")->width(), item("mailList")->width());   // the pickers' line and the list share the inset
+    }
+    void c_opens_compose_with_focus_in_to()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        QVERIFY(item("composePane")->isVisible());
+        QVERIFY(!item("mailList")->isEnabled());
+    }
+    void ctrl_enter_sends()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        type("ivan@example.org");
+        item("composeSubject")->forceActiveFocus();
+        type("Hi");
+        item("composeBody")->forceActiveFocus();
+        type("x");
+        QTest::keyClick(win, Qt::Key_Return, Qt::ControlModifier);
+        QTRY_COMPARE(h.sent("send").size(), 1);
+        const QJsonObject r = h.sent("send").at(0);
+        QCOMPARE(r.value("to").toArray(), QJsonArray({QJsonObject{{"name", ""}, {"addr", "ivan@example.org"}}}));
+        QCOMPARE(r.value("subject").toString(), QString("Hi"));
+        QCOMPARE(r.value("text").toString(), QString("x"));
+        QTRY_VERIFY(!s->compose.isOpen());
+        QVERIFY(!item("composePane")->isVisible());
+    }
+    void esc_keeps_draft()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        item("composeSubject")->forceActiveFocus();
+        type("Topic");
+        QTest::keyClick(win, Qt::Key_Escape);
+        QTRY_VERIFY(!s->compose.isOpen());
+        QVERIFY(item("mailList")->isEnabled());
+        QTest::keyClick(win, Qt::Key_C);   // the focus went back to the window: its keys work
+        QTRY_VERIFY(s->compose.isOpen());
+        QCOMPARE(item("composeSubject")->property("text").toString(), QString("Topic"));
+    }
+    void reply_cursor_at_start()
+    {
+        start();
+        letterShown();
+        QTest::keyClick(win, Qt::Key_R);
+        QTRY_VERIFY(s->compose.isOpen());
+        QQuickItem *b = item("composeBody");
+        QTRY_VERIFY(b->hasActiveFocus());
+        QCOMPARE(b->property("cursorPosition").toInt(), 0);
+        QVERIFY(b->property("text").toString().contains("wrote:"));
+    }
+    void paste_image_in_body()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        item("composeBody")->forceActiveFocus();
+        QImage img(8, 8, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        QGuiApplication::clipboard()->setImage(img);
+        QTest::keyClick(win, Qt::Key_V, Qt::ControlModifier);
+        QTRY_COMPARE(item("composeAttachments")->property("count").toInt(), 1);
+        QCOMPARE(item("composeBody")->property("text").toString(), QString());
+    }
+    void attachments_below_subject()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        QFile f(dir->filePath("note.txt"));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hi");
+        f.close();
+        s->compose.addFiles({QUrl::fromLocalFile(f.fileName())});
+        QTRY_COMPARE(item("composeAttachments")->property("count").toInt(), 1);
+        QQuickItem *chip = itemAt(item("composeAttachments"), 0);
+        QQuickItem *frame = item("composeSubject")->parentItem()->parentItem();   // the framed line
+        const auto y = [](QQuickItem *i) { return i->mapToScene(QPointF(0, 0)).y(); };
+        QTRY_VERIFY(y(chip) >= y(frame) + frame->height());
+        QTRY_VERIFY(y(chip) + chip->height() <= y(item("composeBody")));
+        if (const QString shot = qEnvironmentVariable("OM_SHOT"); !shot.isEmpty())
+            QVERIFY(win->grabWindow().save(shot));
     }
     void unread_row_has_accent_bar()
     {

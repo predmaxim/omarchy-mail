@@ -67,6 +67,8 @@ Window {
             readonly property int inset: pad + theme.space(12)   // the text edge of the rows, pickers and search
             anchors.top: bar.bottom
             anchors.bottom: parent.bottom
+            opacity: compose.open ? 0.5 : 1   // the form takes the keys: the list is only a backdrop
+            enabled: !compose.open
             width: Math.max(theme.space(300), Math.min(root.width * 0.38, theme.space(400)))
 
             Column {
@@ -208,9 +210,17 @@ Window {
             color: theme.muted
         }
 
+        ComposePane {
+            id: form
+            anchors.left: divider.right
+            anchors.right: parent.right
+            anchors.top: bar.bottom
+            anchors.bottom: parent.bottom
+            onClosed: root.forceActiveFocus()
+        }
         LetterPane {
             id: pane
-            visible: win.page === "main"
+            visible: win.page === "main" && !compose.open
             anchors.left: divider.right
             anchors.right: parent.right
             anchors.top: bar.bottom

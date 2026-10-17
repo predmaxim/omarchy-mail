@@ -72,3 +72,9 @@ Create an app password: %1	Создайте пароль приложения: %
 Press d again to remove %1 (mail on the server stays)	Нажмите d ещё раз — убрать %1 (письма на сервере останутся)
 Enter the email address	Укажите адрес почты
 Enter the app password	Укажите пароль приложения
+Replying	Ответ
+New message	Новое письмо
+From	От
+To	Кому
+Subject	Тема
+Ctrl+Enter — send · Ctrl+V — paste screenshot · Ctrl+O — attach file · Esc — close (draft is kept)	Ctrl+Enter — отправить · Ctrl+V — вставить скриншот · Ctrl+O — приложить файл · Esc — закрыть (черновик сохранится)
