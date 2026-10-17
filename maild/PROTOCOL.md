@@ -260,10 +260,12 @@ live in the keyring only.
 
 - `local` holds up to 200 local messages, newest first.
   - Every word of `q` must match the start of a word in the subject, sender, recipients or text.
+    Words with no letter or digit (`№`, `-`) are ignored.
   - Matching ignores case, and works for Cyrillic.
   - An empty `q` gives `[]`.
 - `token` grows with every `search`, on any connection.
-- Each mailbox also searches its server for mail before 2026-01-01 (subject, sender or text).
+- Each mailbox also searches its server for mail before 2026-01-01: every word of `q` must be in
+  the subject, sender or text (as a substring).
   Gmail: the "All Mail" folder; others: every folder but Junk. Up to 30 newest hits per mailbox.
   Each mailbox sends its hits as a `search_remote {token, hits}` event, also with no hits. Drop
   events whose `token` is not the latest one you got.

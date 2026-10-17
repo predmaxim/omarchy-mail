@@ -27,19 +27,22 @@ fn arg(q: &str, literals: bool) -> String {
     }
 }
 
-/// Control characters become spaces; at most `MAX_QUERY` characters (a literal stays far below
-/// the 4096 bytes LITERAL- allows, even three times in one command).
+/// Control characters become spaces; at most `MAX_QUERY` characters (the command stays far below
+/// the 4096 bytes LITERAL- allows for a literal, with every word three times).
 fn clean(q: &str) -> String {
     q.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().chars().take(MAX_QUERY).collect::<String>().trim().to_string()
 }
 
-/// The `UID SEARCH` criteria for `q` among mail before `SINCE`: subject, sender or text.
+/// The `UID SEARCH` criteria for `q` among mail before `SINCE`: every word (as local search
+/// does) in the subject, sender or text.
 pub fn criteria(q: &str, literals: bool) -> String {
     let q = clean(q);
-    let a = arg(&q, literals);
-    debug_assert!(a.len() <= 4096 + 16);
     let charset = if q.is_ascii() { "" } else { "CHARSET UTF-8 " };
-    format!("{charset}BEFORE {SINCE} OR OR SUBJECT {a} FROM {a} TEXT {a}")
+    let words: Vec<String> = q.split_whitespace().map(|w| {
+        let a = arg(w, literals);
+        format!("OR OR SUBJECT {a} FROM {a} TEXT {a}")
+    }).collect();
+    format!("{charset}BEFORE {SINCE} {}", words.join(" "))
 }
 
 /// Where to look: Gmail's `\All` only, otherwise every folder but Junk.
@@ -131,6 +134,12 @@ mod tests {
     fn criteria_utf8() {
         assert_eq!(criteria("до", true), "CHARSET UTF-8 BEFORE 1-Jan-2026 OR OR SUBJECT {4+}\r\nдо FROM {4+}\r\nдо TEXT {4+}\r\nдо");
         assert_eq!(criteria("до", false), "CHARSET UTF-8 BEFORE 1-Jan-2026 OR OR SUBJECT \"до\" FROM \"до\" TEXT \"до\"");
+    }
+
+    #[test]
+    fn criteria_every_word() {
+        assert_eq!(criteria(" a  b ", true), r#"BEFORE 1-Jan-2026 OR OR SUBJECT "a" FROM "a" TEXT "a" OR OR SUBJECT "b" FROM "b" TEXT "b""#);
+        assert_eq!(criteria("счёт ромашка", false), "CHARSET UTF-8 BEFORE 1-Jan-2026 OR OR SUBJECT \"счёт\" FROM \"счёт\" TEXT \"счёт\" OR OR SUBJECT \"ромашка\" FROM \"ромашка\" TEXT \"ромашка\"");
     }
 
     #[test]

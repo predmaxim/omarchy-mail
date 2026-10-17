@@ -330,7 +330,9 @@ impl Db {
     }
 
     pub fn search(&self, q: &str, limit: u32) -> Result<Vec<Summary>, String> {
-        let m = q.split_whitespace().map(|t| format!("\"{}\"*", t.replace('"', "\"\""))).collect::<Vec<_>>().join(" AND ");
+        // A word with no letter or digit ("№", "-") holds no FTS token: its phrase would match nothing.
+        let m = q.split_whitespace().filter(|t| t.chars().any(char::is_alphanumeric))
+            .map(|t| format!("\"{}\"*", t.replace('"', "\"\""))).collect::<Vec<_>>().join(" AND ");
         if m.is_empty() { return Ok(vec![]); }
         let sql = format!("SELECT {SUMMARY_COLS} {SUMMARY_FROM} WHERE m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1) ORDER BY m.date DESC LIMIT ?2");
         let mut st = self.c.prepare(&sql).map_err(e)?;
@@ -513,6 +515,15 @@ mod tests {
         assert_eq!(db.search("ДОГОВ", 10).unwrap().len(), 1);
         assert_eq!(db.search("договор постав", 10).unwrap().len(), 1);
         assert!(db.search("   ", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_ignores_lone_symbols() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        db.insert_message(f, 1, true, false, 1, &p("Счёт № 123", 5, "для ООО Ромашка"), true).unwrap();
+        assert_eq!(db.search("Счёт № 123", 10).unwrap().len(), 1);
+        assert_eq!(db.search("счёт - ромашка", 10).unwrap().len(), 1);
     }
 
     #[test]
