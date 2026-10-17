@@ -1,6 +1,10 @@
 #include "AppHarness.h"
+#include <QClipboard>
 #include <QElapsedTimer>
+#include <QGuiApplication>
+#include <QImage>
 #include <QSignalSpy>
+#include <QTimer>
 
 using namespace om;
 using namespace om::test;
@@ -144,6 +148,72 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(!acts("read").isEmpty(), 3000);   // 56's, a second after the move: 57's would be earlier
         QCOMPARE(acts("read"), QList<QJsonObject>({act({56}, "read")}));
         QVERIFY(!list->row(3).value("seen").toBool());
+    }
+
+    void unread_view_keeps_the_letter_being_read()
+    {
+        // as maild does: `act read` changes the rows, `changed` follows, the unread-only list drops read mail
+        d->on("list", [this](const QJsonObject &r) {
+            if (!r.value("unread_only").toBool())
+                return QJsonObject{{"result", slice(r)}};
+            QJsonArray out;
+            for (const QJsonValue &v : std::as_const(rows))
+                if (!v.toObject().value("seen").toBool())
+                    out << v;
+            return QJsonObject{{"result", out}};
+        });
+        d->on("act", [this](const QJsonObject &r) {
+            const QJsonArray ids = r.value("ids").toArray();
+            for (int i = 0; i < rows.size(); ++i)
+                if (ids.contains(rows.at(i).toObject().value("id"))) {
+                    QJsonObject o = rows.at(i).toObject();
+                    o["seen"] = true;
+                    rows[i] = o;
+                }
+            QTimer::singleShot(0, d, [this, ids] { d->emitEvent({{"event", "changed"}, {"folders", true}, {"ids", ids}}); });
+            return QJsonObject{{"result", QJsonObject{{"batch", 5}}}};
+        });
+        bootList();
+        QVERIFY(press(Qt::Key_U, 30, Qt::ShiftModifier));
+        QTRY_COMPARE(list->rowCount(), 3);   // 57, 50, 40
+        QCOMPARE(letter->id(), 57);
+        const auto lists = sent("list").size();
+        QTRY_VERIFY_WITH_TIMEOUT(!acts("read").isEmpty(), 3000);
+        QTRY_COMPARE(sent("list").size(), lists + 1);   // `changed` reloads the list: 57 is not in it
+        barrier();
+        QCOMPARE(list->rowCount(), 3);
+        QCOMPARE(list->cursor(), 0);
+        QCOMPARE(list->cursorRow().value("id").toInteger(), 57);
+        QVERIFY(list->cursorRow().value("seen").toBool());
+        QCOMPARE(letter->id(), 57);
+        QTest::qWait(1300);   // a chain would read 50 a second after the reload
+        barrier();
+        QCOMPARE(acts("read"), QList<QJsonObject>({act({57}, "read")}));
+
+        QVERIFY(press(Qt::Key_Down));   // the user moves on: 50 is read, 57 goes with that reload
+        QCOMPARE(letter->id(), 50);
+        QTRY_COMPARE_WITH_TIMEOUT(acts("read").size(), 2, 3000);
+        QCOMPARE(acts("read").at(1), act({50}, "read"));
+        QTRY_COMPARE(list->rowCount(), 2);
+        QCOMPARE(list->row(0).value("id").toInteger(), 50);
+        QCOMPARE(list->row(1).value("id").toInteger(), 40);
+        QCOMPARE(list->cursorRow().value("id").toInteger(), 50);
+        QCOMPARE(letter->id(), 50);
+    }
+
+    void search_results_are_not_auto_read()
+    {
+        bootList();
+        d->on("search", [this](const QJsonObject &) {
+            return QJsonObject{{"result", QJsonObject{{"local", QJsonArray{rows.at(20)}}, {"token", 7}}}};   // 40, unread
+        });
+        app->setQuery("x");
+        QTRY_COMPARE(letter->id(), 40);
+        QTest::qWait(1300);
+        barrier();
+        QVERIFY(!acts("read").contains(act({40}, "read")));
+        QVERIFY(press(Qt::Key_Return, 36, Qt::NoModifier, "search"));   // the user goes to the results
+        QTRY_VERIFY_WITH_TIMEOUT(acts("read").contains(act({40}, "read")), 3000);
     }
 
     void outbox_row_discard_and_retry()
@@ -367,6 +437,55 @@ private Q_SLOTS:
         QVERIFY(press(Qt::Key_C, 54));
         QVERIFY(press(Qt::Key_Escape, 0, Qt::NoModifier, "compose"));
         QVERIFY(!compose->isOpen());
+    }
+
+    void send_finishing_after_draft_switch()
+    {
+        d->on("send", [](const QJsonObject &) { return QJsonObject{{"result", QJsonObject{{"outbox", 3}}}, {"delay", 300}}; });
+        bootList();
+        QTRY_VERIFY(!letter->full().isEmpty());
+        const QString newDraft = dir->filePath("drafts/new.json"), replyDraft = dir->filePath("drafts/reply-57.json");
+        compose->startNew("me@gmail.com");
+        compose->setSubject("Later");
+        compose->close();
+        QVERIFY(QFile::exists(newDraft));
+
+        QVERIFY(press(Qt::Key_R, 27));
+        compose->setTo("ivan@example.org");
+        QGuiApplication::clipboard()->setImage(QImage(4, 4, QImage::Format_RGB32));
+        QVERIFY(press(Qt::Key_V, 55, Qt::ControlModifier, "compose"));
+        const QString shot = dir->filePath("drafts/files/") + compose->attachments().value(0).toMap().value("name").toString();
+        QVERIFY(QFile::exists(shot));
+        QVERIFY(press(Qt::Key_Return, 36, Qt::ControlModifier, "compose"));
+        QVERIFY(press(Qt::Key_Escape, 9, Qt::NoModifier, "compose"));   // while maild still reads the files
+        QVERIFY(QFile::exists(replyDraft));
+        QVERIFY(press(Qt::Key_C, 54));   // the saved new draft
+        QCOMPARE(compose->subject(), QString("Later"));
+
+        QTRY_COMPARE(app->note(), QString("Sending…"));
+        QVERIFY(compose->isOpen());
+        QCOMPARE(compose->subject(), QString("Later"));
+        QVERIFY(QFile::exists(newDraft));
+        QVERIFY(!QFile::exists(replyDraft));   // the sent one goes, with its screenshot
+        QVERIFY(!QFile::exists(shot));
+    }
+
+    void send_error_after_esc_goes_to_window_note()
+    {
+        d->on("send", [](const QJsonObject &) { return QJsonObject{{"error", "cannot read /home/me/a.pdf"}, {"delay", 200}}; });
+        bootList();
+        compose->startNew("me@gmail.com");
+        compose->setTo("ivan@example.org");
+        QVERIFY(press(Qt::Key_Return, 36, Qt::ControlModifier, "compose"));
+        QVERIFY(press(Qt::Key_Escape, 9, Qt::NoModifier, "compose"));
+        QTRY_COMPARE(app->note(), QString("Not sent: cannot read /home/me/a.pdf"));
+        QVERIFY(app->noteError());
+        QVERIFY(QFile::exists(dir->filePath("drafts/new.json")));   // kept for another try
+
+        QVERIFY(press(Qt::Key_C, 54));   // the form still open: the error is the form's
+        QVERIFY(press(Qt::Key_Return, 36, Qt::ControlModifier, "compose"));
+        QTRY_COMPARE(compose->note(), QString("cannot read /home/me/a.pdf"));
+        QVERIFY(compose->noteError());
     }
 
     void reply_and_mailto()

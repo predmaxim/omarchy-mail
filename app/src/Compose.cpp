@@ -312,9 +312,24 @@ QJsonObject Compose::request(QString *error) const
     return r;
 }
 
-void Compose::sent()
+Compose::Draft Compose::draft() const
 {
-    removeDraft();
+    Draft d{m_key, {}};
+    for (const Att &a : m_atts)
+        if (a.pasted)
+            d.pasted << a.path;
+    return d;
+}
+
+void Compose::sent(const Draft &d)
+{
+    if (shows(d)) {
+        removeDraft();
+        return;
+    }
+    for (const QString &p : d.pasted)   // the form moved on: only the sent draft goes, the open one stays
+        QFile::remove(p);
+    QFile::remove(draftPath(d.key));
 }
 
 QList<QPair<QString, QString>> Compose::parseAddresses(const QString &field, QString *bad)

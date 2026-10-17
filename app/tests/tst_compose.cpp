@@ -106,7 +106,7 @@ private Q_SLOTS:
         Compose c(d);
         c.startNew("a");
         c.setBody("x");
-        c.sent();
+        c.sent(c.draft());
         c.setBody("y");
         QTest::qWait(1500);
         QVERIFY(!QFile::exists(d + "/new.json"));
@@ -209,7 +209,7 @@ private Q_SLOTS:
         const QString png = QDir(d + "/files").entryInfoList(QDir::Files).at(0).absoluteFilePath();
         c.startNew("a");
         QCOMPARE(c.attachments().size(), 1);
-        c.sent();
+        c.sent(c.draft());
         QVERIFY(!QFile::exists(png));
         QVERIFY(!QFile::exists(d + "/new.json"));
         QVERIFY(!c.isOpen());

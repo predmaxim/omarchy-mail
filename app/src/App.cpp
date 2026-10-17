@@ -9,6 +9,7 @@
 #include "Theme.h"
 #include <QDateTime>
 #include <QPointer>
+#include <QScopedValueRollback>
 #include <algorithm>
 
 namespace om {
@@ -318,8 +319,11 @@ void App::loadList(bool fresh, qint64 target)
         if (gen != m_gen)
             return;
         m_opened = true;
-        const QJsonArray rows = r.toArray();
+        QJsonArray rows = r.toArray();
         m_end = rows.size() < limit;
+        if (!fresh && m_unreadOnly)
+            keepCursorRow(rows);
+        const QScopedValueRollback<bool> placed(m_byUser, fresh);   // a new view's letter is one the user went to
         int at = -1;
         for (int i = 0; target != 0 && i < rows.size() && at < 0; ++i)
             if (rows.at(i).toObject().value(QStringLiteral("id")).toInteger() == target)
@@ -336,6 +340,26 @@ void App::loadList(bool fresh, qint64 target)
             cursorMoved(target != 0 && m_letter->id() != target);
         }
     }));
+}
+
+// The unread-only view: a letter just read stays where it was while the cursor is on it, instead of
+// the next unread sliding under the reader. It goes with the first reload after the cursor leaves.
+// ponytail: while it stays, the next page's offset counts it, so one row may wait for the next reload
+void App::keepCursorRow(QJsonArray &rows) const
+{
+    const QJsonObject cur = m_list->cursorRow();
+    const qint64 id = cur.value(QStringLiteral("id")).toInteger();
+    if (id == 0)
+        return;
+    QHash<qint64, int> at;
+    for (int i = 0; i < rows.size(); ++i)
+        at.insert(rows.at(i).toObject().value(QStringLiteral("id")).toInteger(), i);
+    if (at.contains(id))
+        return;
+    int pos = int(rows.size());   // before the first row below it that is still there, else last
+    for (int i = m_list->cursor() + 1; i < m_list->rowCount() && pos == rows.size(); ++i)
+        pos = at.value(m_list->row(i).value(QStringLiteral("id")).toInteger(), pos);
+    rows.insert(pos, cur);   // with its flags as the list has them: read
 }
 
 void App::loadMore()
@@ -361,7 +385,10 @@ void App::cursorMoved(bool force)
     const QString key = m_list->data(m_list->index(c), MailList::KeyRole).toString();
     if (force || key != m_cursorKey) {
         m_cursorKey = key;
-        m_readTimer.start();
+        if (m_byUser)   // auto-read: never a letter a reload or a search slid under the cursor
+            m_readTimer.start();
+        else
+            m_readTimer.stop();
         if (c < 0)
             m_letter->clear();
         else
@@ -579,6 +606,7 @@ void App::act(const QList<qint64> &ids, const QString &op, bool undoable)
 
 void App::remove()
 {
+    const QScopedValueRollback<bool> user(m_byUser, true);   // a key or the Delete button: the next letter is theirs
     const qint64 id = m_list->cursorRow().value(QStringLiteral("id")).toInteger();
     if (id < 0 && m_list->selectedCount() == 0) {
         discard(id);
@@ -677,21 +705,26 @@ void App::send()
         return;
     }
     m_sending = true;
-    m_client->requestSlow(req, [self = QPointer<App>(this)](const QJsonValue &, const QString &e) {
+    // maild may take a while (it reads the attachments): the form may be closed or on another draft by then
+    const Compose::Draft draft = m_compose->draft();
+    m_client->requestSlow(req, [self = QPointer<App>(this), draft](const QJsonValue &, const QString &e) {
         if (!self)
             return;
         self->m_sending = false;
-        if (!e.isEmpty()) {
+        if (e.isEmpty()) {
+            self->m_compose->sent(draft);
+            self->setNote(t("Sending…"), false);
+        } else if (self->m_compose->shows(draft)) {
             self->m_compose->setNote(e, true);
-            return;
+        } else {
+            self->setNote(t("Not sent: %1").arg(e), true);
         }
-        self->m_compose->sent();
-        self->setNote(t("Sending…"), false);
     });
 }
 
 void App::clickRow(int index, int modifiers)
 {
+    const QScopedValueRollback<bool> user(m_byUser, true);
     const auto mods = Qt::KeyboardModifiers::fromInt(modifiers);
     m_list->click(index, mods.testFlag(Qt::ControlModifier), mods.testFlag(Qt::ShiftModifier));
     m_nav->reset(Row::List);
@@ -735,6 +768,7 @@ bool repeats(KeyAction a)
 
 bool App::key(int key, quint32 nativeScanCode, int modifiers, bool autoRepeat, const QString &focus)
 {
+    const QScopedValueRollback<bool> user(m_byUser, true);
     const KeyPress k = mapKey(key, nativeScanCode, Qt::KeyboardModifiers::fromInt(modifiers));
     if (k.action == KeyAction::None)
         return false;
@@ -800,6 +834,7 @@ bool App::searchKey(const KeyPress &k, bool repeat)
     if (k.action != A::Escape) {
         m_list->setCursor(0);
         m_nav->reset(Row::List);
+        m_readTimer.start();   // the user went to the results: the letter on row 0 is theirs now
     }
     Q_EMIT leaveSearch();
     return true;

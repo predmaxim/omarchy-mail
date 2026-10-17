@@ -6,6 +6,7 @@
 #include <QLocale>
 #include <QObject>
 #include <QPair>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -61,7 +62,13 @@ public:
     Q_INVOKABLE void removeAttachment(int i);
     Q_INVOKABLE void pickSuggestion(int i);
     QJsonObject request(QString *error) const;
-    void sent();
+    struct Draft {   // what a send was made from
+        QString key;
+        QStringList pasted;
+    };
+    Draft draft() const;
+    bool shows(const Draft &d) const { return m_open && m_key == d.key; }
+    void sent(const Draft &d);   // maild has the mail: its draft goes; the form closes if it still shows it
     void setNote(const QString &text, bool error = false);
 
     static QList<QPair<QString, QString>> parseAddresses(const QString &field, QString *bad);
@@ -82,7 +89,8 @@ private:
     void load();
     bool save();
     void removeDraft();
-    QString draftPath() const { return m_dir + QLatin1Char('/') + m_key + QStringLiteral(".json"); }
+    QString draftPath() const { return draftPath(m_key); }
+    QString draftPath(const QString &key) const { return m_dir + QLatin1Char('/') + key + QStringLiteral(".json"); }
 
     QString m_dir;
     QString m_key;

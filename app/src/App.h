@@ -107,6 +107,7 @@ private:
     void setPlace();
     QJsonObject listRequest(int offset, int limit) const;
     void loadList(bool fresh, qint64 target = 0);
+    void keepCursorRow(QJsonArray &rows) const;
     void loadMore();
     void cursorMoved(bool force = false);
     void selectView(const QString &account, qint64 target);
@@ -165,6 +166,7 @@ private:
     Confirm m_confirm;          // second presses: delete forever, discard unsent mail
     QTimer m_readTimer;
     bool m_sending = false;
+    bool m_byUser = false;      // the cursor moves by a key, a click or a new view's placement: auto-read may start
     bool m_letterAtTop = true;
 };
 
