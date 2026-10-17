@@ -97,6 +97,22 @@ pub const UNPARSEABLE: &str = "unparseable server response";
 /// on its own will not help.
 pub const AUTH_FAILED: &str = "login rejected";
 
+/// Error prefix: the server answered a FETCH with a tagged NO (a message it cannot deliver). The
+/// session stays in step, so the next command may follow on the same connection.
+pub const REFUSED: &str = "refused by server";
+
+/// `err`, with a tagged NO told apart. The crate reports a NO that ends a FETCH as an
+/// unexpected `Response::Data`.
+fn fetch_err(e: ::imap::Error) -> String {
+    use imap_proto::{Response, Status};
+    match e {
+        ::imap::Error::No(ref n) => format!("{REFUSED}: {}", n.information),
+        ::imap::Error::Unexpected(Response::Data { status: Status::No, ref information, .. }) =>
+            format!("{REFUSED}: {}", information.as_deref().unwrap_or_default()),
+        e => err(e),
+    }
+}
+
 fn err(e: ::imap::Error) -> String {
     match e {
         // The crate reports a line it cannot parse as a BYE.
@@ -334,7 +350,7 @@ impl Conn {
     }
 
     pub fn fetch(&mut self, uids: &str, query: &str) -> Result<::imap::types::Fetches, String> {
-        unpanic(|| self.session.uid_fetch(uids, query)).map_err(err)
+        unpanic(|| self.session.uid_fetch(uids, query)).map_err(fetch_err)
     }
 
     pub fn noop(&mut self) -> Result<(), String> {
@@ -663,6 +679,19 @@ mod tests {
         // temporary (RFC 5530): retried like a network error
         let e = conn(no("NO [UNAVAILABLE] try later")).err().unwrap();
         assert!(!e.starts_with(AUTH_FAILED), "{e}");
+    }
+
+    #[test]
+    fn tagged_no_is_refused() {
+        use imap_proto::{Response, Status};
+        let no = ::imap::Error::Unexpected(Response::Data { status: Status::No, code: None, information: Some("[UNAVAILABLE] backend error".into()) });
+        assert_eq!(fetch_err(no), format!("{REFUSED}: [UNAVAILABLE] backend error"));
+        let ok = ::imap::Error::Unexpected(Response::Data { status: Status::Ok, code: None, information: None });
+        assert!(!fetch_err(ok).starts_with(REFUSED));
+        let io = ::imap::Error::Io(std::io::Error::other("reset"));
+        assert!(!fetch_err(io).starts_with(REFUSED));
+        let bad = ::imap::Error::Parse(::imap::error::ParseError::Invalid(b"x".to_vec()));
+        assert!(fetch_err(bad).starts_with(UNPARSEABLE));
     }
 
     #[test]

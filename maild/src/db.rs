@@ -119,6 +119,16 @@ CREATE TABLE IF NOT EXISTS outbox(
   subject TEXT NOT NULL DEFAULT '', date INTEGER NOT NULL DEFAULT 0, state TEXT, error TEXT);
 ";
 
+/// Version 2: messages the server refuses to deliver, retried on every full sync.
+const REFUSED_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS refused(
+    folder INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uid INTEGER NOT NULL,
+    tries INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(folder, uid)
+);
+";
+
 const SUMMARY_COLS: &str = "m.id, f.account, f.role, f.path, m.date, m.from_name, m.from_addr, m.subject, m.preview, m.seen, m.flagged, m.attachments_json";
 const SUMMARY_FROM: &str = "FROM messages m JOIN folders f ON f.id = m.folder";
 
@@ -162,8 +172,9 @@ impl Db {
         }).map_err(e)?;
         // A later schema change adds a step here (`1 => migrate to 2`), run once per database.
         match c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).map_err(e)? {
-            0 => c.execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = 1; COMMIT;")).map_err(e)?,
-            1 => {}
+            0 => c.execute_batch(&format!("BEGIN; {SCHEMA} {REFUSED_SCHEMA} PRAGMA user_version = 2; COMMIT;")).map_err(e)?,
+            1 => c.execute_batch(&format!("BEGIN; {REFUSED_SCHEMA} PRAGMA user_version = 2; COMMIT;")).map_err(e)?,
+            2 => {}
             v => return Err(format!("database schema version {v} is newer than this maild")),
         }
         Ok(Db { c })
@@ -193,12 +204,32 @@ impl Db {
     pub fn reset_folder(&self, id: i64, uidvalidity: u32) -> Result<(), String> {
         let tx = self.c.unchecked_transaction().map_err(e)?;
         tx.execute("DELETE FROM messages WHERE folder = ?1", [id]).map_err(e)?;
+        tx.execute("DELETE FROM refused WHERE folder = ?1", [id]).map_err(e)?;
         tx.execute("UPDATE folders SET uidvalidity = ?2, last_uid = 0 WHERE id = ?1", params![id, uidvalidity]).map_err(e)?;
         tx.commit().map_err(e)
     }
 
     pub fn min_uid(&self, folder: i64) -> Result<Option<u32>, String> {
         self.c.query_row("SELECT MIN(uid) FROM messages WHERE folder = ?1", [folder], |r| r.get(0)).map_err(e)
+    }
+
+    /// Remembers a message the server refused to deliver (kept as it is if already known).
+    pub fn add_refused(&self, folder: i64, uid: u32) -> Result<(), String> {
+        self.c.execute("INSERT OR IGNORE INTO refused(folder, uid, tries) VALUES (?1, ?2, 0)", params![folder, uid]).map(|_| ()).map_err(e)
+    }
+
+    pub fn refused_uids(&self, folder: i64) -> Result<Vec<u32>, String> {
+        let mut st = self.c.prepare("SELECT uid FROM refused WHERE folder = ?1 ORDER BY uid").map_err(e)?;
+        st.query_map([folder], |r| r.get(0)).map_err(e)?.collect::<Result<_, _>>().map_err(e)
+    }
+
+    /// One more failed retry; the new count.
+    pub fn bump_refused(&self, folder: i64, uid: u32) -> Result<u32, String> {
+        self.c.query_row("UPDATE refused SET tries = tries + 1 WHERE folder = ?1 AND uid = ?2 RETURNING tries", params![folder, uid], |r| r.get(0)).map_err(e)
+    }
+
+    pub fn drop_refused(&self, folder: i64, uid: u32) -> Result<(), String> {
+        self.c.execute("DELETE FROM refused WHERE folder = ?1 AND uid = ?2", params![folder, uid]).map(|_| ()).map_err(e)
     }
 
     pub fn set_folder_marks(&self, id: i64, last_uid: u32, notified_uid: u32) -> Result<(), String> {
@@ -673,17 +704,31 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         let v: i64 = Db::memory().c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, 2);
         let dir = std::env::temp_dir().join(format!("maild-test-{}-version", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("data").join("mail.db");
         drop(Db::open(&path).unwrap());
         assert_eq!((mode(path.parent().unwrap()), mode(&path)), (0o700, 0o600));
-        drop(Db::open(&path).unwrap()); // version 1 opens as it is
+        drop(Db::open(&path).unwrap()); // the current version opens as it is
         Connection::open(&path).unwrap().pragma_update(None, "user_version", 99).unwrap();
         let e = Db::open(&path).err().unwrap();
         assert!(e.contains("99"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn v1_database_migrates_to_v2() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&format!("{SCHEMA} PRAGMA user_version = 1;")).unwrap();
+        let db = Db::init(c).unwrap();
+        let v: i64 = db.c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 2);
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        db.add_refused(f, 5).unwrap();
+        assert_eq!((db.refused_uids(f).unwrap(), db.bump_refused(f, 5).unwrap()), (vec![5], 1));
+        db.remove_folder(f).unwrap(); // cascades
+        assert_eq!(db.c.query_row("SELECT COUNT(*) FROM refused", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 
     #[test]

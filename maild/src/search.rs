@@ -4,7 +4,7 @@
 use crate::config::Account;
 use crate::db::{Db, Remote, Role, Summary};
 use crate::i18n::tr;
-use crate::imap::Conn;
+use crate::imap::{Conn, REFUSED};
 use crate::mime;
 use crate::sync::SINCE;
 use ::imap::types::Flag;
@@ -60,8 +60,24 @@ fn one_folder(conn: &mut Conn, acc: &Account, path: &str, crit: &str, hits: &mut
     if newest.is_empty() {
         return Ok(());
     }
+    const QUERY: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])";
     let set = newest.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-    for f in conn.fetch(&set, "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")?.iter() {
+    let mut got = vec![];
+    match conn.fetch(&set, QUERY) {
+        Ok(f) => got.push(f),
+        // The server refuses a single message: one by one, without that one. A tagged NO keeps the session in step.
+        Err(e) if e.starts_with(REFUSED) => {
+            for uid in newest {
+                match conn.fetch(&uid.to_string(), QUERY) {
+                    Ok(f) => got.push(f),
+                    Err(e) if e.starts_with(REFUSED) => eprintln!("{}: {path}: uid {uid} refused by server: {e}", acc.email),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Err(e) => return Err(e),
+    }
+    for f in got.iter().flat_map(|g| g.iter()) {
         let Some(uid) = f.uid else { continue };
         let p = mime::parse(f.header().unwrap_or_default());
         hits.push(Summary {
@@ -190,6 +206,11 @@ mod tests {
                                 cmd.clear();
                                 continue;
                             }
+                            "UID" if c.starts_with("UID FETCH 4") => {
+                                let _ = w.write_all(format!("{tag} NO [UNAVAILABLE] UID FETCH message 1 uid 4: failure due to backend error\r\n").as_bytes());
+                                cmd.clear();
+                                continue;
+                            }
                             "EXAMINE" => "* 0 EXISTS\r\n".into(),
                             "UID" if c.starts_with("UID SEARCH") => "* SEARCH 4 7\r\n".into(),
                             "UID" if c.contains("BODY.PEEK[]") => format!("* 1 FETCH (UID 7 FLAGS (\\Seen) BODY[] {{{}}}\r\n{body})\r\n", body.len()),
@@ -257,6 +278,15 @@ mod tests {
         let (hits, failed) = search(&mut conn(addr), &acc(), "x").unwrap();
         assert_eq!(hits.len(), 1);
         assert!(failed.unwrap().contains("nope"));
+    }
+
+    #[test]
+    fn refused_hit_is_left_out() {
+        let log = Arc::new(Mutex::new(vec![]));
+        let addr = server("* LIST () \"/\" \"INBOX\"\r\n", "", log);
+        let (hits, failed) = search(&mut conn(addr), &acc(), "x").unwrap();
+        assert!(failed.is_none(), "{failed:?}");
+        assert_eq!(hits.iter().map(|h| h.remote.as_ref().map(|r| r.uid)).collect::<Vec<_>>(), [Some(7)]);
     }
 
     #[test]

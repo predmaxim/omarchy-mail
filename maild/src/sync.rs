@@ -2,7 +2,7 @@
 
 use crate::config::Account;
 use crate::db::{Db, Folder, Role};
-use crate::imap::{Conn, UNPARSEABLE, attachments, text_sections};
+use crate::imap::{Conn, REFUSED, UNPARSEABLE, attachments, text_sections};
 use crate::mime::{self, Parsed};
 use ::imap::types::{Fetch, Flag};
 use imap_proto::SectionPath;
@@ -15,6 +15,10 @@ pub const FULL_FETCH_LIMIT: u32 = 2 * 1024 * 1024;
 const BATCH: usize = 50;
 /// Unparseable messages one `sync_folder` call may pass over; each one costs a fresh login.
 const MAX_SKIPS: usize = 5;
+/// Messages the server refuses one `sync_folder` call may pass over (no login cost, only a sanity bound).
+const MAX_REFUSED: usize = 200;
+/// Failed retries after which a refused message is given up.
+const MAX_TRIES: u32 = 20;
 
 /// UIDVALIDITY changed: the stored UIDs mean nothing any more.
 pub fn needs_reset(stored: u32, server: u32) -> bool {
@@ -54,11 +58,13 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
     };
 
     let mut ids = vec![];
-    let mut skips = 0;
+    let (mut skips, mut refused) = (0, 0);
     for chunk in new.chunks(BATCH) {
         let r = match fetch_new(conn, chunk) {
             Ok(got) => store(db, folder.id, got, &mut ids).map(|_| last = last.max(chunk[chunk.len() - 1])),
-            Err(e) if e.starts_with(UNPARSEABLE) => one_by_one(conn, db, folder, chunk, &mut ids, &mut last, &mut skips),
+            Err(e) if e.starts_with(UNPARSEABLE) => one_by_one(conn, db, folder, chunk, &mut ids, &mut last, &mut skips, &mut refused, true),
+            // A tagged NO leaves the session in step: no new login.
+            Err(e) if e.starts_with(REFUSED) => one_by_one(conn, db, folder, chunk, &mut ids, &mut last, &mut skips, &mut refused, false),
             Err(e) => Err(e),
         };
         // Saved per batch, and before giving up, so a dropped connection does not restart a long import.
@@ -75,13 +81,20 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
         None => {}
         Some(min) => {
             let mut present = vec![];
-            for f in conn.fetch(&format!("{min}:*"), "(UID FLAGS)")?.iter() {
-                let Some(uid) = f.uid.filter(|&u| u >= min) else { continue };
-                let (seen, flagged) = flags(f);
-                db.set_flags(folder.id, uid, seen, flagged)?;
-                present.push(uid);
+            match conn.fetch(&format!("{min}:*"), "(UID FLAGS)") {
+                Ok(got) => {
+                    for f in got.iter() {
+                        let Some(uid) = f.uid.filter(|&u| u >= min) else { continue };
+                        let (seen, flagged) = flags(f);
+                        db.set_flags(folder.id, uid, seen, flagged)?;
+                        present.push(uid);
+                    }
+                    db.remove_missing(folder.id, &present)?;
+                }
+                // Without the answer nothing is known: keep everything, try again next time.
+                Err(e) if e.starts_with(REFUSED) => eprintln!("{} {}: flags skipped: {e}", folder.account, folder.path),
+                Err(e) => return Err(e),
             }
-            db.remove_missing(folder.id, &present)?;
         }
     }
     db.set_folder_marks(folder.id, last, notified)?;
@@ -95,16 +108,28 @@ fn store(db: &Db, folder: i64, got: Vec<New>, ids: &mut Vec<i64>) -> Result<(), 
     Ok(())
 }
 
-/// The batch answer could not be parsed: fetch its UIDs one by one on a fresh session, passing over
-/// those that still fail (for good, so one odd message cannot stall the folder). Past `MAX_SKIPS`
-/// per sync it gives up with `last` at the last UID handled, so a broken server cannot cause a login storm.
-fn one_by_one(conn: &mut Conn, db: &Db, folder: &Folder, uids: &[u32], ids: &mut Vec<i64>, last: &mut u32, skips: &mut usize) -> Result<(), String> {
-    // An unparseable answer leaves the session out of step.
+/// The batch could not be fetched: fetch its UIDs one by one, passing over those that still fail
+/// (for good, so one odd message cannot stall the folder). An unparseable answer leaves the session
+/// out of step (`reopen_first`; a fresh login), a tagged NO does not. Unparseable ones past `MAX_SKIPS`
+/// per sync give up with `last` at the last UID handled, so a broken server cannot cause a login storm.
+/// Refused ones go to the `refused` table to be retried; past `MAX_REFUSED` the folder stops.
+#[allow(clippy::too_many_arguments)]
+fn one_by_one(conn: &mut Conn, db: &Db, folder: &Folder, uids: &[u32], ids: &mut Vec<i64>, last: &mut u32, skips: &mut usize, refused: &mut usize, reopen_first: bool) -> Result<(), String> {
     let reopen = |conn: &mut Conn| conn.reconnect().and_then(|_| conn.examine(&folder.path)).map(drop);
-    reopen(conn)?;
+    if reopen_first {
+        reopen(conn)?;
+    }
     for &uid in uids {
         match fetch_new(conn, &[uid]) {
             Ok(got) => store(db, folder.id, got, ids)?,
+            Err(e) if e.starts_with(REFUSED) => {
+                *refused += 1;
+                if *refused > MAX_REFUSED {
+                    return Err(format!("{e} (gave up after {MAX_REFUSED} refused messages)"));
+                }
+                eprintln!("{} {}: uid {uid} refused by server: {e}", folder.account, folder.path);
+                db.add_refused(folder.id, uid)?;
+            }
             Err(e) if e.starts_with(UNPARSEABLE) => {
                 *skips += 1;
                 if *skips > MAX_SKIPS {
@@ -184,6 +209,29 @@ fn big_message(conn: &mut Conn, uid: u32, head: &Fetch) -> Result<(Parsed, bool)
     Ok((p, has_body))
 }
 
+/// Fetches again the messages of `old` the server refused earlier and that are still in the `refused`
+/// table, in the folder just synced (`sync_folder` examined it). Stored ones leave the table, as do
+/// those gone from the server and those that failed `MAX_TRIES` times.
+fn retry_refused(conn: &mut Conn, db: &Db, folder: &Folder, old: &[u32]) -> Result<Vec<i64>, String> {
+    let mut ids = vec![];
+    for uid in db.refused_uids(folder.id)?.into_iter().filter(|u| old.contains(u)) {
+        match fetch_new(conn, &[uid]) {
+            Ok(got) => {
+                store(db, folder.id, got, &mut ids)?;
+                db.drop_refused(folder.id, uid)?;
+            }
+            Err(e) if e.starts_with(REFUSED) => {
+                if db.bump_refused(folder.id, uid)? >= MAX_TRIES {
+                    eprintln!("{} {}: uid {uid} given up after {MAX_TRIES} tries: {e}", folder.account, folder.path);
+                    db.drop_refused(folder.id, uid)?;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(ids)
+}
+
 /// Refreshes the folder list, then syncs Inbox first and the rest after it. `shown` gets the ids of
 /// each folder's new messages as soon as that folder is done (nothing for a folder without any).
 pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account, mut shown: impl FnMut(Vec<i64>)) -> Result<(), String> {
@@ -204,7 +252,13 @@ pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account, mut shown: impl FnM
     }
     folders.sort_by_key(|f| f.role != Role::Inbox);
     for f in &folders {
-        match sync_folder(conn, db, f) {
+        let old = db.refused_uids(f.id)?;
+        match sync_folder(conn, db, f).and_then(|mut v| {
+            if !old.is_empty() {
+                v.extend(retry_refused(conn, db, f, &old)?);
+            }
+            Ok(v)
+        }) {
             Ok(v) if !v.is_empty() => shown(v),
             Ok(_) => {}
             // One broken folder must not stall the account; a dead connection goes to the caller.
@@ -233,7 +287,7 @@ mod tests {
         assert!(!needs_reset(0, 8));
     }
 
-    fn fake(reply: fn(&str) -> Option<String>) -> Conn {
+    fn fake(reply: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Conn {
         Conn::plain(TcpStream::connect(crate::imap::fake_server(reply)).unwrap(), "me", "pw").unwrap()
     }
 
@@ -420,5 +474,87 @@ mod tests {
         let f = db.folders_of("me@x").unwrap().remove(0);
         assert!(sync_folder(&mut fake(no_exists), &db, &f).unwrap().is_empty());
         assert_eq!(db.list(&ListQuery { folder: Some(id), ..Default::default() }).unwrap().len(), 2);
+    }
+
+    const BACKEND: &str = "NO [UNAVAILABLE] UID FETCH message 2 uid 2: failure due to backend error";
+
+    /// INBOX holds uids 1..=3; while `broken`, any FETCH that includes uid 2 gets a tagged NO.
+    fn yandex(broken: bool, flags_no: bool) -> impl Fn(&str) -> Option<String> + Send + Sync + 'static {
+        move |cmd| {
+            let each = |set: &str, f: &dyn Fn(u32) -> String| set.split(',').filter_map(|u| u.parse().ok()).map(f).collect::<String>();
+            if let Some((set, query)) = cmd.strip_prefix("UID FETCH ").and_then(|r| r.split_once(' ')) {
+                if query == "(UID FLAGS)" {
+                    return Some(if flags_no { BACKEND.into() } else { format!("* 1 FETCH (UID 1 FLAGS ())\r\n{}* 3 FETCH (UID 3 FLAGS ())\r\n", if broken { "" } else { "* 2 FETCH (UID 2 FLAGS ())\r\n" }) });
+                }
+                if broken && set.split(',').any(|u| u == "2") {
+                    return Some(BACKEND.into());
+                }
+                return Some(match query {
+                    "(UID FLAGS RFC822.SIZE)" => each(set, &|u| format!("* {u} FETCH (UID {u} FLAGS () RFC822.SIZE 60)\r\n")),
+                    "(UID BODY.PEEK[])" => each(set, &|u| format!("* {u} FETCH (UID {u} BODY[] {})\r\n", lit(if u == 2 { M2 } else { M1 }))),
+                    _ => return None,
+                });
+            }
+            Some(match cmd {
+                c if c.starts_with("LOGIN") => String::new(),
+                "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+                "EXAMINE \"INBOX\"" => "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 4] n\r\n".into(),
+                "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 1 2 3\r\n".into(),
+                "UID SEARCH UID 3:*" | "UID SEARCH UID 4:*" => "* SEARCH 3\r\n".into(),
+                _ => return None,
+            })
+        }
+    }
+
+    fn acc() -> Account {
+        let s = Server { host: "h".into(), port: 1 };
+        Account { email: "me@x".into(), name: "N".into(), provider: Provider::Imap, login: "me".into(), imap: s.clone(), smtp: s, append_sent: false }
+    }
+
+    fn inbox(db: &Db) -> Folder { db.folders_of("me@x").unwrap().remove(0) }
+
+    #[test]
+    fn refused_message_is_skipped_then_retried() {
+        let db = Db::memory();
+        let mut ids = vec![];
+        sync_account(&mut fake(yandex(true, false)), &db, &acc(), |v| ids.extend(v)).unwrap();
+        let f = inbox(&db);
+        assert_eq!((ids.len(), f.last_uid), (2, 3));
+        assert_eq!(db.refused_uids(f.id).unwrap(), [2]);
+
+        // the server delivers it now
+        let mut ids = vec![];
+        sync_account(&mut fake(yandex(false, false)), &db, &acc(), |v| ids.extend(v)).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(db.refused_uids(f.id).unwrap().is_empty());
+        let subjects: Vec<_> = db.list(&ListQuery { folder: Some(f.id), ..Default::default() }).unwrap().into_iter().map(|m| m.subject).collect();
+        assert_eq!(subjects.len(), 3);
+        assert!(subjects.contains(&"two".to_string()));
+    }
+
+    #[test]
+    fn refused_message_is_given_up_after_20_tries() {
+        let db = Db::memory();
+        let mut c = fake(yandex(true, false));
+        sync_account(&mut c, &db, &acc(), |_| {}).unwrap();
+        let f = inbox(&db);
+        for _ in 1..MAX_TRIES {
+            sync_account(&mut c, &db, &acc(), |_| {}).unwrap();
+            assert_eq!(db.refused_uids(f.id).unwrap(), [2]);
+        }
+        sync_account(&mut c, &db, &acc(), |_| {}).unwrap();
+        assert!(db.refused_uids(f.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn refused_flags_step_keeps_everything() {
+        let db = Db::memory();
+        let id = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        db.reset_folder(id, 7).unwrap();
+        for uid in 1..=2 { db.insert_message(id, uid, false, false, 1, &mime::parse(M1.as_bytes()), true).unwrap(); }
+        db.set_folder_marks(id, 2, 2).unwrap();
+        let f = inbox(&db);
+        assert!(sync_folder(&mut fake(yandex(false, true)), &db, &f).unwrap().len() == 1);
+        assert_eq!(db.list(&ListQuery { folder: Some(id), ..Default::default() }).unwrap().len(), 3);
     }
 }
