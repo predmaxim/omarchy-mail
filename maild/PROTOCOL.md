@@ -267,7 +267,9 @@ live in the keyring only.
   Gmail: the "All Mail" folder; others: every folder but Junk. Up to 30 newest hits per mailbox.
   Each mailbox sends its hits as a `search_remote {token, hits}` event, also with no hits. Drop
   events whose `token` is not the latest one you got.
-- If a mailbox's search failed, its event has `hits: []` and `error: string`.
+- The query is cut to 256 characters, control characters count as spaces; a blank query searches no server.
+- If a mailbox's search failed, its event has `hits: []` and `error: string`. If only some of its
+  folders failed, `hits` holds the rest and `error` the first failure.
 - Hits are `Summary` with `id: 0`, `role: "remote"` and `remote: {account, folder_path, uid}`;
   pass `remote` to `open_remote`.
 
@@ -306,6 +308,7 @@ live in the keyring only.
 ← {"id": 17, "ok": true, "result": {"batch": 5}}
 ```
 
+- Messages opened with `open_remote` (role `remote`) refuse every `op`; the call fails and changes nothing.
 - `op` is one of:
   - `read`, `unread`, `flag`, `unflag`: set or clear "seen" or "flagged".
   - `delete`: move to the Trash of the message's mailbox. Messages already in Trash are left

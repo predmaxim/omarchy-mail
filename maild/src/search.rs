@@ -9,6 +9,8 @@ use crate::mime;
 use crate::sync::SINCE;
 use ::imap::types::Flag;
 
+/// Longest query, in characters.
+const MAX_QUERY: usize = 256;
 /// Hits per account.
 const LIMIT: usize = 30;
 /// Opened hits live in a folder of their own per source folder; its path can clash with no real one.
@@ -25,10 +27,17 @@ fn arg(q: &str, literals: bool) -> String {
     }
 }
 
+/// Control characters become spaces; at most `MAX_QUERY` characters (a literal stays far below
+/// the 4096 bytes LITERAL- allows, even three times in one command).
+fn clean(q: &str) -> String {
+    q.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().chars().take(MAX_QUERY).collect::<String>().trim().to_string()
+}
+
 /// The `UID SEARCH` criteria for `q` among mail before `SINCE`: subject, sender or text.
 pub fn criteria(q: &str, literals: bool) -> String {
-    let q: String = q.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    let a = arg(q.trim(), literals);
+    let q = clean(q);
+    let a = arg(&q, literals);
+    debug_assert!(a.len() <= 4096 + 16);
     let charset = if q.is_ascii() { "" } else { "CHARSET UTF-8 " };
     format!("{charset}BEFORE {SINCE} OR OR SUBJECT {a} FROM {a} TEXT {a}")
 }
@@ -41,39 +50,53 @@ fn folders(found: Vec<(String, Role)>, all: Option<String>) -> Vec<String> {
     }
 }
 
-/// Up to `LIMIT` newest hits of the account.
-pub fn search(conn: &mut Conn, acc: &Account, q: &str) -> Result<Vec<Summary>, String> {
-    if q.trim().is_empty() {
-        return Ok(vec![]);
+fn one_folder(conn: &mut Conn, acc: &Account, path: &str, crit: &str, hits: &mut Vec<Summary>) -> Result<(), String> {
+    conn.examine(path)?;
+    let uids = conn.uids(crit)?;
+    let newest = &uids[uids.len().saturating_sub(LIMIT)..];
+    if newest.is_empty() {
+        return Ok(());
+    }
+    let set = newest.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    for f in conn.fetch(&set, "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")?.iter() {
+        let Some(uid) = f.uid else { continue };
+        let p = mime::parse(f.header().unwrap_or_default());
+        hits.push(Summary {
+            id: 0, account: acc.email.clone(), role: Role::Remote, folder_path: path.to_string(),
+            date: if p.date != 0 { p.date } else { f.internal_date().map_or(0, |d| d.timestamp()) },
+            from: p.from, subject: p.subject, preview: String::new(),
+            seen: f.flags().contains(&Flag::Seen), flagged: f.flags().contains(&Flag::Flagged),
+            has_attachments: false, queued: false,
+            remote: Some(Remote { account: acc.email.clone(), folder_path: path.to_string(), uid }),
+        });
+    }
+    Ok(())
+}
+
+/// Up to `LIMIT` newest hits of the account, and the first folder error if some folder failed
+/// (the others still count). A dead connection is an `Err`.
+pub fn search(conn: &mut Conn, acc: &Account, q: &str) -> Result<(Vec<Summary>, Option<String>), String> {
+    let q = clean(q);
+    if q.is_empty() {
+        return Ok((vec![], None));
     }
     let literals = !q.is_ascii() && conn.capabilities().map_err(String::from)?.iter().any(|c| c == "LITERAL+" || c == "LITERAL-");
-    let crit = criteria(q, literals);
+    let crit = criteria(&q, literals);
     let (found, all) = conn.discover()?;
     let mut hits = vec![];
+    let mut failed = None;
     for path in folders(found, all) {
-        conn.examine(&path)?;
-        let uids = conn.uids(&crit)?;
-        let newest = &uids[uids.len().saturating_sub(LIMIT)..];
-        if newest.is_empty() {
-            continue;
-        }
-        let set = newest.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-        for f in conn.fetch(&set, "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")?.iter() {
-            let Some(uid) = f.uid else { continue };
-            let p = mime::parse(f.header().unwrap_or_default());
-            hits.push(Summary {
-                id: 0, account: acc.email.clone(), role: Role::Remote, folder_path: path.clone(),
-                date: if p.date != 0 { p.date } else { f.internal_date().map_or(0, |d| d.timestamp()) },
-                from: p.from, subject: p.subject, preview: String::new(),
-                seen: f.flags().contains(&Flag::Seen), flagged: f.flags().contains(&Flag::Flagged),
-                has_attachments: false, queued: false,
-                remote: Some(Remote { account: acc.email.clone(), folder_path: path.clone(), uid }),
-            });
+        if let Err(e) = one_folder(conn, acc, &path, &crit, &mut hits) {
+            if conn.noop().is_err() {
+                return Err(e);
+            }
+            eprintln!("{}: search in {path}: {e}", acc.email);
+            failed.get_or_insert(e);
         }
     }
     hits.sort_by_key(|h| std::cmp::Reverse(h.date));
     hits.truncate(LIMIT);
-    Ok(hits)
+    Ok((hits, failed))
 }
 
 /// Downloads a hit into the account's remote folder for its source folder; the local id. Opening
@@ -153,6 +176,11 @@ mod tests {
                         let reply = match c.split_whitespace().next().unwrap_or("") {
                             "LIST" => list.to_string(),
                             "CAPABILITY" => format!("* CAPABILITY IMAP4rev1 {caps}\r\n"),
+                            "EXAMINE" if c.contains("Broken") => {
+                                let _ = w.write_all(format!("{tag} NO [NONEXISTENT] nope\r\n").as_bytes());
+                                cmd.clear();
+                                continue;
+                            }
                             "EXAMINE" => "* 0 EXISTS\r\n".into(),
                             "UID" if c.starts_with("UID SEARCH") => "* SEARCH 4 7\r\n".into(),
                             "UID" if c.contains("BODY.PEEK[]") => format!("* 1 FETCH (UID 7 FLAGS (\\Seen) BODY[] {{{}}}\r\n{body})\r\n", body.len()),
@@ -181,7 +209,8 @@ mod tests {
     fn gmail_searches_all_mail_only_with_literal() {
         let log = Arc::new(Mutex::new(vec![]));
         let addr = server("* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n* LIST (\\All) \"/\" \"[Gmail]/All Mail\"\r\n", "LITERAL+", log.clone());
-        let hits = search(&mut conn(addr), &acc(), "договор").unwrap();
+        let (hits, failed) = search(&mut conn(addr), &acc(), "договор").unwrap();
+        assert!(failed.is_none());
         let log = log.lock().unwrap();
         assert!(log.contains(&"EXAMINE \"[Gmail]/All Mail\"".to_string()) && !log.contains(&"EXAMINE \"INBOX\"".to_string()), "{log:?}");
         assert!(log.iter().any(|c| c == "UID SEARCH CHARSET UTF-8 BEFORE 1-Jan-2026 OR OR SUBJECT <договор> FROM <договор> TEXT <договор>"), "{log:?}");
@@ -196,7 +225,7 @@ mod tests {
         let log = Arc::new(Mutex::new(vec![]));
         let addr = server("* LIST () \"/\" \"INBOX\"\r\n* LIST (\\Junk) \"/\" \"Spam\"\r\n* LIST (\\Trash) \"/\" \"Trash\"\r\n", "", log.clone());
         let mut c = conn(addr);
-        let hits = search(&mut c, &acc(), "a b").unwrap();
+        let hits = search(&mut c, &acc(), "a b").unwrap().0;
         let exam: Vec<String> = log.lock().unwrap().iter().filter(|c| c.starts_with("EXAMINE")).cloned().collect();
         assert_eq!(exam, ["EXAMINE \"INBOX\"", "EXAMINE \"Trash\""]);
         assert_eq!(hits.len(), 2);
@@ -210,5 +239,25 @@ mod tests {
         let m = db.message(id).unwrap().unwrap();
         assert_eq!((m.summary.role, m.summary.subject.as_str(), m.text.trim()), (Role::Remote, "договор", "hello"));
         assert!(open(&mut c, &db, "me@x", "INBOX", 99).is_err());
+    }
+
+    #[test]
+    fn failed_folder_keeps_other_hits() {
+        let log = Arc::new(Mutex::new(vec![]));
+        let addr = server("* LIST () \"/\" \"INBOX\"\r\n* LIST (\\Trash) \"/\" \"Broken\"\r\n", "", log);
+        let (hits, failed) = search(&mut conn(addr), &acc(), "x").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(failed.unwrap().contains("nope"));
+    }
+
+    #[test]
+    fn query_is_cleaned_and_capped() {
+        assert_eq!(clean(" a\u{1}b "), "a b");
+        assert_eq!(clean(&"я".repeat(1000)).chars().count(), MAX_QUERY);
+        let log = Arc::new(Mutex::new(vec![]));
+        let addr = server("* LIST () \"/\" \"INBOX\"\r\n", "", log.clone());
+        let (h, e) = search(&mut conn(addr), &acc(), "\u{1}\n\t").unwrap();
+        assert!(h.is_empty() && e.is_none());
+        assert!(log.lock().unwrap().iter().all(|c| !c.contains("SEARCH")), "searched an empty query");
     }
 }

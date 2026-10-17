@@ -343,7 +343,7 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                 let r = attempt(sh, &mut conn, |c| search::search(c, acc, &query));
                 // Also without hits or on failure: the window stops its spinner on the event.
                 let (hits, error) = match r {
-                    Ok(h) => (h, None),
+                    Ok(r) => r,
                     Err(e) => (vec![], Some(e)),
                 };
                 sh.hub.emit(Event::SearchRemote { token, hits, error });

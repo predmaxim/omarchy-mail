@@ -113,6 +113,9 @@ pub fn enqueue(db: &Db, ids: &[i64], op: Op) -> Result<i64, String> {
         ).optional().map_err(sql)?;
         // Gone meanwhile: a sync removed it.
         let Some((folder, uid, message_id, seen, flagged, account, role, validity)) = msg else { continue };
+        if role == Role::Remote.as_str() {
+            return Err(tr("open from search results: actions are not available", "открыто из результатов поиска: действия недоступны"));
+        }
         let in_trash = role == Role::Trash.as_str();
         let set = |col: &str, v: bool| tx.execute(&format!("UPDATE messages SET {col} = ?2 WHERE id = ?1"), params![id, v]).map(drop).map_err(sql);
         let to: Option<i64> = match op {
@@ -431,6 +434,15 @@ mod tests {
         let p = Parsed { subject: "s".into(), message_id: "m1@x".into(), ..Default::default() };
         let id = db.insert_message(inbox, 5, false, false, 1, &p, true).unwrap();
         (db, inbox, trash, id)
+    }
+
+    #[test]
+    fn remote_message_rejects_actions() {
+        let (db, _, _, _) = setup();
+        let f = db.upsert_folder(ME, "@remote/INBOX", Role::Remote).unwrap();
+        let id = db.insert_message(f, 9, false, false, 1, &Parsed::default(), true).unwrap();
+        assert!(enqueue(&db, &[id], Op::Read).is_err());
+        assert!(!db.message(id).unwrap().unwrap().summary.seen, "changed locally");
     }
 
     fn ids_in(db: &Db, role: Role) -> Vec<i64> {
