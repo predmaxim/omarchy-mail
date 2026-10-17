@@ -241,7 +241,7 @@ live in the keyring only.
 ```
 
 - The service downloads attachment `index` (`Attachment.index`) into its cache,
-  `<cache>/<message id>/<name>` (the name is cleaned of `/`, `\` and control characters; an empty
+  `<cache>/<message id>/<index>/<name>` (the name is cleaned of `/`, `\` and control characters; an empty
   one becomes `attachment-<index>`), and returns the absolute path. A file that is already there is
   returned at once, with no network.
 - Errors: no network or no answer within 30 s, the message is being moved (`uid` is `null`).

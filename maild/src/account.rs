@@ -557,7 +557,7 @@ mod tests {
         let (tx, rx) = channel();
         h.jobs.send(Job::Attachment { message: id, index: 1, reply: tx }).unwrap();
         let path = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
-        assert_eq!(path, dir.join("cache").join(id.to_string()).join("a.pdf"));
+        assert_eq!(path, dir.join("cache").join(id.to_string()).join("1").join("a.pdf"));
         assert_eq!(std::fs::read(&path).unwrap(), b"pdf");
         h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
@@ -581,6 +581,44 @@ mod tests {
         let path = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
         assert_eq!(std::fs::read(path).unwrap(), b"pdf");
         assert_eq!(db.message(id).unwrap().unwrap().attachments[1].index, 1, "stored list is mail-parser's now");
+        h.stop_and_join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_name_attachments_do_not_collide() {
+        const TWO: &str = "From: a@x\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nhi\r\n\
+--B\r\nContent-Type: application/pdf; name=\"scan.pdf\"\r\nContent-Disposition: attachment; filename=\"scan.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nb25l\r\n\
+--B\r\nContent-Type: application/pdf; name=\"scan.pdf\"\r\nContent-Disposition: attachment; filename=\"scan.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\ndHdv\r\n--B--\r\n";
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-same", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Db::open(&dir.join("mail.db")).unwrap();
+        let inbox = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        let mut p = crate::mime::Parsed::default();
+        p.attachments = (0..2).map(|index| crate::mime::Attachment { index, name: "scan.pdf".into(), mime: "application/pdf".into(), size: 3, cid: None, inline: false }).collect();
+        let id = db.insert_message(inbox, 5, false, false, 3 << 20, &p, true).unwrap();
+        let addr = fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => "* 1 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 5\r\n".into(),
+            "UID FETCH 5:* (UID FLAGS)" => "* 1 FETCH (UID 5 FLAGS ())\r\n".into(),
+            "UID FETCH 5 (UID BODY.PEEK[])" => format!("* 1 FETCH (UID 5 BODY[] {{{}}}\r\n{TWO})\r\n", TWO.len()),
+            "SELECT \"INBOX\"" | "IDLE" => String::new(),
+            _ => return None,
+        }));
+        let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), Hub::default(), Arc::new(connect));
+        let mut got = vec![];
+        for index in 0..2 {
+            let (tx, rx) = channel();
+            h.jobs.send(Job::Attachment { message: id, index, reply: tx }).unwrap();
+            let path = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+            assert_eq!(path.file_name().unwrap(), "scan.pdf");
+            got.push((std::fs::read(&path).unwrap(), path));
+        }
+        assert_eq!((got[0].0.as_slice(), got[1].0.as_slice()), (&b"one"[..], &b"two"[..]));
+        assert_ne!(got[0].1, got[1].1);
         h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
     }

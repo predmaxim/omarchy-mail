@@ -1,5 +1,5 @@
 //! On-demand mail: bodies of big messages, inline images and attachments, cached under
-//! `<cache>/<message id>/`. The only place besides `sync` that downloads whole messages.
+//! `<cache>/<message id>/` (attachments in `<index>/<name>`, inline images as `cid-<index>`). The only place besides `sync` that downloads whole messages.
 
 use crate::db::{Db, Full};
 use crate::i18n::tr;
@@ -56,7 +56,7 @@ pub fn cids_missing(dir: &Path, f: &Full) -> bool {
 /// The cached file of attachment `index`, if it was downloaded.
 pub fn cached_attachment(dir: &Path, f: &Full, index: u32) -> Option<PathBuf> {
     let a = f.attachments.iter().find(|a| a.index == index)?;
-    Some(dir.join(safe_name(&a.name, index))).filter(|p| p.is_file())
+    Some(dir.join(index.to_string()).join(safe_name(&a.name, index))).filter(|p| p.is_file())
 }
 
 /// Directories 0700, the file 0600; written under a temporary name so a half-written file is never "cached".
@@ -118,7 +118,7 @@ pub fn fetch_attachment(conn: &mut Conn, db: &Db, cache: &Path, id: i64, index: 
     let at = p.attachments.iter().filter(same).find(|a| a.index == index).or_else(|| p.attachments.iter().find(same)).map_or(index, |a| a.index);
     db.set_attachments(id, &p.attachments)?;
     let (_, bytes) = mime::attachment(&raw, at).ok_or_else(|| tr("no such attachment", "нет такого вложения"))?;
-    store(&msg_dir(cache, id), &safe_name(&wanted.name, index), &bytes)
+    store(&msg_dir(cache, id).join(at.to_string()), &safe_name(&wanted.name, at), &bytes)
 }
 
 #[cfg(test)]

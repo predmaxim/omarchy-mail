@@ -502,9 +502,10 @@ mod tests {
         let a = st.db.insert_message(f, 3, false, false, 1, &p, true).unwrap();
         let dir = st.paths.cache.join(a.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("x.txt"), "t").unwrap();
+        std::fs::create_dir_all(dir.join("0")).unwrap();
+        std::fs::write(dir.join("0/x.txt"), "t").unwrap();
         let r = call(&mut st, json!({"id": 4, "cmd": "attachment", "message": a, "index": 0}));
-        assert_eq!(r["result"]["path"], dir.join("x.txt").to_str().unwrap(), "{r}");
+        assert_eq!(r["result"]["path"], dir.join("0/x.txt").to_str().unwrap(), "{r}");
         assert_eq!(call(&mut st, json!({"id": 5, "cmd": "attachment", "message": a, "index": 7}))["ok"], false, "not cached, no account");
     }
 
