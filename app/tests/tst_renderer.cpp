@@ -253,6 +253,19 @@ private Q_SLOTS:
         QCOMPARE(pieces.size(), 1);   // one piece of text
     }
 
+    // 1pt = 4/3 px, as in browsers: at qlitehtml's 11/12 px a payslip in 8pt was unreadable
+    void points_are_css_points()
+    {
+        const auto height = [&](const QString &style) {
+            const Rendered r = run(job(QStringLiteral("<body style=\"margin:0\"><div style=\"%1\">Hg</div></body>").arg(style)));
+            return r.doc ? r.size.height() : -1;
+        };
+        QCOMPARE(height("font-size:12pt"), height("font-size:16px"));
+        QCOMPARE(height("height:1in;overflow:hidden"), 96);
+        QCOMPARE(height("height:2.54cm;overflow:hidden"), 96);
+        QCOMPARE(height("height:6pc;overflow:hidden"), 96);
+    }
+
     void blank_letters_known()
     {
         // nothing to read or see: the window says so instead of an empty letter

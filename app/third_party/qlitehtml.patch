@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..c2e1e1d 100644
+index 6fa2c82..b136317 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,6 +20,7 @@
@@ -32,6 +32,17 @@ index 6fa2c82..c2e1e1d 100644
  {
      return {toQColor(border.color), qreal(border.width), borderPenStyle(border.style)};
  }
+@@ -570,8 +572,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
+ 
+ litehtml::pixel_t DocumentContainerPrivate::pt_to_px(float pt) const
+ {
+-    // magic factor of 11/12 to account for differences to webengine/webkit
+-    return m_paintDevice->physicalDpiY() * pt * 11.f / m_paintDevice->logicalDpiY() / 12.f;
++    // CSS points: 1pt = 1/72in = 4/3px, as in browsers (pt, in, pc, cm and mm all come here)
++    return pt * 4.f / 3.f;
+ }
+ 
+ litehtml::pixel_t DocumentContainerPrivate::get_default_font_size() const
 @@ -632,7 +634,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
      QPixmap pixmap;
      pixmap.loadFromData(data);
