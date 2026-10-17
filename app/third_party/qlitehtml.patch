@@ -1,8 +1,16 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..e9530c6 100644
+index 6fa2c82..e3e4e75 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
-@@ -307,9 +307,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
+@@ -20,6 +20,7 @@
+ #include <QPalette>
+ #include <QRegularExpression>
+ #include <QScreen>
++#include <QTextBoundaryFinder>
+ #include <QTextLayout>
+ #include <QUrl>
+ 
+@@ -307,9 +308,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
      return QFont::StyleNormal;
  }
  
@@ -15,7 +23,7 @@ index 6fa2c82..e9530c6 100644
  }
  
  static Qt::PenStyle borderPenStyle(litehtml::border_style style)
-@@ -327,7 +328,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
+@@ -327,7 +329,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
      return Qt::SolidLine;
  }
  
@@ -24,7 +32,7 @@ index 6fa2c82..e9530c6 100644
  {
      return {toQColor(border.color), qreal(border.width), borderPenStyle(border.style)};
  }
-@@ -632,7 +633,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
+@@ -632,7 +634,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
      QPixmap pixmap;
      pixmap.loadFromData(data);
      m_pixmaps.insert(url, pixmap);
@@ -33,7 +41,43 @@ index 6fa2c82..e9530c6 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
-@@ -1077,11 +1078,10 @@ void DocumentContainerPrivate::import_css(litehtml::string &text,
+@@ -1073,15 +1075,46 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
+     Q_UNUSED(tt)
+ }
+ 
++// litehtml breaks a line between any two words that touch, never inside one: a word of more than 30
++// characters (a URL, a key) goes out in pieces, joined the text stays the same — cut after / ? & = # - _ .
++// and every 10 characters without one. ponytail: such a word breaks wherever the line ends, not only when it
++// can't fit a line of its own, and up to 9 characters short of the end; exact needs litehtml's line layout
++void DocumentContainerPrivate::split_text(const char *text,
++                                          const std::function<void(const char *)> &on_word,
++                                          const std::function<void(const char *)> &on_space)
++{
++    const auto urlBreak = [](QChar c) { return QStringView(u"/?&=#-_.").contains(c); };
++    litehtml::document_container::split_text(
++        text,
++        [&](const char *utf8) {
++            const QString word = QString::fromUtf8(utf8);
++            if (word.size() <= 30) {
++                on_word(utf8);
++                return;
++            }
++            QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, word);
++            qsizetype from = 0;
++            int run = 0;
++            for (qsizetype at = graphemes.toNextBoundary(); at > 0; at = graphemes.toNextBoundary()) {
++                const bool end = at == word.size();
++                if (!end && ++run < 10 && !(urlBreak(word.at(at - 1)) && !urlBreak(word.at(at))))
++                    continue;
++                on_word(word.mid(from, at - from).toUtf8().constData());
++                from = at;
++                run = 0;
++            }
++        },
++        on_space);
++}
++
+ void DocumentContainerPrivate::import_css(litehtml::string &text,
                                            const litehtml::string &url,
                                            litehtml::string &baseurl)
  {
@@ -49,7 +93,7 @@ index 6fa2c82..e9530c6 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1152,7 +1152,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
+@@ -1152,7 +1185,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
      d->m_pixmaps.clear();
      d->m_animations.clear();
      d->clearSelection();
@@ -59,7 +103,7 @@ index 6fa2c82..e9530c6 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
      d->buildIndex();
-@@ -1589,6 +1590,28 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,6 +1623,28 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -120,10 +164,20 @@ index 0a7939e..efc8b21 100644
      std::unique_ptr<DocumentContainerPrivate> d;
  };
 diff --git a/src/container_qpainter_p.h b/src/container_qpainter_p.h
-index b767a32..d04ae11 100644
+index b767a32..70ac62a 100644
 --- a/src/container_qpainter_p.h
 +++ b/src/container_qpainter_p.h
-@@ -166,6 +166,8 @@ public: // document_container API
+@@ -137,6 +137,9 @@ public: // document_container API
+     void on_mouse_event(const litehtml::element::ptr &el, litehtml::mouse_event event) override;
+     void set_cursor(const char *cursor) override;
+     void transform_text(litehtml::string &text, litehtml::text_transform tt) override;
++    void split_text(const char *text,
++                    const std::function<void(const char *)> &on_word,
++                    const std::function<void(const char *)> &on_space) override;
+     void import_css(litehtml::string &text, const litehtml::string &url, litehtml::string &baseurl) override;
+     void set_clip(const litehtml::position &pos,
+                   const litehtml::border_radiuses &bdr_radius) override;
+@@ -166,6 +169,8 @@ public: // document_container API
      QString sansSerifFont() const;
      QString monospaceFont() const;
      QUrl resolveUrl(const QString &url, const QString &baseUrl) const;
@@ -132,7 +186,7 @@ index b767a32..d04ae11 100644
      void drawSelection(QPainter *painter, const QRect &clip) const;
      void buildIndex();
      void updateSelection();
-@@ -193,6 +195,7 @@ public: // document_container API
+@@ -193,6 +198,7 @@ public: // document_container API
      DocumentContainer::PaletteCallback m_paletteCallback;
      DocumentContainer::ClipboardCallback m_clipboardCallback;
      DocumentContainer::RepaintCallback m_repaintCallback;

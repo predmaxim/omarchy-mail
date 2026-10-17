@@ -1,4 +1,5 @@
 #include "Renderer.h"
+#include "Letter.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -201,6 +202,55 @@ private Q_SLOTS:
         QTRY_COMPARE_WITH_TIMEOUT(got.size(), 2, 10000);
         QCoreApplication::processEvents();
         QCOMPARE(got, (QList<quint64>{2, 4}));
+    }
+
+    // litehtml never breaks inside a word: a long one ran out of the letter on the right
+    void long_url_wraps_inside_the_width()
+    {
+        const QString url = QStringLiteral(
+            "https://docs.example.org/v22/ru/ngfw/settings/users/ideco-client/ideco-client-macos#install-the-client");
+        RenderJob j = job(QStringLiteral("<p>See <a href=\"%1\">%1</a> for details</p>").arg(url));
+        j.width = 300;
+        const Rendered r = run(j);
+        QVERIFY(r.doc);
+        QVERIFY2(r.size.width() <= j.width, qPrintable(QString::number(r.size.width())));
+        bool found = false;
+        QVector<QRect> pieces;
+        r.doc->findText(url, {}, false, nullptr, &found, nullptr, &pieces);
+        QVERIFY(found);
+        QCOMPARE(r.doc->selectedText(), url);   // nothing inserted where it breaks
+        QVERIFY(pieces.last().top() > pieces.first().bottom());   // on more than one line
+        QCOMPARE(r.links.size(), 1);
+        QCOMPARE(r.links.at(0).url, QUrl(url));
+        for (const QRect &piece : std::as_const(pieces))
+            QVERIFY(r.links.at(0).rect.contains(piece.center()));
+    }
+    void long_token_wraps_in_plain_text()
+    {
+        const QString token = QStringLiteral("QmFzZTY0").repeated(20);   // 160 characters, no URL-like breaks
+        RenderJob j = job(renderSource({{"text", QStringLiteral("key: %1 end").arg(token)}}, {}, QColor()));
+        j.width = 300;
+        const Rendered r = run(j);
+        QVERIFY(r.doc);
+        QVERIFY2(r.size.width() <= j.width, qPrintable(QString::number(r.size.width())));
+        bool found = false;
+        r.doc->findText(token, {}, false, nullptr, &found, nullptr, nullptr);
+        QVERIFY(found);
+        QCOMPARE(r.doc->selectedText(), token);
+    }
+    void ordinary_words_stay_whole()
+    {
+        // only words too long for a line break inside: these move to the next line whole
+        const QString word = QStringLiteral("высокопроизводительный-сервер");   // 29 characters
+        RenderJob j = job(QStringLiteral("<p>%1 %1 %1 %1</p>").arg(word));
+        j.width = 300;
+        const Rendered r = run(j);
+        QVERIFY(r.doc);
+        bool found = false;
+        QVector<QRect> pieces;
+        r.doc->findText(word.chopped(1), {}, false, nullptr, &found, nullptr, &pieces);   // ends inside the word
+        QVERIFY(found);
+        QCOMPARE(pieces.size(), 1);   // one piece of text
     }
 
     void garbage_html_renders()
