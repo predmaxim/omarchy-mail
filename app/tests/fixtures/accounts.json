@@ -1,0 +1,6 @@
+[
+{"email": "me@gmail.com", "name": "Max", "provider": "gmail", "login": "me@gmail.com",
+ "imap": {"host": "imap.gmail.com", "port": 993}, "smtp": {"host": "smtp.gmail.com", "port": 465}, "append_sent": false},
+{"email": "me@yandex.ru", "name": "Max", "provider": "yandex", "login": "me@yandex.ru",
+ "imap": {"host": "imap.yandex.ru", "port": 993}, "smtp": {"host": "smtp.yandex.ru", "port": 465}, "append_sent": true}
+]

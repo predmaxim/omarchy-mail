@@ -1,0 +1,22 @@
+{
+"unified": [
+ {"account": null, "id": null, "path": "inbox", "name": "inbox", "role": "inbox", "unread": 12},
+ {"account": null, "id": null, "path": "flagged", "name": "flagged", "role": "flagged", "unread": 0},
+ {"account": null, "id": null, "path": "sent", "name": "sent", "role": "sent", "unread": 0},
+ {"account": null, "id": null, "path": "trash", "name": "trash", "role": "trash", "unread": 1},
+ {"account": null, "id": null, "path": "junk", "name": "junk", "role": "junk", "unread": 4}
+],
+"me@gmail.com": [
+ {"account": "me@gmail.com", "id": 1, "path": "INBOX", "name": "INBOX", "role": "inbox", "unread": 7},
+ {"account": "me@gmail.com", "id": 2, "path": "[Gmail]/Sent Mail", "name": "Sent Mail", "role": "sent", "unread": 0},
+ {"account": "me@gmail.com", "id": 5, "path": "[Gmail]/Trash", "name": "Trash", "role": "trash", "unread": 0},
+ {"account": "me@gmail.com", "id": 6, "path": "[Gmail]/Spam", "name": "Spam", "role": "junk", "unread": 2},
+ {"account": "me@gmail.com", "id": 7, "path": "Work", "name": "Work", "role": "other", "unread": 3},
+ {"account": "me@gmail.com", "id": 9, "path": "[Gmail]/All Mail", "name": "All Mail", "role": "other", "unread": 0}
+],
+"me@yandex.ru": [
+ {"account": "me@yandex.ru", "id": 3, "path": "INBOX", "name": "INBOX", "role": "inbox", "unread": 5},
+ {"account": "me@yandex.ru", "id": 4, "path": "&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-", "name": "Отправленные", "role": "sent", "unread": 0},
+ {"account": "me@yandex.ru", "id": 8, "path": "Spam", "name": "Спам", "role": "junk", "unread": 2}
+]
+}
