@@ -41,7 +41,8 @@ fn server(host: &str, port: u16) -> Server {
 pub fn preset(p: Provider) -> Option<(Server, Server, bool)> {
     match p {
         Provider::Gmail => Some((server("imap.gmail.com", 993), server("smtp.gmail.com", 465), false)),
-        Provider::Yandex => Some((server("imap.yandex.ru", 993), server("smtp.yandex.ru", 465), false)),
+        // Checked live 2026-10-17: Yandex does not keep a copy of mail sent over SMTP.
+        Provider::Yandex => Some((server("imap.yandex.ru", 993), server("smtp.yandex.ru", 465), true)),
         Provider::Imap => None,
     }
 }
@@ -118,6 +119,8 @@ mod tests {
         assert_eq!((s.host.as_str(), s.port), ("smtp.gmail.com", 465));
         assert!(!a);
         assert!(preset(Provider::Imap).is_none());
+        // Yandex does not keep SMTP-sent mail, so maild files the copy itself.
+        assert!(preset(Provider::Yandex).unwrap().2);
     }
 
     #[test]
