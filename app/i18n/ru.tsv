@@ -18,3 +18,8 @@ MB	МБ
 GB	ГБ
 Mail service did not answer	Служба почты не ответила
 Request failed	Запрос не выполнен
+screenshot	скриншот
+%1, %2 wrote:	%1, %2 пишет:
+Press Ctrl+D again to discard	Ctrl+D ещё раз — выбросить
+Add a recipient	Укажите получателя
+Invalid address: %1	Неверный адрес: %1
