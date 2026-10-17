@@ -1,5 +1,6 @@
 #include "Renderer.h"
 #include "Letter.h"
+#include "Recolor.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -61,6 +62,10 @@ class TstRenderer : public QObject
         j.font = QFont(QStringLiteral("sans-serif"));
         j.font.setPixelSize(16);
         j.selection = QColor(QStringLiteral("#3366cc"));
+        j.background = QColor(QStringLiteral("#101318"));
+        j.foreground = QColor(QStringLiteral("#eaeff5"));
+        j.muted = QColor(QStringLiteral("#3a3f4c"));
+        j.dim = j.foreground.darker(140);
         return j;
     }
 
@@ -299,6 +304,74 @@ private Q_SLOTS:
                                     "</table></body>").arg(link), 760).left(), 10);
         QCOMPARE(box(QStringLiteral("<body style=\"margin:0\"><a href=\"https://x.org/\" style=\"display:block;width:50vw\">"
                                     "Banner</a></body>"), 760).width(), 380);
+    }
+
+    // our user-agent sheet, like Geary's: roomier lines, quotes with a bar; the letter's own CSS wins
+    void ua_sheet_like_geary()
+    {
+        const QString a = QStringLiteral("<a href=\"https://x.org/\" style=\"display:block\">Hg</a>");
+        const auto box = [&](const QString &html) {
+            const Rendered r = run(job(html));
+            return r.links.size() == 1 ? r.links.at(0).rect : QRect();
+        };
+        QRect r = box(a);
+        QCOMPARE(r.left(), 12);    // body margin
+        QCOMPARE(r.height(), 27);  // line-height 1.7 of 16 px
+        QCOMPARE(box("<h1>" + a + "</h1>").height(), 38);   // 1.2 of 32 px
+        QCOMPARE(box("<div style=\"font-size:20px\"><table><tr><td>" + a + "</td></tr></table></div>").height(), 34);
+        r = box("<blockquote>" + a + "</blockquote>");
+        QCOMPARE(r.left(), 12 + 16 + 3 + 8);   // margin, bar, padding
+        QCOMPARE(r.right() + 1, 760 - 12);     // nothing taken on the right
+        QCOMPARE(box("<body style=\"margin:0;line-height:20px\">" + a + "</body>"), QRect(0, 0, 760, 20));
+        RenderJob pre = job("<pre>" + QStringLiteral("word ").repeated(400) + "</pre>");
+        const Rendered p = run(pre);
+        QVERIFY(p.doc);
+        QVERIFY2(p.size.width() <= 760, qPrintable(QString::number(p.size.width())));
+    }
+
+    // the roomy line-height must not open a gap under pictures in a newsletter's cells: a line with no
+    // text is as tall as its pictures, as in browsers' quirks mode (no doctype, XHTML Transitional)
+    void no_gap_under_pictures()
+    {
+        const auto height = [&](const QString &cell) {
+            RenderJob j = job(QStringLiteral("<table cellpadding=\"0\" cellspacing=\"0\"><tr><td>%1</td></tr></table>").arg(cell));
+            j.inlinePaths.insert(QStringLiteral("logo@x"), fixture("logo.png"));
+            const Rendered r = run(j);
+            return r.doc ? r.size.height() : -1;
+        };
+        const QString img = QStringLiteral("<img src=\"cid:logo@x\" width=\"300\" height=\"40\"%1>");
+        const int block = height(img.arg(" style=\"display:block\""));
+        QCOMPARE(height("<a href=\"https://x.org/\">" + img.arg("") + "</a>"), block);
+        QCOMPARE(height(img.arg("") + " " + img.arg("")), block);
+        QCOMPARE(height("<a href=\"https://x.org/\">" + img.arg("") + "</a>" + img.arg(" style=\"display:inline\"")), block);
+        QVERIFY(height("Hg " + img.arg("")) > block);   // text keeps its line
+    }
+
+    // the colour filter turns the quote's bar into the theme's muted and its text into dim, on a light
+    // letter and on a dark one
+    void quote_colours_are_the_theme_s()
+    {
+        const auto near = [](const QColor &a, const QColor &b) {
+            return qAbs(a.red() - b.red()) + qAbs(a.green() - b.green()) + qAbs(a.blue() - b.blue()) < 30;
+        };
+        for (const char *style : {"", "background:#000;color:#fff"}) {
+            // (qlitehtml leaves the background of <body> and <html> to the view: a div carries it)
+            const RenderJob j = job(QStringLiteral("<body style=\"margin:0\"><div style=\"%1\"><blockquote>"
+                                                   "<div style=\"height:40px;background-color:currentColor\"></div>"
+                                                   "</blockquote><div style=\"height:400px\"></div></div></body>").arg(style));
+            const Rendered r = run(j);
+            QVERIFY(r.doc);
+            QCOMPARE(r.dark, *style != 0);
+            QImage img(760, r.size.height(), QImage::Format_RGB32);
+            img.fill(j.background);
+            r.doc->setColorFilter(recolor::filter(j.background, j.foreground, r.dark));
+            QPainter painter(&img);
+            r.doc->draw(&painter, img.rect());
+            painter.end();
+            const QColor bar = img.pixelColor(16 + 1, 30), text = img.pixelColor(16 + 3 + 8 + 10, 30);
+            QVERIFY2(near(bar, j.muted), qPrintable(bar.name() + " " + style));
+            QVERIFY2(near(text, j.dim), qPrintable(text.name() + " " + style));
+        }
     }
 
     void blank_letters_known()

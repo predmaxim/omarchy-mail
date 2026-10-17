@@ -22,6 +22,7 @@ struct RenderJob
     int viewportHeight = 0;
     QFont font;
     QColor selection;
+    QColor background, foreground, muted, dim; // theme: quotes are painted muted and dim
 };
 
 struct Rendered

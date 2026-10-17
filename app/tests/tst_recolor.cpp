@@ -36,6 +36,19 @@ private Q_SLOTS:
         auto f = recolor::filter(bg, fg, true);
         QCOMPARE(f(Qt::white).rgb(), fg.rgb());
     }
+    // a grey that map() turns into a theme colour between bg and fg: our own quote bar and quote text
+    void unmap_inverts_map()
+    {
+        const QColor light[] = {QColor("#fafafa"), QColor("#2a2a2a")};
+        for (const auto &[b, f] : {std::pair{bg, fg}, std::pair{light[0], light[1]}})
+            for (const QColor &c : {QColor("#3a3f4c"), f.darker(140), QColor("#c8c8c8")})
+                for (bool dark : {false, true}) {
+                    const QColor o = recolor::map(recolor::unmap(c, b, f, dark), b, f, dark);
+                    const float lo = qMin(b.lightnessF(), f.lightnessF()), hi = qMax(b.lightnessF(), f.lightnessF());
+                    QVERIFY2(qAbs(o.lightnessF() - qBound(lo, c.lightnessF(), hi)) < 0.02,
+                             qPrintable(c.name() + " " + o.name() + (dark ? " dark" : " light")));
+                }
+    }
     void dark_detection()
     {
         QImage a(200, 200, QImage::Format_RGB32);

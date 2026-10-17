@@ -67,8 +67,8 @@ static bool visual(const GumboElement &e)
 // litehtml recurses per nesting level (parse, layout, draw, and the tree's destruction on the main
 // thread) and lays nested tables out in ~3^n time: 16000 nested divs overflow 8 MiB, 14 nested
 // tables take 46 s (measured 2026-10-17). gumbo, its own parser, measures the tree first; a letter
-// past the caps is shown as its text. On the way it notes the text and whether there is a picture.
-static bool tooDeep(const QByteArray &html, QString *text, bool *picture)
+// past the caps is shown as its text. On the way it notes the text, whether there is a picture and quotes.
+static bool tooDeep(const QByteArray &html, QString *text, bool *picture, bool *quote)
 {
     constexpr int maxDepth = 1000, maxTables = 12;
     GumboOutput *out = gumbo_parse_with_options(&kGumboDefaultOptions, html.constData(), size_t(html.size()));
@@ -92,6 +92,7 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *picture)
             || e.tag == GUMBO_TAG_TITLE)
             continue;
         *picture = *picture || visual(e);
+        *quote = *quote || e.tag == GUMBO_TAG_BLOCKQUOTE;
         if (e.tag == GUMBO_TAG_BR)
             *text += QLatin1Char('\n');
         const int tables = it.tables + (e.tag == GUMBO_TAG_TABLE);
@@ -101,6 +102,18 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *picture)
     }
     gumbo_destroy_output(&kGumboDefaultOptions, out);
     return deep;
+}
+
+// Our user-agent sheet after litehtml's, like Geary's (a letter's own CSS wins): roomier lines, <pre> that
+// wraps, quotes with a bar on the left only. The bar and the quote's text are the greys the colour filter
+// turns into the theme's muted and dim, and the filter runs the other way on a dark letter.
+static QString userAgentCss(const RenderJob &job, bool dark)
+{
+    const auto grey = [&](const QColor &c) { return recolor::unmap(c, job.background, job.foreground, dark).name(); };
+    return QStringLiteral("body{margin:12px;line-height:1.7}h1,h2,h3,h4,h5,h6{line-height:1.2}table{font-size:inherit}"
+                          "pre{white-space:pre-wrap}"
+                          "blockquote{margin:.3em 0 .3em 16px;padding:0 0 0 8px;border-left:3px solid %1;color:%2}")
+        .arg(grey(job.muted), grey(job.dim));
 }
 
 Renderer::Renderer(QObject *parent) : QObject(parent)
@@ -121,60 +134,76 @@ struct Holder
     DocumentContainer doc;
 };
 
+// Lays html out at the job's width; images come from loadData, the missing ones go to `wanted`.
+static std::shared_ptr<Holder> layOut(const QByteArray &html, const QString &css, const RenderJob &job,
+                                      QStringList *wanted)
+{
+    auto holder = std::make_shared<Holder>();
+    DocumentContainer &doc = holder->doc;
+    DocumentContainerContext ctx;
+    ctx.setMasterStyleSheet(QString::fromUtf8(litehtml::master_css) + css);
+    doc.setPaintDevice(&holder->device);
+    QFont font = job.font;
+    if (font.pixelSize() > 0) // qlitehtml hands pointSize() to litehtml as pixels
+        font.setPointSize(font.pixelSize());
+    doc.setDefaultFont(font);
+    doc.setPaletteCallback([sel = job.selection] {
+        QPalette p;
+        p.setColor(QPalette::Highlight, sel);
+        return p;
+    });
+    doc.setDataCallback([&job, wanted](const QUrl &url) { return loadData(url, job, wanted); });
+    doc.render(job.width, job.viewportHeight);   // no document yet: sets the viewport its @media rules see
+    doc.setDocument(html, &ctx);
+    doc.render(job.width, job.viewportHeight);
+    doc.setDataCallback([](const QUrl &) { return QByteArray(); }); // job and wanted are gone after the task
+    return holder;
+}
+
+static bool isDark(DocumentContainer &doc, int width)
+{
+    QImage probe(qMax(1, width), qBound(1, doc.documentHeight(), 1500), QImage::Format_RGB32);
+    probe.fill(Qt::white);
+    QPainter p(&probe);
+    doc.draw(&p, probe.rect());
+    p.end();
+    return recolor::isDarkLetter(probe);
+}
+
 void Renderer::render(const RenderJob &job)
 {
     m_latest = job.generation;
     m_pool.start([this, job] {
         if (job.generation != m_latest)
             return;
-        auto holder = std::make_shared<Holder>();
         Rendered r;
         r.generation = job.generation;
-        r.doc = std::shared_ptr<DocumentContainer>(holder, &holder->doc);
-        DocumentContainer &doc = holder->doc;
-
-        DocumentContainerContext ctx;
-        ctx.setMasterStyleSheet(QString::fromUtf8(litehtml::master_css));
-        doc.setPaintDevice(&holder->device);
-        QFont font = job.font;
-        if (font.pixelSize() > 0) // qlitehtml hands pointSize() to litehtml as pixels
-            font.setPointSize(font.pixelSize());
-        doc.setDefaultFont(font);
-        doc.setPaletteCallback([sel = job.selection] {
-            QPalette p;
-            p.setColor(QPalette::Highlight, sel);
-            return p;
-        });
-        doc.setDataCallback([&job, &r](const QUrl &url) { return loadData(url, job, &r.wanted); });
         QByteArray html = job.html.toUtf8();
         QString text;
-        bool picture = false;
-        if (tooDeep(html, &text, &picture))
+        bool picture = false, quote = false;
+        if (tooDeep(html, &text, &picture, &quote)) {
             html = (QStringLiteral("<pre style=\"white-space:pre-wrap\">") + text.toHtmlEscaped()
                     + QStringLiteral("</pre>")).toUtf8();
+            quote = false;
+        }
         // spaces and invisible marks (&zwnj;, U+200B) only: nothing to read
         r.blank = !picture && std::all_of(text.cbegin(), text.cend(), [](QChar c) {
             return c.isSpace() || c.category() == QChar::Other_Format;
         });
-        doc.render(job.width, job.viewportHeight);   // no document yet: sets the viewport its @media rules see
-        doc.setDocument(html, &ctx);
-        doc.render(job.width, job.viewportHeight);
-        doc.setDataCallback([](const QUrl &) { return QByteArray(); }); // job and r are gone after this task
-
-        r.size = QSize(doc.documentWidth(), doc.documentHeight());
-        QImage probe(qMax(1, job.width), qBound(1, r.size.height(), 1500), QImage::Format_RGB32);
-        probe.fill(Qt::white);
-        QPainter p(&probe);
-        doc.draw(&p, probe.rect());
-        p.end();
-        r.dark = recolor::isDarkLetter(probe);
-        r.links = doc.links();
+        auto holder = layOut(html, userAgentCss(job, false), job, &r.wanted);
+        r.dark = isDark(holder->doc, job.width);
+        std::shared_ptr<Holder> dropped;
+        if (r.dark && quote)   // the quotes' greys were for a light letter
+            dropped = std::exchange(holder, layOut(html, userAgentCss(job, true), job, &r.wanted));
+        r.size = QSize(holder->doc.documentWidth(), holder->doc.documentHeight());
+        r.links = holder->doc.links();
+        r.doc = std::shared_ptr<DocumentContainer>(holder, &holder->doc);
 
         holder.reset();
-        // the document dies on the main thread: the last reference leaves this one by move
+        // documents die on the main thread: the last references leave this one by move
         QMetaObject::invokeMethod(
             this,
-            [this, res = std::move(r)] {
+            [this, res = std::move(r), dropped = std::move(dropped)] {
                 if (res.generation == m_latest)
                     Q_EMIT rendered(res);
             },

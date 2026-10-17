@@ -105,7 +105,7 @@ index 78c53f4e..fd77fd7e 100644
  	str = get_attr("valign");
  	if(str)
 diff --git a/src/line_box.cpp b/src/line_box.cpp
-index 091a96c0..744590ad 100644
+index 091a96c0..e60199ed 100644
 --- a/src/line_box.cpp
 +++ b/src/line_box.cpp
 @@ -313,6 +313,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
@@ -116,6 +116,40 @@ index 091a96c0..744590ad 100644
              if(m_width < (m_right - m_left))
              {
  				shift_x = ((m_right - m_left) - m_width) / 2;
+@@ -335,7 +336,14 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
+ 
+ 	std::optional<pixel_t> line_height;
+ 
+-	if(!m_default_line_height.css_value.is_predefined())
++	// Quirks (almost every letter: no doctype or XHTML Transitional): a line without text is as tall as its
++	// pictures, the line-height of its block and of inline wrappers like <a> doesn't count (no gap under them)
++	const bool no_text = std::none_of(m_items.begin(), m_items.end(), [](const std::unique_ptr<line_box_item>& lbi) {
++		return lbi->get_type() == line_box_item::type_text_part &&
++			   lbi->get_el()->src_el()->css().get_display() == display_inline_text && !lbi->get_el()->src_el()->is_white_space();
++	});
++
++	if(!no_text && !m_default_line_height.css_value.is_predefined())
+ 	{
+ 		line_height = m_default_line_height.computed_value;
+ 	}
+@@ -503,7 +511,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
+ 				default:
+ 					break;
+ 			}
+-		} else
++		} else if(!no_text || (lbi->get_type() == line_box_item::type_text_part && !lbi->get_el()->src_el()->is_white_space()))
+ 		{
+ 			if(!lbi->get_el()->src_el()->is_inline_box())
+ 			{
+@@ -514,7 +522,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
+ 			}
+ 		}
+ 
+-		if(!lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
++		if(!no_text && !lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
+ 		{
+ 			if(line_height.has_value())
+ 			{
 diff --git a/src/render_item.cpp b/src/render_item.cpp
 index b2109e71..957284e6 100644
 --- a/src/render_item.cpp

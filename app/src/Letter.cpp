@@ -232,6 +232,10 @@ void Letter::layout()
     job.font = QFont(QStringLiteral("sans-serif"));
     job.font.setPixelSize(m_theme->fontBody());
     job.selection = m_theme->selection();
+    job.background = m_theme->background();
+    job.foreground = m_theme->foreground();
+    job.muted = m_theme->muted();
+    job.dim = m_theme->dim();
     m_renderer->render(job);
 }
 

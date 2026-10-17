@@ -28,6 +28,13 @@ std::function<QColor(const QColor &)> filter(QColor bg, QColor fg, bool darkLett
     return [=](const QColor &c) { return map(c, bg, fg, darkLetter); };
 }
 
+QColor unmap(const QColor &target, const QColor &bg, const QColor &fg, bool darkLetter)
+{
+    const float span = fg.lightnessF() - bg.lightnessF();
+    const float t = span == 0 ? 0.5f : std::clamp((target.lightnessF() - bg.lightnessF()) / span, 0.f, 1.f);
+    return QColor::fromHslF(0, 0, darkLetter ? t : 1 - t);
+}
+
 bool isDarkLetter(const QImage &probe)
 {
     const QImage img = probe.convertToFormat(QImage::Format_ARGB32);
