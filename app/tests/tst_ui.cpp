@@ -327,11 +327,15 @@ private Q_SLOTS:
         QQuickItem *frame = to->parentItem()->parentItem();   // the framed line
         const auto y = [](QQuickItem *i) { return i->mapToScene(QPointF(0, 0)).y(); };
         QTRY_VERIFY(y(itemAt(item("composeSuggestions"), 0)) >= y(frame) + frame->height());   // under To, not over the title
+        QQuickItem *rows = item("composeSuggestions")->parentItem();
+        QVERIFY(rows->isVisible());
         QTest::keyClick(win, Qt::Key_Tab);   // nothing highlighted: the address as typed, the keys move on
         QCOMPARE(s->compose.to(), QString("max@gmail.com"));
         QVERIFY(item("composeSubject")->hasActiveFocus());
+        QVERIFY(!rows->isVisible());   // not over Subject: no click there puts a contact into To
         QTest::keyClick(win, Qt::Key_Backtab, Qt::ShiftModifier);
         QVERIFY(to->hasActiveFocus());
+        QVERIFY(rows->isVisible());
         QTest::keyClick(win, Qt::Key_Return);   // nor Enter
         QCOMPARE(s->compose.to(), QString("max@gmail.com"));
         QVERIFY(to->hasActiveFocus());
@@ -358,7 +362,26 @@ private Q_SLOTS:
         QQuickItem *row = itemAt(item("composeSuggestions"), 1);
         QTest::mouseClick(win, Qt::LeftButton, {}, row->mapToScene(QPointF(row->width() / 2, row->height() / 2)).toPoint());
         QCOMPARE(s->compose.to(), QString("Pred <predmax@gmail.com>, max@gmail.org, "));
-        QVERIFY(to->hasActiveFocus());
+        QVERIFY(to->hasActiveFocus());   // a click on a row leaves the keys in To
+    }
+    void late_suggestions_stay_hidden_once_to_is_left()
+    {
+        h.d->on("contacts", [](const QJsonObject &) {
+            return QJsonObject{{"result", QJsonArray{QJsonObject{{"name", "Pred"}, {"addr", "predmax@gmail.com"}}}},
+                               {"delay", 200}};
+        });
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        type("max@gmail.com");
+        QTest::keyClick(win, Qt::Key_Tab);   // before the contacts reply
+        QVERIFY(item("composeSubject")->hasActiveFocus());
+        QVERIFY(s->compose.suggestions().isEmpty());
+        QTRY_COMPARE(s->compose.suggestions().size(), 1);
+        QVERIFY(!item("composeSuggestions")->parentItem()->isVisible());
+        type("Hi");
+        QCOMPARE(s->compose.subject(), QString("Hi"));
+        QCOMPARE(s->compose.to(), QString("max@gmail.com"));
     }
     void paste_image_in_body()
     {

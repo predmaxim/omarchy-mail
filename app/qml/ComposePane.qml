@@ -256,7 +256,7 @@ Item {
         y: head.y + toFrame.y + toFrame.height
         z: 1
         width: head.width
-        visible: compose.suggestions.length > 0
+        visible: compose.suggestions.length > 0 && toField.activeFocus   // over Subject only while To is typed in
         Repeater {
             objectName: "composeSuggestions"
             model: compose.suggestions
