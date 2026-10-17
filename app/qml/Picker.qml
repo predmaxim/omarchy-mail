@@ -83,14 +83,14 @@ Rectangle {
             clip: true
             focus: true
             boundsBehavior: Flickable.StopAtBounds
-            model: picker.choices
+            model: picker.choices.length   // a count: new unread numbers don't rebuild the list or move its highlight
             Keys.onReturnPressed: picker.pick(currentIndex)
             Keys.onEnterPressed: picker.pick(currentIndex)
 
             delegate: Item {
                 id: entry
-                required property var modelData
                 required property int index
+                readonly property var modelData: picker.choices[index] ?? ""   // a list just shorter: nothing, not an error
                 readonly property bool separated: typeof modelData !== "string" && modelData.separatorBefore === true
                 width: ListView.view.width
                 height: choice.height + choice.y

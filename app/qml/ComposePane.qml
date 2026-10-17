@@ -43,6 +43,11 @@ Item {
         return app.key(e.key, e.nativeScanCode, e.modifiers, e.isAutoRepeat, "compose")
     }
     function lastAddress(text) { return text.split(/[,;]/).pop().trim() }
+    function pick(i) {   // here, not in the row: the rows go with the pick
+        compose.pickSuggestion(i)
+        toField.forceActiveFocus()
+        toField.cursorPosition = toField.length
+    }
 
     onVisibleChanged: {
         if (!visible) {
@@ -147,6 +152,7 @@ Item {
             }
         }
         Field {
+            id: toFrame
             caption: i18n.t("To")
             TextInput {
                 id: toField
@@ -159,62 +165,20 @@ Item {
                 selectedTextColor: theme.foreground
                 font.pixelSize: theme.fontTitle
                 onTextEdited: {
+                    pane.suggestion = -1   // new rows are coming: nothing is highlighted until ↓ / ↑
                     compose.to = text
                     app.suggest(pane.lastAddress(text))
                 }
-                Keys.onPressed: e => {
+                Keys.onPressed: e => {   // only a highlighted row is taken: contacts match inside an address too
                     const n = compose.suggestions.length
                     if (n > 0 && (e.key === Qt.Key_Down || e.key === Qt.Key_Up)) {
                         pane.suggestion = e.key === Qt.Key_Down ? Math.min(n - 1, pane.suggestion + 1) : Math.max(0, pane.suggestion - 1)
                         e.accepted = true
-                    } else if (n > 0 && e.modifiers === Qt.NoModifier && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter || e.key === Qt.Key_Tab)) {
-                        compose.pickSuggestion(Math.max(0, pane.suggestion))
-                        cursorPosition = length
+                    } else if (pane.suggestion >= 0 && e.modifiers === Qt.NoModifier && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter || e.key === Qt.Key_Tab)) {
+                        pane.pick(pane.suggestion)
                         e.accepted = true
                     } else {
                         e.accepted = pane.appKey(e)
-                    }
-                }
-            }
-        }
-        Item {   // the suggestions, over what follows (they take no room)
-            width: parent.width
-            height: 0
-            z: 1
-            Column {
-                visible: compose.suggestions.length > 0
-                width: parent.width
-                Repeater {
-                    model: compose.suggestions
-                    delegate: Rectangle {
-                        id: sug
-                        required property var modelData
-                        required property int index
-                        width: parent.width
-                        height: sugText.implicitHeight + 2 * theme.space(6)
-                        color: index === pane.suggestion ? theme.currentFill : theme.background
-                        border.width: 1
-                        border.color: theme.muted
-                        Text {
-                            id: sugText
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.margins: theme.space(12)
-                            anchors.verticalCenter: parent.verticalCenter
-                            elide: Text.ElideRight
-                            textFormat: Text.PlainText
-                            text: sug.modelData.name + (sug.modelData.name !== "" ? "  " : "") + sug.modelData.addr
-                            color: theme.foreground
-                            font.pixelSize: theme.fontTitle
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: {
-                                compose.pickSuggestion(sug.index)
-                                toField.forceActiveFocus()
-                                toField.cursorPosition = toField.length
-                            }
-                        }
                     }
                 }
             }
@@ -282,6 +246,44 @@ Item {
                         }
                     }
                     TextMetrics { id: cross; font.pixelSize: theme.fontBody; text: "✕" }
+                }
+            }
+        }
+    }
+
+    Column {   // the suggestions under To, over what follows; outside `head`: a positioner skips a 0-high item
+        x: head.x
+        y: head.y + toFrame.y + toFrame.height
+        z: 1
+        width: head.width
+        visible: compose.suggestions.length > 0
+        Repeater {
+            objectName: "composeSuggestions"
+            model: compose.suggestions
+            delegate: Rectangle {
+                id: sug
+                required property var modelData
+                required property int index
+                width: parent.width
+                height: sugText.implicitHeight + 2 * theme.space(6)
+                color: index === pane.suggestion ? Qt.tint(theme.background, theme.currentFill) : theme.background   // opaque: over the fields
+                border.width: 1
+                border.color: theme.muted
+                Text {
+                    id: sugText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.margins: theme.space(12)
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: sug.modelData.name + (sug.modelData.name !== "" ? "  " : "") + sug.modelData.addr
+                    color: theme.foreground
+                    font.pixelSize: theme.fontTitle
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: pane.pick(sug.index)
                 }
             }
         }

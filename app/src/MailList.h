@@ -59,6 +59,7 @@ Q_SIGNALS:
     void cursorChanged();
     void selectionChanged();
     void countChanged();
+    void rowsReplaced(bool sameLetter);   // setRows' reset is over; sameLetter: the cursor's letter is still there
 
 private:
     struct Item {

@@ -197,7 +197,11 @@ void LetterView::mouse(const QPointF &pos, int kind, Qt::MouseButton button)
     update();   // selection and :hover boxes are small; the window is one repaint
 }
 
-void LetterView::mousePressEvent(QMouseEvent *e) { mouse(e->position(), 0, e->button()); }
+void LetterView::mousePressEvent(QMouseEvent *e)
+{
+    Q_EMIT pressed();
+    mouse(e->position(), 0, e->button());
+}
 void LetterView::mouseMoveEvent(QMouseEvent *e) { mouse(e->position(), 1, Qt::NoButton); }
 void LetterView::mouseReleaseEvent(QMouseEvent *e) { mouse(e->position(), 2, e->button()); }
 void LetterView::hoverMoveEvent(QHoverEvent *e) { mouse(e->position(), 1, Qt::NoButton); }

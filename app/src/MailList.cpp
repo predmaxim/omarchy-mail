@@ -140,7 +140,10 @@ void MailList::setRows(const QJsonArray &summaries)
     cursor_ = c;
     endResetModel();
     Q_EMIT countChanged();
-    Q_EMIT cursorChanged();
+    const bool same = c >= 0 && items_.at(c).key == oldKey;
+    Q_EMIT rowsReplaced(same);
+    if (c != oldCursor || (c >= 0 && !same))   // a reload of the same rows moves nothing
+        Q_EMIT cursorChanged();
     Q_EMIT selectionChanged();
 }
 

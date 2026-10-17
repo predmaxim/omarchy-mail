@@ -53,6 +53,21 @@ private Q_SLOTS:
         QCOMPARE(role(m, 1, MailList::KeyRole).toString(), "ra/INBOX/5");
         QCOMPARE(role(m, 0, MailList::GroupRole).toString(), "local");
     }
+    void reload_signals_only_a_real_cursor_move()   // the view leaves the wheel's place alone otherwise
+    {
+        MailList m;
+        m.setRows(rows({5, 4, 3, 2}));
+        m.setCursor(1);
+        QSignalSpy moved(&m, &MailList::cursorChanged);
+        m.setRows(rows({5, 4, 3, 2}));   // the same rows again
+        QCOMPARE(moved.size(), 0);
+        m.setRows(rows({6, 5, 4, 3, 2}));   // a new one above: the same letter, one row down
+        QCOMPARE(moved.size(), 1);
+        QCOMPARE(m.cursor(), 2);
+        m.setRows(rows({6, 5, 3, 2}));   // the cursor's letter gone: the same row number, another letter
+        QCOMPARE(moved.size(), 2);
+        QCOMPARE(m.cursorRow().value("id").toInteger(), 3);
+    }
     void plain_move_clears_selection()
     {
         MailList m;

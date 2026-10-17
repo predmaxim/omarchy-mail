@@ -197,6 +197,60 @@ private Q_SLOTS:
         QCOMPARE(s->list.cursor(), 40);
         QVERIFY(inView());
     }
+    void wheel_browsing_stays_on_a_reload()
+    {
+        start();
+        QTRY_COMPARE(s->list.cursor(), 3);
+        QQuickItem *view = item("mailList");
+        view->setProperty("contentY", 2000);   // the wheel: the cursor row out of sight
+        const qreal y = view->property("contentY").toReal();
+        QVERIFY(y > 1000);
+        const int lists = h.sent("list").size();
+        QSignalSpy resets(&s->list, &QAbstractItemModel::modelReset);
+        h.d->emitEvent({{"event", "changed"}, {"folders", false}, {"ids", QJsonArray()}});
+        QTRY_VERIFY(h.sent("list").size() > lists);
+        QTRY_COMPARE(resets.size(), 1);
+        QCOMPARE(s->list.cursor(), 3);
+        QCOMPARE(view->property("contentY").toReal(), y);
+    }
+    void picker_highlight_survives_new_counts()
+    {
+        start();
+        Q_EMIT s->app.openPicker("folder");
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Down);   // Sent
+        QJsonArray unified = h.folders.value("unified").toArray();
+        QJsonObject inbox = unified.at(0).toObject();
+        inbox["unread"] = 99;
+        unified[0] = inbox;
+        h.folders["unified"] = unified;
+        h.d->emitEvent({{"event", "changed"}, {"folders", true}, {"ids", QJsonArray()}});
+        QTRY_COMPARE(s->app.folderChoices().at(0).toMap().value("unread").toInt(), 99);
+        QTest::keyClick(win, Qt::Key_Return);
+        QTRY_COMPARE(s->app.folderIndex(), 2);
+        QCOMPARE(body(h.sent("list").last()).value("role").toString(), QString("sent"));
+    }
+    void click_on_the_letter_takes_the_keys_from_search()
+    {
+        start();
+        letterShown();
+        QQuickItem *field = item("searchField"), *view = item("letterView");
+        QTest::keyClick(win, Qt::Key_Slash);
+        QVERIFY(field->hasActiveFocus());
+        QGuiApplication::clipboard()->setText("before");
+        const int m = s->theme.space(18);
+        const auto at = [&](int x) { return view->mapToScene(QPointF(m + x, 8)).toPoint(); };
+        QTest::mousePress(win, Qt::LeftButton, {}, at(2));   // a drag over the first line selects some text
+        QTest::mouseMove(win, at(60));
+        QTest::mouseMove(win, at(120));
+        QTest::mouseRelease(win, Qt::LeftButton, {}, at(120));
+        QVERIFY(!field->hasActiveFocus());
+        QString selected;
+        QMetaObject::invokeMethod(view, "selectedText", Q_RETURN_ARG(QString, selected));
+        QVERIFY(!selected.isEmpty());
+        QTest::keyClick(win, Qt::Key_C, Qt::ControlModifier);
+        QCOMPARE(QGuiApplication::clipboard()->text(), selected);
+    }
     void single_account_hides_account_picker()
     {
         h.accounts = QJsonArray{h.accounts.at(0)};
@@ -255,6 +309,56 @@ private Q_SLOTS:
         QTRY_VERIFY(b->hasActiveFocus());
         QCOMPARE(b->property("cursorPosition").toInt(), 0);
         QVERIFY(b->property("text").toString().contains("wrote:"));
+    }
+    void to_suggestions_pick_only_a_highlighted_row()
+    {
+        h.d->on("contacts", [](const QJsonObject &) {
+            return QJsonObject{{"result", QJsonArray{QJsonObject{{"name", "Pred"}, {"addr", "predmax@gmail.com"}},
+                                                     QJsonObject{{"name", ""}, {"addr", "max@gmail.org"}}}}};
+        });
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QQuickItem *to = item("composeTo"), *pane = item("composePane");
+        QTRY_VERIFY(to->hasActiveFocus());
+        const auto highlighted = [pane] { return pane->property("suggestion").toInt(); };
+        type("max@gmail.com");
+        QTRY_COMPARE(s->compose.suggestions().size(), 2);
+        QCOMPARE(highlighted(), -1);
+        QQuickItem *frame = to->parentItem()->parentItem();   // the framed line
+        const auto y = [](QQuickItem *i) { return i->mapToScene(QPointF(0, 0)).y(); };
+        QTRY_VERIFY(y(itemAt(item("composeSuggestions"), 0)) >= y(frame) + frame->height());   // under To, not over the title
+        QTest::keyClick(win, Qt::Key_Tab);   // nothing highlighted: the address as typed, the keys move on
+        QCOMPARE(s->compose.to(), QString("max@gmail.com"));
+        QVERIFY(item("composeSubject")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Backtab, Qt::ShiftModifier);
+        QVERIFY(to->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Return);   // nor Enter
+        QCOMPARE(s->compose.to(), QString("max@gmail.com"));
+        QVERIFY(to->hasActiveFocus());
+
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(highlighted(), 0);
+        type("x");   // typing on: the old rows' highlight goes
+        QCOMPARE(highlighted(), -1);
+        QTest::keyClick(win, Qt::Key_Backspace);
+        QTRY_COMPARE(h.sent("contacts").last().value("prefix").toString(), QString("max@gmail.com"));
+        for (int i = 0; i < 3; ++i)
+            QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(highlighted(), 1);   // the last row
+        for (int i = 0; i < 3; ++i)
+            QTest::keyClick(win, Qt::Key_Up);
+        QCOMPARE(highlighted(), 0);   // the first
+        QTest::keyClick(win, Qt::Key_Return);
+        QCOMPARE(s->compose.to(), QString("Pred <predmax@gmail.com>, "));
+        QVERIFY(s->compose.suggestions().isEmpty());
+
+        type("ma");
+        QTRY_COMPARE(s->compose.suggestions().size(), 2);
+        QCOMPARE(highlighted(), -1);
+        QQuickItem *row = itemAt(item("composeSuggestions"), 1);
+        QTest::mouseClick(win, Qt::LeftButton, {}, row->mapToScene(QPointF(row->width() / 2, row->height() / 2)).toPoint());
+        QCOMPARE(s->compose.to(), QString("Pred <predmax@gmail.com>, max@gmail.org, "));
+        QVERIFY(to->hasActiveFocus());
     }
     void paste_image_in_body()
     {

@@ -46,6 +46,7 @@ Q_SIGNALS:
     void scrollYChanged();
     void contentHeightChanged();
     void currentLinkChanged();
+    void pressed();   // the window takes the keys back (from the search field): Ctrl+C copies the selection
 
 protected:
     void mousePressEvent(QMouseEvent *e) override;

@@ -35,12 +35,21 @@ Window {
                 pane.view.toEnd()
         }
     }
-    Connections {   // a model reset may scroll the view: the cursor row stays in sight
+    Connections {   // a reset puts the view at the top: a reload puts it back; a cursor move keeps the cursor row in sight
         target: list
+        function onModelAboutToBeReset() { mailList.keptY = mailList.contentY }
+        function onRowsReplaced(sameLetter) {
+            if (sameLetter)   // the same letter under the cursor: the rows the user scrolled to stay
+                mailList.contentY = Math.min(mailList.keptY, Math.max(0, mailList.contentHeight - mailList.height))
+        }
         function onCursorChanged() {
             if (list.cursor >= 0)
                 mailList.positionViewAtIndex(list.cursor, ListView.Contain)
         }
+    }
+    Connections {   // a click in the letter takes the keys back from the search field, as a click on a row does
+        target: pane.view
+        function onPressed() { root.forceActiveFocus() }
     }
     Binding {
         target: app
@@ -168,6 +177,7 @@ Window {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 keyNavigationEnabled: false   // the cursor is MailList's, moved through app.key / app.clickRow only
+                property real keptY: 0        // contentY before a reset
                 model: list
                 delegate: MailRow {
                     onClicked: modifiers => {
