@@ -41,8 +41,9 @@ Item {
 
     Rectangle {   // the header band over the pane's whole width, a line under it
         objectName: "headBand"
+        visible: !letter.empty
         width: parent.width
-        height: head.y + head.height + theme.space(22) + 1
+        height: head.y + head.height + theme.space(17) + 1
         color: theme.surface
         Rectangle {
             anchors.bottom: parent.bottom
@@ -54,8 +55,8 @@ Item {
 
     Column {
         id: head
-        x: theme.space(36)
-        y: theme.space(26)
+        x: theme.space(27)
+        y: theme.space(20)
         width: pane.width - 2 * x
         spacing: theme.space(6)
 
@@ -116,8 +117,8 @@ Item {
         Flow {
             width: parent.width
             visible: attachments.count > 0
-            topPadding: theme.space(12)
-            spacing: theme.space(12)
+            topPadding: theme.space(9)
+            spacing: theme.space(9)
             Repeater {
                 id: attachments
                 objectName: "attachments"
@@ -161,7 +162,7 @@ Item {
         id: body
         objectName: "letterView"
         anchors.top: head.bottom
-        anchors.topMargin: theme.space(22) + 1 + pane.pad
+        anchors.topMargin: theme.space(17) + 1 + pane.pad
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom

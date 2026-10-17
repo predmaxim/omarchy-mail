@@ -163,7 +163,7 @@ private Q_SLOTS:
         QCOMPARE(band->width(), pane->width());
         QVERIFY(band->mapToScene(QPointF(0, band->height())).y() <= view->mapToScene(QPointF(0, 0)).y());
         QVERIFY(qAbs(chip->property("color").value<QColor>().alphaF() - 0.06) < 0.005);
-        QCOMPARE(chip->property("radius").toInt(), s->theme.space(8));
+        QCOMPARE(chip->property("radius").toInt(), s->theme.space(6));
         if (const QString shot = qEnvironmentVariable("OM_SHOT"); !shot.isEmpty())
             QVERIFY(win->grabWindow().save(shot));
     }

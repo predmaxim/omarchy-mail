@@ -203,7 +203,7 @@ Item {
         Flow {
             width: parent.width
             visible: attachments.count > 0
-            spacing: theme.space(12)
+            spacing: theme.space(9)
             Repeater {
                 id: attachments
                 objectName: "composeAttachments"
@@ -229,13 +229,12 @@ Item {
                     MouseArea {   // a click focuses the plaque; only the ✕ removes
                         anchors.fill: parent
                         onClicked: m => {
-                            if (m.x > parent.width - chip.padX - cross.implicitWidth - theme.space(4))
+                            if (m.x > parent.width - chip.padX - chip.tailWidth - theme.space(3))
                                 pane.removeAt(chip.index)
                             else
                                 chip.forceActiveFocus()
                         }
                     }
-                    TextMetrics { id: cross; font.pixelSize: theme.fontBody; text: "✕" }
                 }
             }
         }

@@ -181,7 +181,7 @@ Window {
                 x: column.pad
                 width: parent.width - 2 * column.pad
                 clip: true
-                spacing: theme.space(4)   // the rows are separate surfaces
+                spacing: theme.space(3)   // 4 px at base 16: the rows are separate surfaces
                 boundsBehavior: Flickable.StopAtBounds
                 keyNavigationEnabled: false   // the cursor is MailList's, moved through app.key / app.clickRow only
                 property real keptY: 0        // contentY before a reset

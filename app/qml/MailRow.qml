@@ -22,8 +22,8 @@ Rectangle {
     signal clicked(int modifiers)
 
     readonly property bool current: isCursor || selected
-    readonly property int padX: theme.space(18)
-    readonly property int padY: theme.space(14)
+    readonly property int padX: theme.space(14)
+    readonly property int padY: theme.space(10)
 
     width: ListView.view ? ListView.view.width : 0
     height: lines.implicitHeight + 2 * padY
@@ -49,7 +49,7 @@ Rectangle {
         x: row.padX
         y: row.padY
         width: row.width - 2 * row.padX
-        spacing: theme.space(5)
+        spacing: theme.space(4)
 
         Item {
             width: parent.width
