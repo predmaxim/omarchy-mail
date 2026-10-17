@@ -1,5 +1,6 @@
 #include "MailList.h"
 
+#include <QSignalSpy>
 #include <QTest>
 
 using namespace om;
@@ -164,6 +165,32 @@ private Q_SLOTS:
         m.removeIds({5});
         QCOMPARE(m.cursor(), 2);
         QCOMPARE(m.rowCount(), 3);
+    }
+    void remove_rows_incremental()
+    {
+        MailList m;
+        m.setRows(rows({1, 2, 3, 4, 5}));
+        m.setCursor(1);
+        m.setCursor(1);
+        m.click(3, true, false);
+        QSignalSpy rem(&m, &QAbstractItemModel::rowsRemoved);
+        QSignalSpy reset(&m, &QAbstractItemModel::modelReset);
+        m.removeIds({2, 3, 5});
+        QCOMPARE(rem.count(), 2);
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(m.rowCount(), 2);
+        QCOMPARE(m.cursor(), 1);
+        QCOMPARE(m.selectedCount(), 0);
+    }
+    void remove_nothing_keeps_selection()
+    {
+        MailList m;
+        m.setRows(rows({1, 2, 3}));
+        m.selectAll();
+        QSignalSpy sig(&m, &MailList::selectionChanged);
+        m.removeIds({99});
+        QCOMPARE(m.selectedCount(), 3);
+        QCOMPARE(sig.count(), 0);
     }
     void initial_cursor_first_unread()
     {

@@ -90,8 +90,16 @@ void MailList::setSelection(const QSet<QString> &s)
 {
     if (s == selected_)
         return;
+    int lo = -1, hi = -1;
+    for (int i = 0; i < items_.size(); ++i)
+        if (s.contains(items_.at(i).key) != selected_.contains(items_.at(i).key)) {
+            if (lo < 0)
+                lo = i;
+            hi = i;
+        }
     selected_ = s;
-    touch({SelectedRole});
+    if (lo >= 0)
+        Q_EMIT dataChanged(index(lo), index(hi), {SelectedRole});
     Q_EMIT selectionChanged();
 }
 
@@ -100,8 +108,11 @@ void MailList::setCursorOnly(int i)
     i = items_.isEmpty() ? -1 : std::clamp(i, 0, int(items_.size()) - 1);
     if (i == cursor_)
         return;
+    const int old = cursor_;
     cursor_ = i;
-    touch({IsCursorRole});
+    for (int r : {old, cursor_})
+        if (r >= 0)
+            Q_EMIT dataChanged(index(r), index(r), {IsCursorRole});
     Q_EMIT cursorChanged();
 }
 
@@ -297,25 +308,40 @@ QList<qint64> MailList::targetIds() const
 
 void MailList::removeIds(const QList<qint64> &ids)
 {
-    if (ids.isEmpty() || items_.isEmpty())
-        return;
     const QSet<qint64> gone(ids.begin(), ids.end());
+    QList<int> idx;
+    for (int i = 0; i < items_.size(); ++i) {
+        const qint64 id = items_.at(i).json.value("id").toInteger();
+        if (id != 0 && gone.contains(id))
+            idx.append(i);
+    }
+    if (idx.isEmpty())
+        return;
+    const bool hadSel = !selected_.isEmpty();
     int before = 0;
     for (int i = 0; i < cursor_; ++i)
-        before += !gone.contains(items_.at(i).json.value("id").toInteger());
-    beginResetModel();
-    items_.removeIf([&](const Item &it) {
-        const qint64 id = it.json.value("id").toInteger();
-        return id != 0 && gone.contains(id);
-    });
+        before += !idx.contains(i);
     selected_.clear();
     base_.clear();
     anchor_ = -1;
+    touch({SelectedRole});
+    // contiguous runs, from the end so earlier indices stay valid
+    for (int e = int(idx.size()) - 1; e >= 0;) {
+        int s = e;
+        while (s > 0 && idx.at(s - 1) == idx.at(s) - 1)
+            --s;
+        beginRemoveRows({}, idx.at(s), idx.at(e));
+        items_.remove(idx.at(s), idx.at(e) - idx.at(s) + 1);
+        endRemoveRows();
+        e = s - 1;
+    }
     cursor_ = items_.isEmpty() ? -1 : std::min(before, int(items_.size()) - 1);
-    endResetModel();
+    if (cursor_ >= 0)
+        Q_EMIT dataChanged(index(cursor_), index(cursor_), {IsCursorRole});
     Q_EMIT countChanged();
     Q_EMIT cursorChanged();
-    Q_EMIT selectionChanged();
+    if (hadSel)
+        Q_EMIT selectionChanged();
 }
 
 void MailList::setFlags(const QList<qint64> &ids, std::optional<bool> seen, std::optional<bool> flagged)
