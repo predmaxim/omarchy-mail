@@ -140,6 +140,24 @@ private Q_SLOTS:
         QTest::mouseRelease(win, Qt::LeftButton, {}, QPoint(m + 120, m + 8));
         QVERIFY(!view->selectedText().isEmpty());
     }
+    void expanding_quotes_keeps_scroll()
+    {
+        QString lines;
+        for (int i = 1; i <= 20; ++i)
+            lines += QStringLiteral("Quoted line %1<br>").arg(i);
+        open(QStringLiteral("<div style=\"height:800px\">x</div><blockquote>%1</blockquote>").arg(lines));
+        const int folded = view->contentHeight();
+        view->toEnd();   // the link at the bottom of the view
+        const qreal y = view->scrollY();
+        QVERIFY(y > 0);
+        QCOMPARE(letter->linkCount(), 1);   // "··· Show quoted text (1)"
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        QTest::mouseClick(win, Qt::LeftButton, {},
+                          letter->links().at(0).rect.center() + QPoint(theme->space(18), -int(view->scrollY())));
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
+        QVERIFY(view->contentHeight() > folded);
+        QCOMPARE(view->scrollY(), y);
+    }
     void rerender_keeps_scroll()
     {
         open(QStringLiteral("<div style=\"height:3000px\">x</div>"));

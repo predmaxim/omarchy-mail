@@ -37,6 +37,13 @@ static QImage drawn(const Rendered &r)
     return img;
 }
 
+static bool has(const Rendered &r, const QString &text)
+{
+    bool found = false;
+    r.doc->findText(text, {}, false, nullptr, &found, nullptr, nullptr);
+    return found;
+}
+
 static int redPixels(const QImage &img)
 {
     int n = 0;
@@ -372,6 +379,52 @@ private Q_SLOTS:
             QVERIFY2(near(bar, j.muted), qPrintable(bar.name() + " " + style));
             QVERIFY2(near(text, j.dim), qPrintable(text.name() + " " + style));
         }
+    }
+
+    // Like Geary (W37): a tall top-level quote is folded into a link, a short one stays; Gmail's
+    // "On … wrote:" line stays above the link
+    void tall_quotes_collapse()
+    {
+        QString lines;
+        for (int i = 1; i <= 20; ++i)
+            lines += QStringLiteral("Quoted line %1<br>").arg(i);
+        RenderJob j = job(QStringLiteral(
+            "<p>Thanks, see below.</p><div class=\"gmail_quote\"><div class=\"gmail_attr\">On Monday Ann wrote:<br></div>"
+            "<blockquote>%1<blockquote>Inner<blockquote>Deepest</blockquote></blockquote></blockquote></div>"
+            "<p>And the short one:</p><blockquote>Tiny quote</blockquote>").arg(lines));
+        Rendered r = run(j);
+        QVERIFY(r.doc);
+        QVERIFY(!has(r, "Quoted line 7"));
+        QVERIFY(!has(r, "Deepest"));
+        QVERIFY(has(r, "On Monday Ann wrote:"));
+        QVERIFY(has(r, "Tiny quote"));
+        QVERIFY(has(r, "Show quoted text (3)"));   // three levels inside
+        QCOMPARE(r.links.size(), 1);
+        QCOMPARE(r.links.at(0).url, QUrl("omarchy-mail:quotes/0"));
+
+        j.expanded = {0};
+        r = run(j);
+        QVERIFY(has(r, "Quoted line 7"));
+        QVERIFY(has(r, "Deepest"));
+        QVERIFY(r.links.isEmpty());
+    }
+
+    // plain text: runs of "> " lines are quotes too, without the marks
+    void plain_text_quotes_become_blockquotes()
+    {
+        QCOMPARE(renderSource({{"text", "Hi\n> a\n> > b\n>> c\n>\n> d\nBye\n"}}, {}, QColor()),
+                 QStringLiteral("<pre style=\"white-space:pre-wrap;font-family:monospace\">Hi<blockquote>a<blockquote>b\nc"
+                                "</blockquote>\nd</blockquote>Bye\n</pre>"));
+        QString text = QStringLiteral("On Monday Ann wrote:\n");
+        for (int i = 1; i <= 20; ++i)
+            text += QStringLiteral("> Quoted line %1 <https://x.org/%1>\n").arg(i);
+        const Rendered r = run(job(renderSource({{"text", text + "Bye"}}, {}, QColor())));
+        QVERIFY(r.doc);
+        QVERIFY(has(r, "On Monday Ann wrote:"));
+        QVERIFY(!has(r, "Quoted line 7"));
+        QVERIFY(has(r, "Show quoted text (1)"));
+        QVERIFY(has(r, "Bye"));
+        QCOMPARE(r.links.size(), 1);
     }
 
     void blank_letters_known()

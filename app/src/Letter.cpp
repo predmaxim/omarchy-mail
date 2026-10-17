@@ -23,17 +23,46 @@ QString renderSource(const QJsonObject &full, const QStringList &words, const QC
     if (!html.isEmpty())
         return highlight::html(html, words, mark);
     static const QRegularExpression link(QStringLiteral("https?://[^\\s<>\"]+"));
-    const QString text = full.value(QStringLiteral("text")).toString();
     QString out = QStringLiteral("<pre style=\"white-space:pre-wrap;font-family:monospace\">");
-    qsizetype done = 0;
-    for (auto it = link.globalMatch(text); it.hasNext();) {
-        const auto m = it.next();
-        const QString url = m.captured().toHtmlEscaped();
-        out += text.mid(done, m.capturedStart() - done).toHtmlEscaped() + QStringLiteral("<a href=\"") + url
-            + QStringLiteral("\">") + url + QStringLiteral("</a>");
-        done = m.capturedEnd();
+    const auto add = [&](const QString &text) {   // escaped, links made
+        qsizetype done = 0;
+        for (auto it = link.globalMatch(text); it.hasNext();) {
+            const auto m = it.next();
+            const QString url = m.captured().toHtmlEscaped();
+            out += text.mid(done, m.capturedStart() - done).toHtmlEscaped() + QStringLiteral("<a href=\"") + url
+                + QStringLiteral("\">") + url + QStringLiteral("</a>");
+            done = m.capturedEnd();
+        }
+        out += text.mid(done).toHtmlEscaped();
+    };
+    // lines starting with ">" (or "> >", ">>") are quotes: nested <blockquote>s without the marks
+    int level = 0;
+    QStringList run;
+    const QStringList lines = full.value(QStringLiteral("text")).toString().split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        int depth = 0;
+        qsizetype from = 0;
+        for (qsizetype i = 0;; ++i) {
+            while (i < line.size() && line.at(i) == QLatin1Char(' '))
+                ++i;
+            if (i == line.size() || line.at(i) != QLatin1Char('>'))
+                break;
+            ++depth;
+            from = i + 1;
+        }
+        if (depth != level) {
+            add(run.join(QLatin1Char('\n')));
+            run.clear();
+            out += depth > level ? QStringLiteral("<blockquote>").repeated(depth - level)
+                                 : QStringLiteral("</blockquote>").repeated(level - depth);
+            level = depth;
+        }
+        if (depth && from < line.size() && line.at(from) == QLatin1Char(' '))
+            ++from;   // "> text": the space after the mark goes too
+        run << line.mid(from);
     }
-    out += text.mid(done).toHtmlEscaped() + QStringLiteral("</pre>");
+    add(run.join(QLatin1Char('\n')));
+    out += QStringLiteral("</blockquote>").repeated(level) + QStringLiteral("</pre>");
     return highlight::html(out, words, mark);
 }
 
@@ -125,6 +154,7 @@ void Letter::reset(const QJsonObject &summary)
     m_error.clear();
     m_busy.clear();
     m_links.clear();
+    m_expanded.clear();
     m_dark = m_blank = false;
     if (std::exchange(m_doc, nullptr))
         Q_EMIT documentChanged(false);
@@ -236,6 +266,7 @@ void Letter::layout()
     job.foreground = m_theme->foreground();
     job.muted = m_theme->muted();
     job.dim = m_theme->dim();
+    job.expanded = m_expanded;
     m_renderer->render(job);
 }
 
@@ -337,6 +368,13 @@ void Letter::copyText()
 void Letter::activateLink(const QUrl &url)
 {
     const QString scheme = url.scheme();
+    if (scheme == QLatin1String("omarchy-mail")) {   // "··· Show quoted text": the Renderer's own link
+        if (const QString path = url.path(); path.startsWith(QLatin1String("quotes/"))) {
+            m_expanded.insert(path.mid(7).toInt());
+            layout();
+        }
+        return;
+    }
     if (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
         launch::open(QString::fromUtf8(url.toEncoded()));
     else if (scheme == QLatin1String("mailto"))

@@ -99,6 +99,7 @@ private:
     std::shared_ptr<DocumentContainer> m_doc;
     bool m_dark = false, m_blank = false;
     QList<DocumentContainer::Link> m_links;
+    QSet<int> m_expanded;   // quotes the reader opened, until another letter is shown
     QTimer m_remoteTimer, m_widthTimer;
 };
 

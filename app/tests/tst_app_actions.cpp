@@ -49,6 +49,23 @@ private Q_SLOTS:
     }
     void cleanup() { tearDown(); }
 
+    void enter_on_the_quote_link_expands_it()
+    {
+        d->on("message", [](const QJsonObject &r) {
+            QString lines;
+            for (int i = 1; i <= 20; ++i)
+                lines += QStringLiteral("Quoted line %1<br>").arg(i);
+            return QJsonObject{{"result", QJsonObject{{"summary", QJsonObject{{"id", r.value("message")}}},
+                                                      {"html", QStringLiteral("<p>See below.</p><blockquote>%1</blockquote>").arg(lines)}}}};
+        });
+        letter->setWidth(760);
+        bootList();
+        QTRY_COMPARE_WITH_TIMEOUT(letter->linkCount(), 1, 10000);   // "··· Show quoted text (1)"
+        QVERIFY(press(Qt::Key_Right));
+        QCOMPARE(nav->row(), int(Row::Links));
+        QVERIFY(press(Qt::Key_Return, 36));
+        QTRY_COMPARE_WITH_TIMEOUT(letter->linkCount(), 0, 10000);
+    }
     void d_deletes_and_moves_cursor()
     {
         bootList();

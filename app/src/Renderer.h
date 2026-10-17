@@ -3,6 +3,7 @@
 #include <QFont>
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QSize>
 #include <QStringList>
 #include <QThreadPool>
@@ -23,6 +24,7 @@ struct RenderJob
     QFont font;
     QColor selection;
     QColor background, foreground, muted, dim; // theme: quotes are painted muted and dim
+    QSet<int> expanded;                         // tall top-level quotes shown in full (0 = the first quote)
 };
 
 struct Rendered

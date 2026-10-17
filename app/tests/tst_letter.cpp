@@ -49,6 +49,22 @@ static QJsonObject withSummary(QJsonObject f, const QJsonObject &fields)
     return f;
 }
 
+// A reply whose quoted history is taller than ~120 px: collapsed by default.
+static QString tallQuote()
+{
+    QString lines;
+    for (int i = 1; i <= 20; ++i)
+        lines += QStringLiteral("Quoted line %1<br>").arg(i);
+    return QStringLiteral("<p>See below.</p><blockquote>%1</blockquote>").arg(lines);
+}
+
+static bool has(const std::shared_ptr<DocumentContainer> &doc, const QString &text)
+{
+    bool found = false;
+    doc->findText(text, {}, false, nullptr, &found, nullptr, nullptr);
+    return found;
+}
+
 static QList<QJsonObject> sent(const FakeMaild &d, const QString &cmd)
 {
     QList<QJsonObject> out;
@@ -355,6 +371,36 @@ private Q_SLOTS:
         QCOMPARE(docs.at(1).at(0).toBool(), true);
         QCOMPARE(srv.hits, 1);
         QVERIFY(QFile::exists(Images::pathFor(imgDir->path(), QUrl(url))));
+    }
+    void quoted_history_expands_for_that_letter()
+    {
+        d->on("message", [](const QJsonObject &req) {
+            QJsonObject f = full(req.value("message").toInteger());
+            f.insert("html", tallQuote());
+            return QJsonObject{{"result", f}};
+        });
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->show({{"id", 42}});
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
+        QVERIFY(!has(letter->document(), "Quoted line 7"));
+        QCOMPARE(letter->linkCount(), 1);
+        QCOMPARE(letter->links().at(0).url, QUrl("omarchy-mail:quotes/0"));
+
+        letter->activateLink(letter->links().at(0).url);
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 2, 10000);
+        QCOMPARE(docs.at(1).at(0).toBool(), true);   // the same letter: the view keeps its scroll
+        QVERIFY(has(letter->document(), "Quoted line 7"));
+        QCOMPARE(letter->linkCount(), 0);
+        letter->reload();   // auto-read reloads it: still open
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 3, 10000);
+        QVERIFY(has(letter->document(), "Quoted line 7"));
+
+        letter->show({{"id", 43}});   // another letter: folded again
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 5, 10000);   // cleared, then laid out
+        QVERIFY(!has(letter->document(), "Quoted line 7"));
+        letter->show({{"id", 42}});
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 7, 10000);
+        QVERIFY(!has(letter->document(), "Quoted line 7"));
     }
     void reload_keeps_image_batch()
     {

@@ -1,5 +1,6 @@
 #include "Renderer.h"
 
+#include "I18n.h"
 #include "Images.h"
 #include "Recolor.h"
 
@@ -64,20 +65,26 @@ static bool visual(const GumboElement &e)
     return false;
 }
 
+struct Quote
+{
+    int depth;           // quotes around it
+    qsizetype from, to;  // its bytes in the html, end tag included
+};
+
 // litehtml recurses per nesting level (parse, layout, draw, and the tree's destruction on the main
 // thread) and lays nested tables out in ~3^n time: 16000 nested divs overflow 8 MiB, 14 nested
 // tables take 46 s (measured 2026-10-17). gumbo, its own parser, measures the tree first; a letter
-// past the caps is shown as its text. On the way it notes the text, whether there is a picture and quotes.
-static bool tooDeep(const QByteArray &html, QString *text, bool *picture, bool *quote)
+// past the caps is shown as its text. On the way it notes the text, whether there is a picture and the quotes.
+static bool tooDeep(const QByteArray &html, QString *text, bool *picture, QList<Quote> *quotes)
 {
     constexpr int maxDepth = 1000, maxTables = 12;
     GumboOutput *out = gumbo_parse_with_options(&kGumboDefaultOptions, html.constData(), size_t(html.size()));
     struct Item
     {
         const GumboNode *node;
-        int depth, tables;
+        int depth, tables, quotes;
     };
-    std::vector<Item> todo{{out->root, 0, 0}};
+    std::vector<Item> todo{{out->root, 0, 0, 0}};
     bool deep = false;
     while (!todo.empty()) {
         const Item it = todo.back();
@@ -92,13 +99,16 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *picture, bool *
             || e.tag == GUMBO_TAG_TITLE)
             continue;
         *picture = *picture || visual(e);
-        *quote = *quote || e.tag == GUMBO_TAG_BLOCKQUOTE;
+        const bool quote = e.tag == GUMBO_TAG_BLOCKQUOTE;
+        if (quote)
+            quotes->append({it.quotes, qsizetype(e.start_pos.offset),
+                            qsizetype(e.end_pos.offset + e.original_end_tag.length)});
         if (e.tag == GUMBO_TAG_BR)
             *text += QLatin1Char('\n');
         const int tables = it.tables + (e.tag == GUMBO_TAG_TABLE);
         deep = deep || it.depth > maxDepth || tables > maxTables;
         for (unsigned i = e.children.length; i-- > 0;)
-            todo.push_back({static_cast<const GumboNode *>(e.children.data[i]), it.depth + 1, tables});
+            todo.push_back({static_cast<const GumboNode *>(e.children.data[i]), it.depth + 1, tables, it.quotes + quote});
     }
     gumbo_destroy_output(&kGumboDefaultOptions, out);
     return deep;
@@ -114,6 +124,30 @@ static QString userAgentCss(const RenderJob &job, bool dark)
                           "pre{white-space:pre-wrap}"
                           "blockquote{margin:.3em 0 .3em 16px;padding:0 0 0 8px;border-left:3px solid %1;color:%2}")
         .arg(grey(job.muted), grey(job.dim));
+}
+
+// Like Geary: a top-level quote taller than 120 px (boxes: of every quote, laid out) gives its place to a
+// "··· Show quoted text (levels)" link, unless the reader opened it already.
+static QByteArray folded(QByteArray html, const QList<Quote> &quotes, const QList<QRect> &boxes,
+                         const QSet<int> &expanded)
+{
+    int top = int(std::count_if(quotes.cbegin(), quotes.cend(), [](const Quote &q) { return q.depth == 0; }));
+    for (qsizetype i = quotes.size(); i-- > 0;) {   // from the end: the offsets before it stay valid
+        if (quotes.at(i).depth != 0)
+            continue;
+        if (expanded.contains(--top) || boxes.at(i).height() <= 120)
+            continue;
+        int levels = 1;
+        for (qsizetype j = i + 1; j < quotes.size() && quotes.at(j).depth > 0; ++j)
+            levels = qMax(levels, quotes.at(j).depth + 1);
+        html.replace(quotes.at(i).from, quotes.at(i).to - quotes.at(i).from,
+                     QStringLiteral("<div><a href=\"omarchy-mail:quotes/%1\">··· %2 (%3)</a></div>")
+                         .arg(top)
+                         .arg(t("Show quoted text").toHtmlEscaped())
+                         .arg(levels)
+                         .toUtf8());
+    }
+    return html;
 }
 
 Renderer::Renderer(QObject *parent) : QObject(parent)
@@ -180,11 +214,12 @@ void Renderer::render(const RenderJob &job)
         r.generation = job.generation;
         QByteArray html = job.html.toUtf8();
         QString text;
-        bool picture = false, quote = false;
-        if (tooDeep(html, &text, &picture, &quote)) {
+        bool picture = false;
+        QList<Quote> quotes;
+        if (tooDeep(html, &text, &picture, &quotes)) {
             html = (QStringLiteral("<pre style=\"white-space:pre-wrap\">") + text.toHtmlEscaped()
                     + QStringLiteral("</pre>")).toUtf8();
-            quote = false;
+            quotes.clear();
         }
         // spaces and invisible marks (&zwnj;, U+200B) only: nothing to read
         r.blank = !picture && std::all_of(text.cbegin(), text.cend(), [](QChar c) {
@@ -192,9 +227,12 @@ void Renderer::render(const RenderJob &job)
         });
         auto holder = layOut(html, userAgentCss(job, false), job, &r.wanted);
         r.dark = isDark(holder->doc, job.width);
+        // once more without the tall quotes, or with the quotes' greys for a dark letter
+        const QList<QRect> boxes = holder->doc.boxes(QStringLiteral("blockquote"));
+        const QByteArray shown = boxes.size() == quotes.size() ? folded(html, quotes, boxes, job.expanded) : html;
         std::shared_ptr<Holder> dropped;
-        if (r.dark && quote)   // the quotes' greys were for a light letter
-            dropped = std::exchange(holder, layOut(html, userAgentCss(job, true), job, &r.wanted));
+        if (shown != html || (r.dark && !quotes.isEmpty()))
+            dropped = std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), job, &r.wanted));
         r.size = QSize(holder->doc.documentWidth(), holder->doc.documentHeight());
         r.links = holder->doc.links();
         r.doc = std::shared_ptr<DocumentContainer>(holder, &holder->doc);
