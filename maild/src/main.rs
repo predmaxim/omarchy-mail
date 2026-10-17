@@ -1,6 +1,7 @@
 #![allow(dead_code)] // consumed by later tasks
 
 mod config;
+mod db;
 mod i18n;
 mod mime;
 mod secret;

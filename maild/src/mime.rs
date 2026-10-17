@@ -320,7 +320,7 @@ pub fn sanitize_html(html: &str) -> String {
 }
 
 /// Visible text of an HTML fragment (no `<style>`/`<script>` content, common entities decoded).
-fn strip_tags(html: &str) -> String {
+pub(crate) fn strip_tags(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::new();
     let mut i = 0;
