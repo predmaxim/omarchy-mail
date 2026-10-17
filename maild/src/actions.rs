@@ -214,7 +214,7 @@ pub fn run(conn: &mut Conn, db: &Db, account: &str, hub: &Hub) -> Result<(), Str
                 moved: false,
             }))
         })?;
-    let mut s = Server { conn, selected: None, caps: None };
+    let mut s = Server { conn, db, account, selected: None, caps: None };
     let mut told = None;
     for mut a in pending.into_iter().flatten() {
         let found = match execute(&mut s, &mut a) {
@@ -360,10 +360,12 @@ fn reject(s: &mut Server, db: &Db, account: &str, a: &Pending, error: &str) -> R
 
 /// The worker's connection during one `run`: what is selected (with its UIDVALIDITY and UIDNEXT),
 /// what the server can do.
-struct Server<'a> { conn: &'a mut Conn, selected: Option<(String, Option<u32>, Option<u32>)>, caps: Option<(bool, bool)> }
+struct Server<'a> { conn: &'a mut Conn, db: &'a Db, account: &'a str, selected: Option<(String, Option<u32>, Option<u32>)>, caps: Option<(bool, bool)> }
 
 /// How many of the newest uids `find` scans when the server cannot search headers.
 const SCAN: u32 = 200;
+/// How many uids one scan FETCH names.
+const CHUNK: usize = 20;
 
 impl Server<'_> {
     /// SELECT, unless already selected; the folder's UIDVALIDITY if the server told it.
@@ -399,16 +401,51 @@ impl Server<'_> {
         }
     }
 
-    /// `find` without SEARCH: the Message-IDs of the newest `SCAN` uids, compared here.
+    /// `find` without header SEARCH: the Message-IDs of the newest `SCAN` uids, compared here, `CHUNK`
+    /// uids per FETCH, newest first; older chunks are not fetched once one matches. Uids in the
+    /// folder's `refused` table are left out, and a FETCH the server refuses is redone one uid at
+    /// a time, skipping the refused ones (Yandex: a broken message fails the whole FETCH).
     // ponytail: a message further down counts as not found (its folder's sync brings it back);
     // a wider window if servers that cannot search are common.
     fn scan(&mut self, message_id: &str) -> Result<Option<u32>, String> {
-        let next = self.selected.as_ref().and_then(|s| s.2);
+        let (path, next) = self.selected.as_ref().map_or(("", None), |s| (s.0.as_str(), s.2));
         let from = next.map_or(1, |n| n.saturating_sub(SCAN).max(1));
-        let got = self.conn.fetch(&format!("{from}:*"), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")?;
+        let skip = match self.db.folders_of(self.account)?.iter().find(|f| f.path == path) {
+            Some(f) => self.db.refused_uids(f.id)?,
+            None => vec![],
+        };
+        // UID SEARCH UID works where SEARCH HEADER does not; without it every uid of the window is named.
+        let mut uids = match self.conn.search(&format!("UID {from}:*")) {
+            Ok(v) => v,
+            Err(_) => (from..next.unwrap_or(from)).collect(),
+        };
+        uids.retain(|u| !skip.contains(u));
+        uids.sort_unstable_by(|a, b| b.cmp(a));
         let norm = |id: &str| id.trim().trim_start_matches('<').trim_end_matches('>').trim().to_ascii_lowercase();
         let want = norm(message_id);
-        Ok(got.iter().filter(|f| f.header().is_some_and(|h| norm(&mime::parse(h).message_id) == want)).filter_map(|f| f.uid).max())
+        for chunk in uids.chunks(CHUNK) {
+            let mut one = |us: &[u32]| -> Result<Option<u32>, String> {
+                let set = us.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+                let got = self.conn.fetch(&set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")?;
+                Ok(got.iter().filter(|f| f.header().is_some_and(|h| norm(&mime::parse(h).message_id) == want)).filter_map(|f| f.uid).max())
+            };
+            match one(chunk) {
+                Ok(Some(u)) => return Ok(Some(u)),
+                Ok(None) => {}
+                Err(e) if e.starts_with(imap::REFUSED) => {
+                    for u in chunk {
+                        match one(&[*u]) {
+                            Ok(Some(u)) => return Ok(Some(u)),
+                            Ok(None) => {}
+                            Err(e) if e.starts_with(imap::REFUSED) => eprintln!("{}: uid {u} refused by server: {e}", path),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
     }
 
     /// `UID MOVE`; without MOVE: copy, mark \Deleted, expunge. The message's new uid if the server
@@ -763,7 +800,18 @@ mod tests {
         assert_eq!(place_of(&db, id), (trash, Some(9)));
     }
 
-    const SCAN_ALL: &str = "UID FETCH 1:* (UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+    const HDR: &str = "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+    const SEARCH_ALL: &str = "UID SEARCH UID 1:*";
+    const TRASH_NEXT: &str = "* OK [UIDNEXT 13] x\r\n";
+    /// The scan's fetch of these uids, newest first.
+    fn scan_cmd(uids: &[u32]) -> String {
+        format!("UID FETCH {} {HDR}", uids.iter().map(u32::to_string).collect::<Vec<_>>().join(","))
+    }
+    /// The uids named by a scan's `UID FETCH`, None for any other command.
+    fn fetched(cmd: &str) -> Option<Vec<u32>> {
+        let set = cmd.strip_prefix("UID FETCH ")?.strip_suffix(HDR)?.trim();
+        Some(set.split(',').filter_map(|u| u.parse().ok()).collect())
+    }
     const BACKEND: &str = "NO [UNAVAILABLE] UID SEARCH Backend error. sc=UXT6170ke4Y0_";
 
     /// `* n FETCH` lines with each (uid, Message-ID header line).
@@ -781,12 +829,14 @@ mod tests {
         let (mut c, log) = server(|cmd| Some(match cmd {
             "CAPABILITY" => CAPS.into(),
             FIND => BACKEND.into(),
-            SCAN_ALL => ids_answer(&[(7, "Message-ID: <m1@x>"), (9, "Message-ID:\r\n  <M1@X> "), (10, "Message-ID: <m2@x>"), (12, "Subject: no id")]),
+            "SELECT \"Trash\"" => TRASH_NEXT.into(),
+            SEARCH_ALL => "* SEARCH 7 9 10 12\r\n".into(),
+            c if c == scan_cmd(&[12, 10, 9, 7]) => ids_answer(&[(7, "Message-ID: <m1@x>"), (9, "Message-ID:\r\n  <M1@X> "), (10, "Message-ID: <m2@x>"), (12, "Subject: no id")]),
             c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
             _ => return None,
         }));
         run(&mut c, &db, ME, &Hub::default()).unwrap();
-        assert_eq!(take(&log), ["SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 5 \"Trash\"", "SELECT \"Trash\"", FIND, SCAN_ALL]);
+        assert_eq!(take(&log), ["SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 5 \"Trash\"", "SELECT \"Trash\"", FIND, SEARCH_ALL, &scan_cmd(&[12, 10, 9, 7])]);
         assert_eq!(place_of(&db, id), (trash, Some(9)), "the newest match");
         assert_eq!(states(&db, b), ["done"]);
         assert_eq!(db.c.query_row("SELECT tries FROM actions WHERE batch = ?1", [b], |r| r.get::<_, u32>(0)).unwrap(), 0);
@@ -800,7 +850,9 @@ mod tests {
         let (mut c, _) = server(|cmd| Some(match cmd {
             "CAPABILITY" => CAPS.into(),
             FIND => BACKEND.into(),
-            SCAN_ALL => ids_answer(&[(8, "Message-ID: <m2@x>")]),
+            "SELECT \"Trash\"" => TRASH_NEXT.into(),
+            SEARCH_ALL => "* SEARCH 8\r\n".into(),
+            c if c == scan_cmd(&[8]) => ids_answer(&[(8, "Message-ID: <m2@x>")]),
             c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
             _ => return None,
         }));
@@ -814,6 +866,8 @@ mod tests {
         let (mut c, _) = server(|cmd| Some(match cmd {
             "CAPABILITY" => CAPS.into(),
             FIND => BACKEND.into(),
+            "SELECT \"Trash\"" => TRASH_NEXT.into(),
+            SEARCH_ALL => "* SEARCH 8\r\n".into(),
             c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
             _ => return None,
         }));
@@ -822,6 +876,83 @@ mod tests {
         assert_eq!(states(&db, b), ["pending"]);
         assert_eq!(place_of(&db, id), (trash, None));
         assert_eq!(db.c.query_row("SELECT tries FROM actions WHERE batch = ?1", [b], |r| r.get::<_, u32>(0)).unwrap(), 1);
+    }
+
+    /// Trash window 1..=100 (UIDNEXT 101); the message is `want`, `broken` uids are refused by the
+    /// server when fetched; (db, message, trash folder, Conn, log).
+    fn window(want: u32, broken: &'static [u32]) -> (Db, i64, i64, Conn, Log) {
+        let (db, _, trash, id) = setup();
+        enqueue(&db, &[id], Op::Delete).unwrap();
+        let all = (1..=100).map(|u| u.to_string()).collect::<Vec<_>>().join(" ");
+        let (c, log) = server(move |cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            FIND => BACKEND.into(),
+            "SELECT \"Trash\"" => "* OK [UIDNEXT 101] x\r\n".into(),
+            "UID SEARCH UID 1:*" => format!("* SEARCH {all}\r\n"),
+            c if fetched(c).is_some() => {
+                let us = fetched(c).unwrap_or_default();
+                if us.iter().any(|u| broken.contains(u)) {
+                    return Some("NO [UNAVAILABLE] failure due to backend error".into());
+                }
+                let h: Vec<String> = us.iter().map(|u| format!("Message-ID: <{}@x>", if *u == want { "m1".into() } else { format!("o{u}") })).collect();
+                ids_answer(&us.iter().zip(&h).map(|(u, h)| (*u, h.as_str())).collect::<Vec<_>>())
+            }
+            c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
+            _ => return None,
+        }));
+        (db, id, trash, c, log)
+    }
+
+    fn fetches(log: &Log) -> Vec<Vec<u32>> {
+        take(log).iter().filter_map(|c| fetched(c)).collect()
+    }
+
+    #[test]
+    fn scan_stops_at_first_chunk_and_skips_refused_table() {
+        let (db, id, trash, mut c, log) = window(85, &[]);
+        let t = db.upsert_folder(ME, "Trash", Role::Trash).unwrap();
+        db.add_refused(t, 100).unwrap();
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        // 100 is never fetched; the match is in the first chunk, so no older one is
+        assert_eq!(fetches(&log), [(80..=99).rev().collect::<Vec<u32>>()]);
+        assert_eq!(place_of(&db, id), (trash, Some(85)));
+    }
+
+    #[test]
+    fn scan_refused_chunk_goes_one_by_one() {
+        // 95 is refused, in the newest chunk; the message is in the next one
+        let (db, id, trash, mut c, log) = window(70, &[95]);
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        let mut want: Vec<Vec<u32>> = vec![(81..=100).rev().collect()];
+        want.extend((81..=100).rev().map(|u| vec![u]));
+        want.push((61..=80).rev().collect());
+        assert_eq!(fetches(&log), want);
+        assert_eq!(place_of(&db, id), (trash, Some(70)));
+    }
+
+    #[test]
+    fn scan_without_uid_search_walks_ranges() {
+        let (db, id, trash, _, _) = window(95, &[]);
+        let (mut c, log) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            FIND => BACKEND.into(),
+            "SELECT \"Trash\"" => "* OK [UIDNEXT 101] x\r\n".into(),
+            "UID SEARCH UID 1:*" => "NO [UNAVAILABLE] Backend error".into(),
+            c if let Some(us) = fetched(c) => {
+                if us.contains(&99) {
+                    return Some("NO [UNAVAILABLE] failure due to backend error".into());
+                }
+                let h: Vec<String> = us.iter().map(|u| format!("Message-ID: <{}@x>", if *u == 95 { "m1".into() } else { format!("o{u}") })).collect();
+                ids_answer(&us.iter().zip(&h).map(|(u, h)| (*u, h.as_str())).collect::<Vec<_>>())
+            }
+            c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
+            _ => return None,
+        }));
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        let mut want: Vec<Vec<u32>> = vec![(81..=100).rev().collect()];
+        want.extend([100, 99, 98, 97, 96, 95].map(|u| vec![u]));
+        assert_eq!(fetches(&log), want);
+        assert_eq!(place_of(&db, id), (trash, Some(95)));
     }
 
     #[test]
@@ -837,14 +968,18 @@ mod tests {
             let del = enqueue(&db, &[id], Op::Delete).unwrap();
             db.c.execute("UPDATE actions SET tries = 4 WHERE batch = ?1", [del]).unwrap();
             let res = undo(&db, del).unwrap();
-            let scan = "UID FETCH 2900:* (UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+            let (search, scan, one) = ("UID SEARCH UID 2900:*", scan_cmd(&[3051, 3050, 3049]), scan_cmd(&[3051]));
+            let (scan2, one2) = (scan.clone(), one.clone());
             let (mut c, log) = server(move |cmd| Some(match cmd {
                 "CAPABILITY" => CAPS.into(),
                 "SELECT \"INBOX\"" => "* OK [UIDNEXT 12600] x\r\n".into(),
                 "SELECT \"Trash\"" => "* OK [UIDNEXT 3100] x\r\n".into(),
                 "UID MOVE 12541 \"Trash\"" => gone.into(),
                 FIND => BACKEND.into(),
-                c if c == scan => ids_answer(&[(3049, "Message-ID: <other@x>"), (3050, "Message-ID: <m1@x>")]),
+                c if c == search => "* SEARCH 3049 3050 3051\r\n".into(),
+                // 3051 is a message the server will not deliver
+                c if c == scan2 || c == one2 => "NO [UNAVAILABLE] UID FETCH message 5 uid 3051: failure due to backend error".into(),
+                c if c == scan_cmd(&[3050]) => ids_answer(&[(3050, "Message-ID: <m1@x>")]),
                 "UID MOVE 3050 \"INBOX\"" => "* OK [COPYUID 1 3050 12600] Moved\r\n* 5 EXPUNGE\r\n".into(),
                 _ => return None,
             }));
@@ -852,8 +987,8 @@ mod tests {
             let events = hub.subscribe(false);
             run(&mut c, &db, ME, &hub).unwrap();
             assert_eq!(take(&log), [
-                "SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 12541 \"Trash\"", "SELECT \"Trash\"", FIND, scan,
-                FIND, scan, "UID MOVE 3050 \"INBOX\"",
+                "SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 12541 \"Trash\"", "SELECT \"Trash\"", FIND, search, &scan, &one, &scan_cmd(&[3050]),
+                FIND, search, &scan, &one, &scan_cmd(&[3050]), "UID MOVE 3050 \"INBOX\"",
             ], "{gone:?}");
             assert_eq!(place_of(&db, id), (inbox, Some(12600)));
             assert_eq!((states(&db, del), states(&db, res)), (vec!["done".to_string()], vec!["done".to_string()]));
