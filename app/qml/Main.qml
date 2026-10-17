@@ -80,6 +80,12 @@ Window {
             enabled: !compose.open
             width: Math.max(theme.space(300), Math.min(root.width * 0.38, theme.space(400)))
 
+            Rectangle {
+                objectName: "leftSurface"
+                anchors.fill: parent
+                color: theme.surface
+            }
+
             Column {
                 id: head
                 width: parent.width
@@ -123,7 +129,7 @@ Window {
                 Rectangle {
                     width: parent.width
                     height: 1
-                    color: theme.muted
+                    color: Qt.tint(theme.muted, theme.hoverFill)   // a step lighter than muted: reads on the surface
                 }
                 Row {
                     id: pickers
@@ -175,6 +181,7 @@ Window {
                 x: column.pad
                 width: parent.width - 2 * column.pad
                 clip: true
+                spacing: theme.space(4)   // the rows are separate surfaces
                 boundsBehavior: Flickable.StopAtBounds
                 keyNavigationEnabled: false   // the cursor is MailList's, moved through app.key / app.clickRow only
                 property real keptY: 0        // contentY before a reset

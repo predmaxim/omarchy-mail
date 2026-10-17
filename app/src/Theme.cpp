@@ -139,6 +139,11 @@ QColor Theme::fill(double alpha) const
     c.setAlphaF(alpha);
     return c;
 }
+QColor Theme::surface() const
+{
+    const QColor b = background(), f = foreground();
+    return QColor::fromRgbF(b.redF() * 0.97 + f.redF() * 0.03, b.greenF() * 0.97 + f.greenF() * 0.03, b.blueF() * 0.97 + f.blueF() * 0.03);
+}
 QColor Theme::hoverFill() const { return fill(0.08); }
 QColor Theme::currentFill() const { return fill(0.18); }
 QColor Theme::cursorBorder() const { return fill(0.25); }

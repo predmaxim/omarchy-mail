@@ -83,7 +83,7 @@ om_test(tst_app_data)
 om_test(tst_app_actions)
 target_sources(mailcore PRIVATE src/Session.h src/Session.cpp)
 qt_add_resources(mailcore "qml_main" PREFIX "/" FILES
-    qml/Main.qml qml/ActionBar.qml qml/Picker.qml qml/MailRow.qml qml/LetterPane.qml)
+    qml/Main.qml qml/ActionBar.qml qml/Picker.qml qml/MailRow.qml qml/LetterPane.qml qml/Plaque.qml)
 qt_add_resources(mailcore "qml_compose" PREFIX "/" FILES qml/ComposePane.qml)
 om_test(tst_ui)
 target_sources(mailcore PRIVATE src/AppAccounts.cpp)

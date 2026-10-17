@@ -156,6 +156,14 @@ private Q_SLOTS:
         QQuickItem *chip = itemAt(item("attachments"), 0), *view = item("letterView");
         QVERIFY(chip->isVisible());
         QVERIFY(chip->mapToScene(QPointF(0, chip->height())).y() <= view->mapToScene(QPointF(0, 0)).y());
+        // the left column on the surface; the letter header is a band over the pane's width, the plaque has its own fill
+        QCOMPARE(item("leftSurface")->property("color").value<QColor>().rgba(), s->theme.surface().rgba());
+        QQuickItem *band = item("headBand"), *pane = band->parentItem();
+        QCOMPARE(band->property("color").value<QColor>().rgba(), s->theme.surface().rgba());
+        QCOMPARE(band->width(), pane->width());
+        QVERIFY(band->mapToScene(QPointF(0, band->height())).y() <= view->mapToScene(QPointF(0, 0)).y());
+        QVERIFY(qAbs(chip->property("color").value<QColor>().alphaF() - 0.06) < 0.005);
+        QCOMPARE(chip->property("radius").toInt(), s->theme.space(8));
         if (const QString shot = qEnvironmentVariable("OM_SHOT"); !shot.isEmpty())
             QVERIFY(win->grabWindow().save(shot));
     }
@@ -434,7 +442,7 @@ private Q_SLOTS:
         const auto y = [](QQuickItem *i) { return i->mapToScene(QPointF(0, 0)).y(); };
         QTRY_VERIFY(y(chip) >= y(frame) + frame->height());
         QTRY_VERIFY(y(chip) + chip->height() <= y(item("composeBody")));
-        if (const QString shot = qEnvironmentVariable("OM_SHOT"); !shot.isEmpty())
+        if (const QString shot = qEnvironmentVariable("OM_SHOT_COMPOSE"); !shot.isEmpty())
             QVERIFY(win->grabWindow().save(shot));
     }
     void tab_chain_reaches_every_control()

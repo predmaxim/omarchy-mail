@@ -39,11 +39,24 @@ Item {
         }
     }
 
+    Rectangle {   // the header band over the pane's whole width, a line under it
+        objectName: "headBand"
+        width: parent.width
+        height: head.y + head.height + theme.space(22) + 1
+        color: theme.surface
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: theme.muted
+        }
+    }
+
     Column {
         id: head
-        x: pane.pad
-        y: pane.pad
-        width: pane.width - 2 * pane.pad
+        x: theme.space(36)
+        y: theme.space(26)
+        width: pane.width - 2 * x
         spacing: theme.space(6)
 
         Text {
@@ -103,33 +116,21 @@ Item {
         Flow {
             width: parent.width
             visible: attachments.count > 0
-            topPadding: theme.space(6)
-            spacing: theme.space(8)
+            topPadding: theme.space(12)
+            spacing: theme.space(12)
             Repeater {
                 id: attachments
                 objectName: "attachments"
                 model: letter.attachments
-                delegate: Rectangle {
+                delegate: Plaque {
                     id: chip
                     required property var modelData
                     required property int index
-                    readonly property bool hasCursor: (nav.row === 5 && nav.col === index) || chipMouse.containsMouse
-                    width: Math.min(chipText.implicitWidth + 2 * theme.space(10), head.width)
-                    height: chipText.implicitHeight + 2 * theme.space(4)
-                    radius: theme.space(8)
-                    color: hasCursor ? theme.hoverFill : "transparent"
-                    border.width: 1
-                    border.color: hasCursor ? theme.cursorBorder : theme.muted
-                    Text {
-                        id: chipText
-                        anchors.centerIn: parent
-                        width: parent.width - 2 * theme.space(10)
-                        elide: Text.ElideMiddle
-                        textFormat: Text.PlainText
-                        text: (chip.modelData.busy ? "…" : chip.modelData.icon) + " " + chip.modelData.name + " · " + chip.modelData.sizeText
-                        color: theme.foreground
-                        font.pixelSize: theme.fontBody
-                    }
+                    icon: modelData.busy ? "…" : modelData.icon
+                    name: modelData.name
+                    size: modelData.sizeText
+                    lit: (nav.row === 5 && nav.col === index) || chipMouse.containsMouse
+                    maxWidth: head.width
                     MouseArea {
                         id: chipMouse
                         anchors.fill: parent
@@ -160,7 +161,7 @@ Item {
         id: body
         objectName: "letterView"
         anchors.top: head.bottom
-        anchors.topMargin: pane.pad
+        anchors.topMargin: theme.space(22) + 1 + pane.pad
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom

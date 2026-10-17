@@ -203,21 +203,21 @@ Item {
         Flow {
             width: parent.width
             visible: attachments.count > 0
-            spacing: theme.space(8)
+            spacing: theme.space(12)
             Repeater {
                 id: attachments
                 objectName: "composeAttachments"
                 model: compose.attachments
-                delegate: Rectangle {
+                delegate: Plaque {
                     id: chip
                     required property var modelData
                     required property int index
-                    width: Math.min(chipText.implicitWidth + 2 * theme.space(10), head.width)
-                    height: chipText.implicitHeight + 2 * theme.space(4)
-                    radius: theme.space(8)
-                    color: activeFocus ? theme.hoverFill : "transparent"
-                    border.width: 1
-                    border.color: activeFocus ? theme.cursorBorder : theme.muted
+                    icon: modelData.icon
+                    name: modelData.name
+                    size: modelData.sizeText
+                    tail: "✕"
+                    lit: activeFocus
+                    maxWidth: head.width
                     Keys.onPressed: e => {
                         if ((e.key === Qt.Key_Delete || e.key === Qt.Key_Backspace) && e.modifiers === Qt.NoModifier) {
                             pane.removeAt(index)
@@ -226,20 +226,10 @@ Item {
                             e.accepted = pane.appKey(e)
                         }
                     }
-                    Text {
-                        id: chipText
-                        anchors.centerIn: parent
-                        width: parent.width - 2 * theme.space(10)
-                        elide: Text.ElideMiddle
-                        textFormat: Text.PlainText
-                        text: chip.modelData.icon + " " + chip.modelData.name + " · " + chip.modelData.sizeText + "  ✕"
-                        color: theme.foreground
-                        font.pixelSize: theme.fontBody
-                    }
                     MouseArea {   // a click focuses the plaque; only the ✕ removes
                         anchors.fill: parent
                         onClicked: m => {
-                            if (m.x > parent.width - theme.space(10) - cross.implicitWidth - theme.space(4))
+                            if (m.x > parent.width - chip.padX - cross.implicitWidth - theme.space(4))
                                 pane.removeAt(chip.index)
                             else
                                 chip.forceActiveFocus()

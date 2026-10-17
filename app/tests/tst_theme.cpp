@@ -145,6 +145,21 @@ private Q_SLOTS:
         QCOMPARE(t.mark(), QColor("#abcdef"));        // no yellow/color3 -> accent
         QCOMPARE(t.selection(), QColor("#abcdef"));   // no selection -> accent
     }
+    void surface_is_a_step_toward_foreground()
+    {
+        const QString bin = tmp.filePath(QStringLiteral("bin"));
+        auto withPalette = [&](const char *body) {
+            write(bin + "/omarchy-theme-color", QByteArray("#!/bin/sh\nprintf '") + body + "'\n");
+            QFile::setPermissions(bin + "/omarchy-theme-color", QFile::permissions(bin + "/omarchy-theme-color") | QFileDevice::ExeOwner);
+            qputenv("PATH", bin.toUtf8());
+        };
+        withPalette("background\\t#000000\\nforeground\\t#ffffff\\naccent\\t#abcdef\\n");   // dark: lighter, 3 % of 255
+        QColor dark = Theme().surface();
+        QVERIFY(qAbs(dark.red() - 8) <= 1 && dark.red() == dark.green() && dark.green() == dark.blue());
+        withPalette("background\\t#ffffff\\nforeground\\t#000000\\naccent\\t#abcdef\\n");   // light: darker
+        QColor light = Theme().surface();
+        QVERIFY(qAbs(light.red() - 247) <= 1 && light.red() == light.blue());
+    }
     void fills_from_foreground()
     {
         Theme t;
