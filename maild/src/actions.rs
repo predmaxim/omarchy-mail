@@ -417,10 +417,14 @@ impl Server<'_> {
         // UID SEARCH UID works where SEARCH HEADER does not; without it every uid of the window is named.
         let mut uids = match self.conn.search(&format!("UID {from}:*")) {
             Ok(v) => v,
-            Err(_) => (from..next.unwrap_or(from)).collect(),
+            Err(e) => {
+                eprintln!("{}: UID SEARCH UID {from}:* failed: {e}", path);
+                (from..next.unwrap_or(from)).collect()
+            }
         };
         uids.retain(|u| !skip.contains(u));
         uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.truncate(SCAN as usize);
         let norm = |id: &str| id.trim().trim_start_matches('<').trim_end_matches('>').trim().to_ascii_lowercase();
         let want = norm(message_id);
         for chunk in uids.chunks(CHUNK) {
@@ -953,6 +957,28 @@ mod tests {
         want.extend([100, 99, 98, 97, 96, 95].map(|u| vec![u]));
         assert_eq!(fetches(&log), want);
         assert_eq!(place_of(&db, id), (trash, Some(95)));
+    }
+
+    #[test]
+    fn scan_without_uidnext_looks_at_newest_200() {
+        let (db, id, trash, _, _) = window(900, &[]);
+        let all = (1..=1000).map(|u| u.to_string()).collect::<Vec<_>>().join(" ");
+        let (mut c, log) = server(move |cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            FIND => BACKEND.into(),
+            "UID SEARCH UID 1:*" => format!("* SEARCH {all}\r\n"),
+            c if let Some(us) = fetched(c) => {
+                let h: Vec<String> = us.iter().map(|u| format!("Message-ID: <{}@x>", if *u == 900 { "m1".into() } else { format!("o{u}") })).collect();
+                ids_answer(&us.iter().zip(&h).map(|(u, h)| (*u, h.as_str())).collect::<Vec<_>>())
+            }
+            c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
+            _ => return None,
+        }));
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        let f = fetches(&log);
+        assert_eq!(f[0], (981..=1000).rev().collect::<Vec<u32>>(), "newest first");
+        assert!(f.concat().iter().all(|u| *u > 800), "only the newest 200");
+        assert_eq!(place_of(&db, id), (trash, Some(900)));
     }
 
     #[test]
