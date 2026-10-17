@@ -62,6 +62,7 @@ public:
     Q_INVOKABLE void pickSuggestion(int i);
     QJsonObject request(QString *error) const;
     void sent();
+    void setNote(const QString &text, bool error = false);
 
     static QList<QPair<QString, QString>> parseAddresses(const QString &field, QString *bad);
     static QString replySubject(const QString &subject);
@@ -81,7 +82,6 @@ private:
     void load();
     bool save();
     void removeDraft();
-    void setNote(const QString &text, bool error = false);
     QString draftPath() const { return m_dir + QLatin1Char('/') + m_key + QStringLiteral(".json"); }
 
     QString m_dir;

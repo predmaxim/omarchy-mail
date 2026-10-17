@@ -177,6 +177,21 @@ private Q_SLOTS:
         QCOMPARE(st.cmd, Cmd::PressOutbox);
         QCOMPARE(st.col, 1);
     }
+    void col_clamped_to_shape()
+    {
+        Nav n;
+        NavShape s;
+        s.attachments = 3;
+        n.press(kp(KeyAction::Right), s);
+        n.press(kp(KeyAction::Right), s);
+        n.press(kp(KeyAction::Right), s);
+        QCOMPARE(n.col(), 2);
+        s.attachments = 1;   // another letter came under the cursor
+        const Step st = n.press(kp(KeyAction::Enter), s);
+        QCOMPARE(st.cmd, Cmd::OpenAttachment);
+        QCOMPARE(st.col, 0);
+        QCOMPARE(n.col(), 0);
+    }
     void space_on_list_scrolls_letter()
     {
         Nav n;

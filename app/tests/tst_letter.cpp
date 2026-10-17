@@ -259,6 +259,21 @@ private Q_SLOTS:
         QCOMPARE(notes.at(0).at(1).toBool(), true);
         QVERIFY(sent(*d, "attachment").isEmpty());
     }
+    void links_skip_anchors_with_no_box()
+    {
+        // an empty anchor, or one around an image that isn't there, has nowhere to scroll to
+        d->on("message", [](const QJsonObject &req) {
+            QJsonObject f = full(req.value("message").toInteger());
+            f.insert("html", "<p><a href=\"https://a.example/\"></a> one <a href=\"https://c.example/\"><img src=\"cid:missing\"></a>"
+                             " two <a href=\"https://b.example/\">b</a></p>");
+            return QJsonObject{{"result", f}};
+        });
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->show({{"id", 42}});
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
+        QCOMPARE(letter->linkCount(), 1);
+        QCOMPARE(letter->links().at(0).url, QUrl("https://b.example/"));
+    }
     void links_only_http_https_mailto()
     {
         QTemporaryDir dir(scratch());

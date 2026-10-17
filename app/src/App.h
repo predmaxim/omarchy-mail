@@ -1,5 +1,7 @@
 #pragma once
-// Window controller: mailboxes, folders, the mail list, search and maild events.
+// Window controller: mailboxes, folders, the mail list, search and maild events;
+// actions on the mail, their undo, auto-read and the window's keys.
+#include "Nav.h"
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -14,7 +16,6 @@ class Client;
 class Compose;
 class Letter;
 class MailList;
-class Nav;
 class Theme;
 
 class App : public QObject {
@@ -35,6 +36,7 @@ class App : public QObject {
     Q_PROPERTY(QString note READ note NOTIFY changed)
     Q_PROPERTY(bool noteError READ noteError NOTIFY changed)
     Q_PROPERTY(bool trashView READ trashView NOTIFY changed)
+    Q_PROPERTY(bool letterAtTop READ letterAtTop WRITE setLetterAtTop)   // QML keeps it = letterView.atTop
 public:
     App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *nav, Theme *theme,
         QObject *parent = nullptr);
@@ -56,6 +58,8 @@ public:
     QString note() const { return m_note; }
     bool noteError() const { return m_noteError; }
     bool trashView() const;                            // a Trash or Junk folder
+    bool letterAtTop() const { return m_letterAtTop; }
+    void setLetterAtTop(bool v) { m_letterAtTop = v; }
 
     Q_INVOKABLE void pickAccount(int index);           // as accountIndex: -1 all mailboxes
     Q_INVOKABLE void pickFolder(int index);
@@ -66,11 +70,31 @@ public:
     Q_INVOKABLE void suggest(const QString &prefix);   // "To" completion -> compose.suggestions
     void openMessage(qint64 id);
 
+    // focus: "" the window, "search" the search field, "compose" the form; true: the key is eaten
+    Q_INVOKABLE bool key(int key, quint32 nativeScanCode, int modifiers, bool autoRepeat, const QString &focus);
+    Q_INVOKABLE void remove();
+    Q_INVOKABLE void toggleRead();
+    Q_INVOKABLE void toggleFlag();
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void reply();
+    Q_INVOKABLE void composeNew();
+    Q_INVOKABLE void copyText();
+    Q_INVOKABLE void openOriginal();
+    Q_INVOKABLE void pressAction(int col);             // 0 Compose, 1 Reply, 2 Delete, 3 Unread, 4 Settings
+    Q_INVOKABLE void retryOutbox();                    // the open letter, if unsent
+    Q_INVOKABLE void discardOutbox();
+    Q_INVOKABLE void send();
+    Q_INVOKABLE void clickRow(int index, int modifiers);
+
 Q_SIGNALS:
     void changed();
     void raiseRequested();
     void closeRequested();
     void focusSearch();
+    void leaveSearch();                    // the search field gives the keys back to the window
+    void openPicker(const QString &which); // "account" / "folder"
+    void scroll(int cmd, int dir);         // int(Cmd::ScrollLines / ScrollPages / ScrollTop / ScrollEnd) -> LetterView
+    void pickFiles();                      // Ctrl+O in the form -> FileDialog
 
 private:
     void connectedChanged();
@@ -93,11 +117,24 @@ private:
     template <typename F>
     std::function<void(const QJsonValue &, const QString &)> ok(F onResult);
 
+    QString composeAccount() const;   // the viewed mailbox, else the first
+    QList<qint64> targets();
+    bool anyWithout(const QList<qint64> &ids, const QString &field) const;
+    void act(const QList<qint64> &ids, const QString &op, bool undoable);
+    void discard(qint64 outbox);
+    void autoRead();
+    bool windowKey(const KeyPress &k, bool repeat);
+    bool searchKey(const KeyPress &k, bool repeat);
+    bool composeKey(const KeyPress &k, bool repeat);
+    void back();
+    NavShape shape() const;
+    void run(const Step &st, bool repeat);
+
     Client *m_client;
     MailList *m_list;
     Letter *m_letter;
     Compose *m_compose;
-    Nav *m_nav;   // keys: part 2
+    Nav *m_nav;
     Theme *m_theme;
 
     QString m_page = QStringLiteral("main");
@@ -123,6 +160,12 @@ private:
     QString m_statusText, m_note;
     bool m_statusError = false, m_noteError = false;
     QTimer m_searchTimer, m_remoteTimer, m_noteTimer;
+
+    QList<qint64> m_undo;       // batches of the user's actions, the latest last
+    Confirm m_confirm;          // second presses: delete forever, discard unsent mail
+    QTimer m_readTimer;
+    bool m_sending = false;
+    bool m_letterAtTop = true;
 };
 
 } // namespace om

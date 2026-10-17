@@ -48,6 +48,8 @@ Step Nav::press(const KeyPress &k, const NavShape &s)
     const A a = k.action;
     const int dir = (a == A::Left || a == A::Up) ? -1 : 1;
     const int cap = std::max(0, count(m_row, s) - 1);
+    if (m_col > cap)
+        go(m_row, cap);   // the letter changed under the cursor: fewer attachments or links now
 
     switch (m_row) {
     case Row::Actions:

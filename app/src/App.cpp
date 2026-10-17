@@ -7,6 +7,7 @@
 #include "Letter.h"
 #include "MailList.h"
 #include "Theme.h"
+#include <QDateTime>
 #include <QPointer>
 #include <algorithm>
 
@@ -51,8 +52,12 @@ App::App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *
         m_note.clear();
         Q_EMIT changed();
     });
+    m_readTimer.setSingleShot(true);
+    m_readTimer.setInterval(1000);   // auto-read: arrowing through the list doesn't read it all
+    connect(&m_readTimer, &QTimer::timeout, this, &App::autoRead);
     connect(list, &MailList::cursorChanged, this, [this] { cursorMoved(); });
     connect(letter, &Letter::note, this, &App::setNote);
+    connect(letter, &Letter::composeTo, this, [this](const QUrl &url) { m_compose->startMailto(url, composeAccount()); });
     setPlace();
 }
 
@@ -356,6 +361,7 @@ void App::cursorMoved(bool force)
     const QString key = m_list->data(m_list->index(c), MailList::KeyRole).toString();
     if (force || key != m_cursorKey) {
         m_cursorKey = key;
+        m_readTimer.start();
         if (c < 0)
             m_letter->clear();
         else
@@ -519,6 +525,369 @@ void App::endSearch()
     m_foundText.clear();
     m_list->setWords({}, m_theme->mark());
     m_letter->setWords({});
+}
+
+// ---- actions ----
+
+QString App::composeAccount() const
+{
+    return m_account.isEmpty() && !m_accounts.isEmpty() ? email(m_accounts.at(0)) : m_account;
+}
+
+// The ids an action applies to; server search hits have none, they can't be changed.
+QList<qint64> App::targets()
+{
+    const QList<qint64> ids = m_list->targetIds();
+    if (ids.isEmpty() && (m_list->selectedCount() > 0 || m_list->cursorRow().contains(QStringLiteral("remote"))))
+        setNote(t("Server search results can't be changed"), false);
+    return ids;
+}
+
+// Whether a loaded row among `ids` has `field` off.
+bool App::anyWithout(const QList<qint64> &ids, const QString &field) const
+{
+    for (int i = 0; i < m_list->rowCount(); ++i) {
+        const QJsonObject r = m_list->row(i);
+        if (!r.value(field).toBool() && ids.contains(r.value(QStringLiteral("id")).toInteger()))
+            return true;
+    }
+    return false;
+}
+
+// The rows show the change at once; when maild refuses it, they are loaded again from maild.
+void App::act(const QList<qint64> &ids, const QString &op, bool undoable)
+{
+    QJsonArray a;
+    for (const qint64 id : ids)
+        a << id;
+    m_client->request({{"cmd", "act"}, {"ids", a}, {"op", op}},
+                      [self = QPointer<App>(this), undoable](const QJsonValue &r, const QString &err) {
+                          if (!self)
+                              return;
+                          if (err.isEmpty()) {
+                              const qint64 batch = r.toObject().value(QStringLiteral("batch")).toInteger();
+                              if (undoable && batch > 0)
+                                  self->m_undo << batch;
+                              return;
+                          }
+                          if (self->m_client->connected())
+                              self->setNote(err, true);
+                          if (!self->m_searching)   // ponytail: search rows stay as changed until the next search
+                              self->loadList(false);
+                      });
+}
+
+void App::remove()
+{
+    const qint64 id = m_list->cursorRow().value(QStringLiteral("id")).toInteger();
+    if (id < 0 && m_list->selectedCount() == 0) {
+        discard(id);
+        return;
+    }
+    const QList<qint64> ids = targets();
+    if (ids.isEmpty())
+        return;
+    if (trashView() && !m_searching) {   // search rows come from every folder: there `d` moves to Trash
+        QStringList same;   // the second press confirms these rows, not whatever is under the cursor then
+        for (const qint64 i : ids)
+            same << QString::number(i);
+        if (!m_confirm.press(QStringLiteral("delete_forever ") + same.join(QLatin1Char(',')),
+                             QDateTime::currentMSecsSinceEpoch())) {
+            setNote(t("Press d again to delete forever"), false);
+            return;
+        }
+        act(ids, QStringLiteral("delete_forever"), false);   // undo can't bring these back
+    } else {
+        act(ids, QStringLiteral("delete"), true);
+    }
+    m_list->removeIds(ids);
+}
+
+void App::discard(qint64 outbox)
+{
+    if (!m_confirm.press(QStringLiteral("discard %1").arg(outbox), QDateTime::currentMSecsSinceEpoch())) {
+        setNote(t("Press d again to discard the unsent message"), false);
+        return;
+    }
+    m_client->request({{"cmd", "outbox_discard"}, {"outbox", outbox}}, ok([](const QJsonValue &) {}));
+}
+
+void App::toggleRead()
+{
+    const QList<qint64> ids = targets();
+    if (ids.isEmpty())
+        return;
+    m_readTimer.stop();   // a letter just made unread stays so
+    const bool read = anyWithout(ids, QStringLiteral("seen"));
+    act(ids, read ? QStringLiteral("read") : QStringLiteral("unread"), true);
+    m_list->setFlags(ids, read, std::nullopt);
+}
+
+void App::toggleFlag()
+{
+    const QList<qint64> ids = targets();
+    if (ids.isEmpty())
+        return;
+    const bool flag = anyWithout(ids, QStringLiteral("flagged"));
+    act(ids, flag ? QStringLiteral("flag") : QStringLiteral("unflag"), true);
+    m_list->setFlags(ids, std::nullopt, flag);
+}
+
+void App::reply()
+{
+    if (m_letter->id() > 0 && !m_letter->full().isEmpty())
+        m_compose->startReply(m_letter->full());
+}
+
+void App::composeNew() { m_compose->startNew(composeAccount()); }
+void App::copyText() { m_letter->copyText(); }
+void App::openOriginal() { m_letter->openOriginal(); }
+
+void App::pressAction(int col)
+{
+    switch (col) {
+    case 0: composeNew(); break;
+    case 1: reply(); break;
+    case 2: remove(); break;
+    case 3: toggleUnread(); break;
+    case 4: openSettings(); break;
+    }
+}
+
+void App::retryOutbox()
+{
+    if (m_letter->id() < 0)
+        m_client->request({{"cmd", "outbox_retry"}, {"outbox", m_letter->id()}}, ok([](const QJsonValue &) {}));
+}
+
+void App::discardOutbox()
+{
+    if (m_letter->id() < 0)
+        discard(m_letter->id());
+}
+
+void App::send()
+{
+    if (m_sending || !m_compose->isOpen())
+        return;   // one mail per form, however fast the second Ctrl+Enter comes
+    QString err;
+    const QJsonObject req = m_compose->request(&err);
+    if (!err.isEmpty()) {
+        m_compose->setNote(err, true);
+        return;
+    }
+    m_sending = true;
+    m_client->requestSlow(req, [self = QPointer<App>(this)](const QJsonValue &, const QString &e) {
+        if (!self)
+            return;
+        self->m_sending = false;
+        if (!e.isEmpty()) {
+            self->m_compose->setNote(e, true);
+            return;
+        }
+        self->m_compose->sent();
+        self->setNote(t("Sending…"), false);
+    });
+}
+
+void App::clickRow(int index, int modifiers)
+{
+    const auto mods = Qt::KeyboardModifiers::fromInt(modifiers);
+    m_list->click(index, mods.testFlag(Qt::ControlModifier), mods.testFlag(Qt::ShiftModifier));
+    m_nav->reset(Row::List);
+}
+
+// ---- undo and auto-read ----
+
+void App::undo()
+{
+    if (m_undo.isEmpty()) {
+        setNote(t("Nothing to undo"), false);
+        return;
+    }
+    // the undo's own batch isn't stacked: the next Ctrl+Z goes one more action back
+    m_client->request({{"cmd", "undo"}, {"batch", m_undo.takeLast()}}, ok([](const QJsonValue &) {}));
+}
+
+// The letter under the cursor has been open for a second (the timer restarts in cursorMoved).
+void App::autoRead()
+{
+    const QJsonObject row = m_list->cursorRow();
+    const qint64 id = row.value(QStringLiteral("id")).toInteger();
+    if (id <= 0 || id != m_letter->id() || row.value(QStringLiteral("seen")).toBool()
+        || row.value(QStringLiteral("role")).toString() == QLatin1String("remote"))   // maild refuses those
+        return;
+    act({id}, QStringLiteral("read"), false);   // not undoable: Ctrl+Z goes to what the user did
+    m_list->setFlags({id}, true, std::nullopt);
+}
+
+// ---- keys ----
+
+namespace {
+// A held key repeats moving and scrolling only.
+bool repeats(KeyAction a)
+{
+    using A = KeyAction;
+    return a == A::Up || a == A::Down || a == A::Left || a == A::Right || a == A::PageUp || a == A::PageDown
+        || a == A::Space;
+}
+} // namespace
+
+bool App::key(int key, quint32 nativeScanCode, int modifiers, bool autoRepeat, const QString &focus)
+{
+    const KeyPress k = mapKey(key, nativeScanCode, Qt::KeyboardModifiers::fromInt(modifiers));
+    if (k.action == KeyAction::None)
+        return false;
+    if (focus == QLatin1String("compose"))
+        return composeKey(k, autoRepeat);
+    if (focus == QLatin1String("search"))
+        return searchKey(k, autoRepeat);
+    return focus.isEmpty() && windowKey(k, autoRepeat);
+}
+
+// Letter commands work on any row; moving, Enter, Space and `s` go through Nav.
+bool App::windowKey(const KeyPress &k, bool repeat)
+{
+    using A = KeyAction;
+    const A a = k.action;
+    if (m_page != QLatin1String("main")) {   // the mailbox page has keys of its own
+        if (a != A::Escape)
+            return false;
+        if (!repeat)
+            closeSettings();
+        return true;
+    }
+    if (m_compose->isOpen())
+        return composeKey(k, repeat);   // the list is disabled under the form: a stray `d` deletes nothing
+    if (a == A::CopySelection || a == A::Send || a == A::Paste || a == A::Attach || a == A::Discard)
+        return false;   // Ctrl+C: QML copies the letter's selected text; the rest are the form's
+    if (repeat && !repeats(a))
+        return true;   // a held `d` in Trash is not the second press
+    switch (a) {
+    case A::Compose: composeNew(); break;
+    case A::Reply: reply(); break;
+    case A::Remove: remove(); break;
+    case A::ToggleRead: toggleRead(); break;
+    case A::ToggleFlag: toggleFlag(); break;
+    case A::Original: openOriginal(); break;
+    case A::Copy: copyText(); break;
+    case A::Search:
+        m_nav->reset(Row::Search);
+        Q_EMIT focusSearch();
+        break;
+    case A::UnreadFilter: toggleUnread(); break;
+    case A::Undo: undo(); break;
+    case A::SelectAll: m_list->selectAll(); break;
+    case A::Mark: m_list->toggleMark(); break;
+    case A::Escape: back(); break;
+    default: run(m_nav->press(k, shape()), repeat); break;
+    }
+    return true;
+}
+
+// The field keeps typing and moving in it; ↓ and Enter go to the first row, Esc clears, then leaves.
+bool App::searchKey(const KeyPress &k, bool repeat)
+{
+    using A = KeyAction;
+    if (k.action != A::Down && k.action != A::Enter && k.action != A::Escape)
+        return false;
+    if (repeat && k.action != A::Down)
+        return true;
+    if (k.action == A::Escape && !m_query.isEmpty()) {
+        setQuery({});   // back to the folder, the field keeps the keys
+        return true;
+    }
+    if (k.action != A::Escape) {
+        m_list->setCursor(0);
+        m_nav->reset(Row::List);
+    }
+    Q_EMIT leaveSearch();
+    return true;
+}
+
+// The form keeps every key but its own commands.
+bool App::composeKey(const KeyPress &k, bool repeat)
+{
+    using A = KeyAction;
+    const A a = k.action;
+    if (a != A::Send && a != A::Paste && a != A::Attach && a != A::Discard && a != A::Escape)
+        return false;
+    if (repeat)
+        return true;   // a held Ctrl+Enter sends once, a held Ctrl+D is not the second press
+    if (a == A::Send)
+        send();
+    else if (a == A::Paste)
+        return m_compose->paste();   // no image or files: the field pastes the text
+    else if (a == A::Attach)
+        Q_EMIT pickFiles();
+    else if (a == A::Discard)
+        m_compose->discard();
+    else
+        m_compose->close();
+    return true;
+}
+
+// Esc, one step at a time (an open picker list closes itself in QML).
+void App::back()
+{
+    if (Row(m_nav->row()) != Row::List)
+        m_nav->reset(Row::List);
+    else if (m_list->selectedCount() > 0)
+        m_list->clearSelection();
+    else if (m_searching)
+        setQuery({});
+    else
+        Q_EMIT closeRequested();
+}
+
+NavShape App::shape() const
+{
+    NavShape s;
+    s.pickers = accountChoices().isEmpty() ? 1 : 2;
+    s.outbox = m_letter->outbox() == 2 ? 2 : 0;   // "Send again" and "Discard" under a mail that wasn't sent
+    s.attachments = int(m_letter->attachments().size());
+    s.links = m_letter->linkCount();
+    s.listAtTop = m_list->cursor() <= 0;
+    s.textAtTop = m_letterAtTop;
+    return s;
+}
+
+void App::run(const Step &st, bool repeat)
+{
+    switch (st.cmd) {
+    case Cmd::ListMove:
+        m_list->move(st.dir, st.ctrl, st.shift);
+        return;
+    case Cmd::ScrollLines:
+    case Cmd::ScrollPages:
+    case Cmd::ScrollTop:
+    case Cmd::ScrollEnd:
+        Q_EMIT scroll(int(st.cmd), st.dir);
+        return;
+    default:
+        break;
+    }
+    if (repeat)
+        return;   // a held Space pages through the letter, it doesn't preview an attachment again and again
+    switch (st.cmd) {
+    case Cmd::FocusSearch: Q_EMIT focusSearch(); break;
+    case Cmd::OpenPicker:
+        Q_EMIT openPicker(st.col == 0 && !accountChoices().isEmpty() ? QStringLiteral("account") : QStringLiteral("folder"));
+        break;
+    case Cmd::PressAction: pressAction(st.col); break;
+    case Cmd::OpenAttachment: m_letter->openAttachment(st.col); break;
+    case Cmd::PreviewAttachment: m_letter->previewAttachment(st.col); break;
+    case Cmd::SaveAttachment: m_letter->saveAttachment(st.col); break;
+    case Cmd::OpenLink: m_letter->activateLink(m_letter->links().value(st.col).url); break;
+    case Cmd::PressOutbox:
+        if (st.col == 0)
+            retryOutbox();
+        else
+            discardOutbox();
+        break;
+    default:
+        break;   // EnterLetter: Nav is in the letter already
+    }
 }
 
 } // namespace om

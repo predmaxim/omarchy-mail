@@ -43,7 +43,7 @@ public:
     QString sendError() const { return m_full.value(QStringLiteral("send_error")).toString(); }
     QString state() const { return m_state; }   // "", "loading", "remote"
     QString error() const { return m_error; }
-    int linkCount() const { return int(m_links.size()); }
+    int linkCount() const { return int(m_links.size()); }   // links with a box: the keyboard steps through these
 
     void show(const QJsonObject &summary);
     void reload();
