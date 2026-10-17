@@ -9,6 +9,7 @@
 namespace om {
 
 namespace {
+constexpr qsizetype kMaxBuf = 16 << 20;
 // Reply from one parsed response object.
 void deliver(const Client::Reply &r, const QJsonObject &o)
 {
@@ -31,7 +32,11 @@ Client::Client(QString socketPath, QObject *parent) : QObject(parent), m_path(st
     connect(&m_retry, &QTimer::timeout, this, &Client::connectNow);
     connect(&m_sock, &QLocalSocket::connected, this, [this] {
         send({{"cmd", "subscribe"}, {"window", true}}, [this](const QJsonValue &, const QString &err) {
-            if (!err.isEmpty() || m_connected)
+            if (!err.isEmpty()) {
+                dropped();
+                return;
+            }
+            if (m_connected)
                 return;
             m_connected = true;
             Q_EMIT connectedChanged();
@@ -40,6 +45,15 @@ Client::Client(QString socketPath, QObject *parent) : QObject(parent), m_path(st
     connect(&m_sock, &QLocalSocket::readyRead, this, &Client::readable);
     connect(&m_sock, &QLocalSocket::disconnected, this, &Client::dropped);
     connect(&m_sock, &QLocalSocket::errorOccurred, this, &Client::dropped);
+}
+
+Client::~Client()
+{
+    m_sock.disconnect(this);
+    // in-flight slow requests: no reply may run during destruction
+    const auto kids = findChildren<QLocalSocket *>(Qt::FindDirectChildrenOnly);
+    for (auto *k : kids)
+        k->disconnect();
 }
 
 QString Client::defaultSocketPath()
@@ -66,14 +80,13 @@ void Client::dropped()
 {
     m_buf.clear();
     m_sock.abort();   // idempotent; no further signals for an unconnected socket
+    const bool was = std::exchange(m_connected, false);   // before the drain: callbacks' request() fails at once
     auto pending = std::exchange(m_pending, {});
     for (const auto &r : std::as_const(pending))
         if (r)
             r({}, t("Mail service is not running"));
-    if (m_connected) {
-        m_connected = false;
+    if (was)
         Q_EMIT connectedChanged();
-    }
     if (m_started && !m_retry.isActive())
         m_retry.start();
 }
@@ -99,6 +112,10 @@ void Client::request(QJsonObject req, Reply reply)
 void Client::readable()
 {
     m_buf += m_sock.readAll();
+    if (m_buf.size() > kMaxBuf) {
+        dropped();
+        return;
+    }
     int nl;
     while ((nl = m_buf.indexOf('\n')) >= 0) {
         const QByteArray l = m_buf.left(nl).trimmed();
@@ -148,6 +165,10 @@ void Client::requestSlow(QJsonObject req, Reply reply)
     connect(s, &QLocalSocket::disconnected, s, [finish] { finish({}, t("Mail service is not running")); });
     connect(s, &QLocalSocket::readyRead, s, [s, buf, finish] {
         *buf += s->readAll();
+        if (buf->size() > kMaxBuf) {
+            finish({}, t("Request failed"));
+            return;
+        }
         int nl;
         while ((nl = buf->indexOf('\n')) >= 0) {
             const QByteArray l = buf->left(nl).trimmed();

@@ -18,7 +18,7 @@ public:
     using Reply = std::function<void(const QJsonValue &result, const QString &error)>;
 
     explicit Client(QString socketPath = defaultSocketPath(), QObject *parent = nullptr);
-    ~Client() override { m_sock.disconnect(this); }
+    ~Client() override;
     static QString defaultSocketPath();
 
     bool connected() const { return m_connected; }

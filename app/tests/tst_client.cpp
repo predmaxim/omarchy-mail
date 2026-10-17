@@ -110,6 +110,41 @@ private Q_SLOTS:
         QVERIFY(!c->connected());
         QVERIFY(cs.count() >= 1);
     }
+    void request_in_drain_callback_fails_at_once()
+    {
+        d->on("a", [](const QJsonObject &) { return QJsonObject{{"hang", true}}; });
+        connectClient();
+        Got inner;
+        bool outer = false;
+        c->request({{"cmd", "a"}}, [&](const QJsonValue &, const QString &) {
+            outer = true;
+            c->request({{"cmd", "a"}}, inner.cb());
+            QVERIFY(inner.done);   // immediate, before the drain ends
+        });
+        QVERIFY(d->waitFor("a"));
+        d->stop();
+        QTRY_VERIFY_WITH_TIMEOUT(outer, 2000);
+        QCOMPARE(inner.error, QStringLiteral("Mail service is not running"));
+        QVERIFY(d->start());
+        QTRY_VERIFY_WITH_TIMEOUT(c->connected(), 2000);
+        int as = 0;
+        for (const auto &r : d->requests())
+            as += r.value("cmd").toString() == QLatin1String("a");
+        QCOMPARE(as, 1);   // nothing leaked onto the new connection
+    }
+    void slow_reply_not_called_on_destroy()
+    {
+        d->on("message", [](const QJsonObject &) { return QJsonObject{{"hang", true}}; });
+        connectClient();
+        Got slow;
+        c->requestSlow({{"cmd", "message"}}, slow.cb());
+        QVERIFY(d->waitFor("message"));
+        delete c;
+        c = nullptr;
+        QTest::qWait(50);
+        QVERIFY(!slow.done);
+        c = new Client(d->path());   // for cleanup()
+    }
     void request_without_connection()
     {
         Got a;
