@@ -1,3 +1,144 @@
+diff --git a/include/litehtml/master_css.h b/include/litehtml/master_css.h
+index ea532922..baebee3b 100644
+--- a/include/litehtml/master_css.h
++++ b/include/litehtml/master_css.h
+@@ -62,7 +62,7 @@ del, s, strike {
+ 
+ center 
+ {
+-	text-align:center;
++	text-align:-webkit-center;
+ 	display:block;
+ }
+ 
+diff --git a/include/litehtml/types.h b/include/litehtml/types.h
+index d046eac5..f4642d77 100644
+--- a/include/litehtml/types.h
++++ b/include/litehtml/types.h
+@@ -666,14 +666,15 @@ namespace litehtml
+ 		element_position_fixed,
+ 	};
+ 
+-#define text_align_strings		"left;right;center;justify"
++#define text_align_strings		"left;right;center;justify;-webkit-center"
+ 
+ 	enum text_align
+ 	{
+ 		text_align_left,
+ 		text_align_right,
+ 		text_align_center,
+-		text_align_justify
++		text_align_justify,
++		text_align_webkit_center	// align=center: centres the text and the narrower blocks inside
+ 	};
+ 
+ #define text_transform_strings		"none;capitalize;uppercase;lowercase"
+diff --git a/src/el_div.cpp b/src/el_div.cpp
+index a23681cd..689358a9 100644
+--- a/src/el_div.cpp
++++ b/src/el_div.cpp
+@@ -1,5 +1,6 @@
+ #include "el_div.h"
+ #include "document.h"
++#include "html.h"
+ 
+ 
+ litehtml::el_div::el_div(const document::ptr& doc) : html_tag(doc)
+@@ -12,7 +13,7 @@ void litehtml::el_div::parse_attributes()
+ 	const char* str = get_attr("align");
+ 	if(str)
+ 	{
+-		m_style.add_property(_text_align_, str);
++		m_style.add_property(_text_align_, litehtml::equal_i(str, "center") || litehtml::equal_i(str, "middle") ? "-webkit-center" : str);
+ 	}
+ 	html_tag::parse_attributes();
+ }
+diff --git a/src/el_td.cpp b/src/el_td.cpp
+index f665c7c0..a5bdf615 100644
+--- a/src/el_td.cpp
++++ b/src/el_td.cpp
+@@ -1,5 +1,6 @@
+ #include "el_td.h"
+ #include "document.h"
++#include "html.h"
+ 
+ namespace litehtml
+ {
+@@ -39,7 +40,18 @@ void el_td::parse_attributes()
+ 	str = get_attr("align");
+ 	if(str)
+ 	{
+-		m_style.add_property(_text_align_, str);
++		m_style.add_property(_text_align_, equal_i(str, "center") || equal_i(str, "middle") ? "-webkit-center" : str);
++	}
++
++	// https://html.spec.whatwg.org/multipage/rendering.html#tables-2:attr-table-cellpadding
++	for (element::ptr p = parent(); p; p = p->parent())
++	{
++		if (p->tag() == _table_)
++		{
++			if ((str = p->get_attr("cellpadding")))
++				map_to_pixel_length_property(_padding_, str);
++			break;
++		}
+ 	}
+ 
+ 	str = get_attr("valign");
+diff --git a/src/el_tr.cpp b/src/el_tr.cpp
+index 78c53f4e..fd77fd7e 100644
+--- a/src/el_tr.cpp
++++ b/src/el_tr.cpp
+@@ -1,5 +1,6 @@
+ #include "el_tr.h"
+ #include "document.h"
++#include "html.h"
+ 
+ 
+ litehtml::el_tr::el_tr(const std::shared_ptr<document>& doc) : html_tag(doc)
+@@ -16,7 +17,7 @@ void litehtml::el_tr::parse_attributes()
+ 	str = get_attr("align");
+ 	if(str)
+ 	{
+-		m_style.add_property(_text_align_, str);
++		m_style.add_property(_text_align_, litehtml::equal_i(str, "center") || litehtml::equal_i(str, "middle") ? "-webkit-center" : str);
+ 	}
+ 	str = get_attr("valign");
+ 	if(str)
+diff --git a/src/line_box.cpp b/src/line_box.cpp
+index 091a96c0..744590ad 100644
+--- a/src/line_box.cpp
++++ b/src/line_box.cpp
+@@ -313,6 +313,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
+             }
+             break;
+         case text_align_center:
++        case text_align_webkit_center:
+             if(m_width < (m_right - m_left))
+             {
+ 				shift_x = ((m_right - m_left) - m_width) / 2;
+diff --git a/src/render_item.cpp b/src/render_item.cpp
+index b2109e71..957284e6 100644
+--- a/src/render_item.cpp
++++ b/src/render_item.cpp
+@@ -109,6 +109,18 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
+             m_margins.right = parent_width - el_width;
+             if (m_margins.right < 0) m_margins.right = 0;
+         }
++        // HTML "align descendants": inside align=center or <center> a narrower block is centred despite its margins
++        else if (src_el()->parent() && src_el()->parent()->css().get_text_align() == text_align_webkit_center)
++        {
++            pixel_t el_width = m_pos.width + m_borders.left + m_borders.right + m_padding.left + m_padding.right + m_margins.left + m_margins.right;
++            if (el_width < parent_width)
++            {
++                pixel_t shift = (parent_width - el_width) / 2;
++                m_margins.left += shift;
++                m_margins.right += parent_width - el_width - shift;
++                return shift;
++            }
++        }
+     }
+ 	return 0;
+ }
 diff --git a/src/string_id.cpp b/src/string_id.cpp
 index d197d244..999968a0 100644
 --- a/src/string_id.cpp

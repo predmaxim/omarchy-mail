@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..b136317 100644
+index 6fa2c82..27fb53d 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,6 +20,7 @@
@@ -108,7 +108,22 @@ index 6fa2c82..b136317 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1152,7 +1189,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
+@@ -1118,8 +1155,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
+ 
+ void DocumentContainerPrivate::get_media_features(litehtml::media_features &media) const
+ {
++    // the viewport is the layout width (render() before setDocument() sets it): a letter's @media rules
++    // for phones apply only when it's narrow
+     media.type = mediaType;
+-    qDebug(log) << "get_media_features";
++    media.width = media.device_width = m_clientRect.width();
++    media.height = media.device_height = m_clientRect.height();
++    media.color = 8;
++    media.resolution = 96;
+ }
+ 
+ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+@@ -1152,7 +1194,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
      d->m_pixmaps.clear();
      d->m_animations.clear();
      d->clearSelection();
@@ -118,7 +133,7 @@ index 6fa2c82..b136317 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
      d->buildIndex();
-@@ -1589,6 +1627,28 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,6 +1632,28 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  

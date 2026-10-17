@@ -156,6 +156,7 @@ void Renderer::render(const RenderJob &job)
         r.blank = !picture && std::all_of(text.cbegin(), text.cend(), [](QChar c) {
             return c.isSpace() || c.category() == QChar::Other_Format;
         });
+        doc.render(job.width, job.viewportHeight);   // no document yet: sets the viewport its @media rules see
         doc.setDocument(html, &ctx);
         doc.render(job.width, job.viewportHeight);
         doc.setDataCallback([](const QUrl &) { return QByteArray(); }); // job and r are gone after this task

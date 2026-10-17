@@ -266,6 +266,41 @@ private Q_SLOTS:
         QCOMPARE(height("height:6pc;overflow:hidden"), 96);
     }
 
+    // A newsletter's 600 px shell: its rule for phones applies only in a narrow window, and a centred
+    // cell or <center> centres it, as in browsers (HTML "align descendants", WebKit's -webkit-center)
+    void fixed_width_shell_centred()
+    {
+        const QString link = QStringLiteral("<a href=\"https://x.org/\" style=\"display:block\">Banner</a>");
+        const QString shell = QStringLiteral(
+            "<style>@media only screen and (max-width:620px){.shell{width:100%!important;max-width:100%!important}}</style>"
+            "<body style=\"margin:0\"><table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\">"
+            "<table class=\"shell\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:600px;max-width:600px\">"
+            "<tr><td>%1</td></tr></table></td></tr></table></body>").arg(link);
+        const auto box = [&](const QString &html, int width) {
+            RenderJob j = job(html);
+            j.width = width;
+            const Rendered r = run(j);
+            return r.links.size() == 1 ? r.links.at(0).rect : QRect();
+        };
+        QRect r = box(shell, 760);
+        QCOMPARE(r.width(), 600);
+        QCOMPARE(r.left(), 80);
+        QCOMPARE(box(shell, 500).width(), 500);
+        r = box(QStringLiteral("<body style=\"margin:0\"><center><table width=\"600\" cellpadding=\"0\" cellspacing=\"0\">"
+                               "<tr><td>%1</td></tr></table></center></body>").arg(link), 760);
+        QCOMPARE(r.width(), 600);
+        QCOMPARE(r.left(), 80);
+        // a picture block inside the centred cell too
+        r = box(QStringLiteral("<body style=\"margin:0\"><div align=\"center\"><a href=\"https://x.org/\" style=\"display:block;"
+                               "width:200px\">Banner</a></div></body>"), 760);
+        QCOMPARE(r.left(), 280);
+        // the table's cellpadding pads its cells (litehtml kept 1 px for "0" and none for "10")
+        QCOMPARE(box(QStringLiteral("<body style=\"margin:0\"><table cellpadding=\"10\" cellspacing=\"0\"><tr><td>%1</td></tr>"
+                                    "</table></body>").arg(link), 760).left(), 10);
+        QCOMPARE(box(QStringLiteral("<body style=\"margin:0\"><a href=\"https://x.org/\" style=\"display:block;width:50vw\">"
+                                    "Banner</a></body>"), 760).width(), 380);
+    }
+
     void blank_letters_known()
     {
         // nothing to read or see: the window says so instead of an empty letter
