@@ -159,6 +159,11 @@ pub(crate) fn spawn_with(acc: Account, db: PathBuf, cache: PathBuf, hub: Hub, co
     Handle { email: sh.email.clone(), jobs, retry, shared: sh, threads: Arc::new(Mutex::new(vec![watcher, worker])) }
 }
 
+/// A panic (a bug, or the imap crate on an answer out of protocol) fails this one step only.
+fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err("panicked".into()))
+}
+
 /// SyncFolder(Inbox), or SyncAll while the worker has not listed the folders yet.
 fn inbox_sync(db: Option<&Db>, email: &str) -> Job {
     let inbox = db.and_then(|db| db.folders_of(email).ok()?.into_iter().find(|f| f.role == Role::Inbox));
@@ -188,7 +193,7 @@ fn watch(sh: &Shared, db: &Path, jobs: &Sender<Job>, retries: &Receiver<()>) {
         if sh.stopped() {
             return;
         }
-        let mut conn = match (sh.connect)() {
+        let mut conn = match caught(|| (sh.connect)()) {
             Ok(c) => c,
             Err(e) if e.starts_with(AUTH_FAILED) => {
                 eprintln!("{}: {e}", sh.email);
@@ -224,7 +229,7 @@ fn watch(sh: &Shared, db: &Path, jobs: &Sender<Job>, retries: &Receiver<()>) {
         first = false;
         let since = Instant::now();
         let e = loop {
-            match conn.idle_inbox(IDLE_TIMEOUT) {
+            match caught(|| conn.idle_inbox(IDLE_TIMEOUT)) {
                 Ok(true) if !send(inbox_sync(db.as_ref(), &sh.email)) => return,
                 Ok(_) => {}
                 Err(e) => break e,
@@ -244,15 +249,15 @@ fn watch(sh: &Shared, db: &Path, jobs: &Sender<Job>, retries: &Receiver<()>) {
     }
 }
 
-/// Runs `f` on the connection, opening it first if needed. A failed job drops the connection and
-/// gets one more try on a fresh one, unless the account is stopping.
+/// Runs `f` on the connection, opening it first if needed. A failed (or panicked) job drops the
+/// connection and gets one more try on a fresh one, unless the account is stopping.
 fn attempt<T>(sh: &Shared, conn: &mut Option<Conn>, mut f: impl FnMut(&mut Conn) -> Result<T, String>) -> Result<T, String> {
     let mut again = true;
     loop {
         let c = match conn {
             Some(c) => c,
             None => {
-                let mut c = (sh.connect)()?;
+                let mut c = caught(|| (sh.connect)())?;
                 c.set_kill_slot(sh.work_kill.clone());
                 // After the slot is set: a `stop` before it could not break this connection.
                 if sh.stopped() {
@@ -261,7 +266,7 @@ fn attempt<T>(sh: &Shared, conn: &mut Option<Conn>, mut f: impl FnMut(&mut Conn)
                 conn.insert(c)
             }
         };
-        match f(c) {
+        match caught(|| f(c)) {
             Ok(v) => return Ok(v),
             Err(e) => {
                 *conn = None;
@@ -437,6 +442,39 @@ mod tests {
         let end = Instant::now() + Duration::from_secs(2);
         while !events.recv_timeout(end.saturating_duration_since(Instant::now())).unwrap().starts_with(r#"{"event":"changed""#) {}
         assert_eq!(hub.statuses()[0].status, Status::Online);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn panic_fails_one_step_only() {
+        thread_local!(static PANICKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+        let (idles, lists) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (i, l) = (idles.clone(), lists.clone());
+        let addr = fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => { l.fetch_add(1, SeqCst); "* LIST () \"/\" \"INBOX\"\r\n".into() }
+            "EXAMINE \"INBOX\"" => "* 0 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH\r\n".into(),
+            "IDLE" => { i.fetch_add(1, SeqCst); String::new() }
+            _ => return None,
+        }));
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-panic", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // the first connect of each thread panics (the watcher's session, the worker's start-up SyncAll)
+        let connect = move || {
+            if !PANICKED.replace(true) {
+                panic!("test panic");
+            }
+            Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw")
+        };
+        let hub = Hub::default();
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), hub.clone(), Arc::new(connect));
+        // the watcher reconnects and asks for a SyncAll; the worker runs it
+        until("next session and next job", || count(&idles) >= 1 && count(&lists) >= 1);
+        h.jobs.send(Job::SyncAll).unwrap();
+        until("one more job", || count(&lists) >= 2);
+        assert_eq!(hub.statuses()[0].status, Status::Online);
+        h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
     }
 

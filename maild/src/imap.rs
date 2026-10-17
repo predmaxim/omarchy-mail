@@ -107,6 +107,12 @@ fn err(e: ::imap::Error) -> String {
 
 fn io(e: std::io::Error) -> String { e.to_string() }
 
+/// The crate panics on some answers out of protocol (`unreachable!` on an untagged NO inside a
+/// SELECT/EXAMINE answer, `assert!`s): such an answer is unparseable like any other.
+fn unpanic<T>(f: impl FnOnce() -> ::imap::Result<T>) -> ::imap::Result<T> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err(::imap::Error::Parse(::imap::error::ParseError::Invalid(b"panicked".to_vec()))))
+}
+
 /// A failed action command (`select`, `command`, `search`, `capabilities`), for `actions::classify`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
@@ -235,7 +241,7 @@ impl Conn {
 
     /// Syncable folders with their roles, and the Gmail `\All` path (for server-side search).
     pub fn discover(&mut self) -> Result<(Vec<(String, Role)>, Option<String>), String> {
-        let names = self.session.list(Some(""), Some("*")).map_err(err)?;
+        let names = unpanic(|| self.session.list(Some(""), Some("*"))).map_err(err)?;
         let mut all = None;
         let mut out = vec![];
         for n in names.iter() {
@@ -250,7 +256,7 @@ impl Conn {
         // Unilateral EXISTS/EXPUNGE pile up for the life of the session; nothing reads them here.
         self.session.take_all_unsolicited().for_each(drop);
         self.inbox = false;
-        self.session.examine(path).map_err(|e| format!("{} (EXAMINE {path})", err(e)))
+        unpanic(|| self.session.examine(path)).map_err(|e| format!("{} (EXAMINE {path})", err(e)))
     }
 
     /// EXAMINE INBOX (once per session), then IDLE until an update arrives (`true`) or `timeout`
@@ -288,7 +294,7 @@ impl Conn {
 
     /// `UID SEARCH`, ascending, for actions.
     pub fn search(&mut self, query: &str) -> Result<Vec<u32>, Error> {
-        let mut v: Vec<u32> = self.session.uid_search(query).map_err(refused)?.into_iter().collect();
+        let mut v: Vec<u32> = unpanic(|| self.session.uid_search(query)).map_err(refused)?.into_iter().collect();
         v.sort_unstable();
         Ok(v)
     }
@@ -301,7 +307,7 @@ impl Conn {
         }
         self.session.take_all_unsolicited().for_each(drop);
         self.inbox = false;
-        Ok(self.session.select(path).map_err(refused)?.uid_validity)
+        Ok(unpanic(|| self.session.select(path)).map_err(refused)?.uid_validity)
     }
 
     /// APPENDs a message to `path` flagged `\Seen`.
@@ -309,18 +315,18 @@ impl Conn {
         if quote(path).is_none() {
             return Err(Error::Refused(format!("{path}: bad folder name")));
         }
-        self.session.append(path, raw).flag(::imap::types::Flag::Seen).finish().map_err(refused).map(drop)
+        unpanic(|| self.session.append(path, raw).flag(::imap::types::Flag::Seen).finish()).map_err(refused).map(drop)
     }
 
     /// A command that answers just OK or not (`UID MOVE`, `UID STORE … .SILENT`, `EXPUNGE`, …).
     /// Untagged lines in the answer are not looked at.
     pub fn command(&mut self, cmd: &str) -> Result<(), Error> {
-        self.session.run_command_and_check_ok(cmd).map_err(refused)
+        unpanic(|| self.session.run_command_and_check_ok(cmd)).map_err(refused)
     }
 
     /// Capability atoms, upper case (`MOVE`, `UIDPLUS`, …).
     pub fn capabilities(&mut self) -> Result<Vec<String>, Error> {
-        let caps = self.session.capabilities().map_err(refused)?;
+        let caps = unpanic(|| self.session.capabilities()).map_err(refused)?;
         Ok(caps.iter().filter_map(|c| match c {
             imap_proto::types::Capability::Atom(a) => Some(a.to_ascii_uppercase()),
             _ => None,
@@ -328,11 +334,11 @@ impl Conn {
     }
 
     pub fn fetch(&mut self, uids: &str, query: &str) -> Result<::imap::types::Fetches, String> {
-        self.session.uid_fetch(uids, query).map_err(err)
+        unpanic(|| self.session.uid_fetch(uids, query)).map_err(err)
     }
 
     pub fn noop(&mut self) -> Result<(), String> {
-        self.session.noop().map_err(err)
+        unpanic(|| self.session.noop()).map_err(err)
     }
 }
 
@@ -657,6 +663,18 @@ mod tests {
         // temporary (RFC 5530): retried like a network error
         let e = conn(no("NO [UNAVAILABLE] try later")).err().unwrap();
         assert!(!e.starts_with(AUTH_FAILED), "{e}");
+    }
+
+    #[test]
+    fn crate_panic_is_unparseable() {
+        // the crate hits `unreachable!` on an untagged NO inside an EXAMINE answer
+        let mut c = conn(fake_server(|cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "EXAMINE \"INBOX\"" => "* NO odd\r\n".into(),
+            _ => return None,
+        }))).unwrap();
+        let e = c.examine("INBOX").unwrap_err();
+        assert!(e.starts_with(UNPARSEABLE), "{e}");
     }
 
     #[test]
