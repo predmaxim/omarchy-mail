@@ -265,6 +265,14 @@ private Q_SLOTS:
             {"<html><head><title>News</title><style>p{color:red}</style></head>"
              "<body><p>&nbsp;&zwnj;&#8203;</p><script>go()</script></body></html>", true},
             {"<p><img src=\"cid:logo\"></p>", false},
+            // a picture without text is something to see, even where litehtml can't draw it
+            {"<svg width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>", false},
+            {"<video src=\"cid:clip\"></video>", false},
+            {"<input type=\"IMAGE\" src=\"cid:logo\">", false},
+            {"<table><tr><td background=\"cid:banner\" width=\"600\" height=\"300\">&nbsp;</td></tr></table>", false},
+            {"<table bgcolor=\"#ff0000\"><tr><td>&nbsp;</td></tr></table>", false},
+            {"<div style=\"height:300px;background-image:URL('cid:banner')\"></div>", false},
+            {"<div style=\"color:red\"> </div>", true},
             {"<p> Hi </p>", false},
         };
         for (const auto &c : cases) {
@@ -280,6 +288,8 @@ private Q_SLOTS:
         QVERIFY(nested.doc);
         const Rendered word = run(job(QString(1 << 20, QLatin1Char('x'))), 30000);
         QVERIFY(word.doc);
+        // its first 10 000 characters wrap; the rest is one piece: 100 000 pieces took 8 s to lay out
+        QVERIFY2(word.size.height() > 20 * 16 && word.size.height() < 20000, qPrintable(QString::number(word.size.height())));
     }
 };
 

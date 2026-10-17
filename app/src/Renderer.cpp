@@ -44,11 +44,31 @@ QByteArray loadData(const QUrl &url, const RenderJob &job, QStringList *wanted)
     return {};
 }
 
+// Something to see besides text: a picture, media, a background.
+static bool visual(const GumboElement &e)
+{
+    switch (e.tag) {
+    case GUMBO_TAG_IMG: case GUMBO_TAG_SVG: case GUMBO_TAG_PICTURE: case GUMBO_TAG_VIDEO:
+    case GUMBO_TAG_CANVAS: case GUMBO_TAG_OBJECT: case GUMBO_TAG_EMBED:
+        return true;
+    default:
+        break;
+    }
+    for (unsigned i = 0; i < e.attributes.length; ++i) {
+        const auto *a = static_cast<const GumboAttribute *>(e.attributes.data[i]);
+        const QByteArray name(a->name), value = QByteArray(a->value).toLower();
+        if (name == "background" || name == "bgcolor" || (name == "style" && value.contains("url("))
+            || (e.tag == GUMBO_TAG_INPUT && name == "type" && value == "image"))
+            return true;
+    }
+    return false;
+}
+
 // litehtml recurses per nesting level (parse, layout, draw, and the tree's destruction on the main
 // thread) and lays nested tables out in ~3^n time: 16000 nested divs overflow 8 MiB, 14 nested
 // tables take 46 s (measured 2026-10-17). gumbo, its own parser, measures the tree first; a letter
-// past the caps is shown as its text. On the way it notes the text and whether there is an image.
-static bool tooDeep(const QByteArray &html, QString *text, bool *image)
+// past the caps is shown as its text. On the way it notes the text and whether there is a picture.
+static bool tooDeep(const QByteArray &html, QString *text, bool *picture)
 {
     constexpr int maxDepth = 1000, maxTables = 12;
     GumboOutput *out = gumbo_parse_with_options(&kGumboDefaultOptions, html.constData(), size_t(html.size()));
@@ -71,7 +91,7 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *image)
         if (it.node->type != GUMBO_NODE_ELEMENT || e.tag == GUMBO_TAG_STYLE || e.tag == GUMBO_TAG_SCRIPT
             || e.tag == GUMBO_TAG_TITLE)
             continue;
-        *image = *image || e.tag == GUMBO_TAG_IMG;
+        *picture = *picture || visual(e);
         if (e.tag == GUMBO_TAG_BR)
             *text += QLatin1Char('\n');
         const int tables = it.tables + (e.tag == GUMBO_TAG_TABLE);
@@ -128,12 +148,12 @@ void Renderer::render(const RenderJob &job)
         doc.setDataCallback([&job, &r](const QUrl &url) { return loadData(url, job, &r.wanted); });
         QByteArray html = job.html.toUtf8();
         QString text;
-        bool image = false;
-        if (tooDeep(html, &text, &image))
+        bool picture = false;
+        if (tooDeep(html, &text, &picture))
             html = (QStringLiteral("<pre style=\"white-space:pre-wrap\">") + text.toHtmlEscaped()
                     + QStringLiteral("</pre>")).toUtf8();
         // spaces and invisible marks (&zwnj;, U+200B) only: nothing to read
-        r.blank = !image && std::all_of(text.cbegin(), text.cend(), [](QChar c) {
+        r.blank = !picture && std::all_of(text.cbegin(), text.cend(), [](QChar c) {
             return c.isSpace() || c.category() == QChar::Other_Format;
         });
         doc.setDocument(html, &ctx);
