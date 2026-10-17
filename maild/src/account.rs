@@ -3,13 +3,15 @@
 
 use crate::config::{Account, Paths};
 use crate::db::{Db, Role};
-use crate::hub::{Event, Hub};
+use crate::hub::{Event, Hub, lock};
 use crate::imap::{self, AUTH_FAILED, Conn, KillSlot};
 use crate::{secret, sync};
 use serde::Serialize;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// IDLE is renewed well before the 29 minutes after which a server may drop it.
@@ -43,28 +45,88 @@ pub enum Job {
 #[serde(rename_all = "snake_case")]
 pub enum Status { Connecting, Online, Offline(String), AuthFailed }
 
-/// Both threads stop once every clone is dropped (`interrupt` makes an idling watcher notice).
+/// What both threads of an account share.
+struct Shared {
+    email: String,
+    hub: Hub,
+    connect: Connector,
+    /// Set once, by `Handle::stop` or a dead worker. Statuses are set under this lock, so none
+    /// comes after it.
+    stop: Mutex<bool>,
+    watch_kill: KillSlot,
+    work_kill: KillSlot,
+}
+
+impl Shared {
+    fn stopped(&self) -> bool {
+        *lock(&self.stop)
+    }
+
+    /// False once stopped: the account keeps its last status.
+    fn status(&self, s: Status) -> bool {
+        let stop = lock(&self.stop);
+        if !*stop {
+            self.hub.set_status(&self.email, s);
+        }
+        !*stop
+    }
+
+    /// `why`: the final status. Both connections break, so neither thread stays blocked.
+    fn halt(&self, why: Option<String>) {
+        {
+            let mut stop = lock(&self.stop);
+            if let (false, Some(e)) = (*stop, why) {
+                self.hub.set_status(&self.email, Status::Offline(e));
+            }
+            *stop = true;
+        }
+        imap::kill(&self.watch_kill);
+        imap::kill(&self.work_kill);
+    }
+}
+
+/// The threads run until `stop`.
 #[derive(Clone)]
 pub struct Handle {
     pub email: String,
     pub jobs: Sender<Job>,
     /// The watcher's socket.
     pub kill: KillSlot,
-    work_kill: KillSlot,
     retry: Sender<()>,
+    shared: Arc<Shared>,
+    threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Handle {
     /// Breaks both connections (after sleep): blocked reads end at once, the threads reconnect.
     pub fn interrupt(&self) {
-        imap::kill(&self.kill);
-        imap::kill(&self.work_kill);
+        imap::kill(&self.shared.watch_kill);
+        imap::kill(&self.shared.work_kill);
     }
 
     /// "Sync now": queues SyncAll and wakes a watcher that waits out AuthFailed or a backoff.
     pub fn retry(&self) {
         let _ = self.retry.send(());
         let _ = self.jobs.send(Job::SyncAll);
+    }
+
+    /// Both threads end at their next step; an interrupted job is not rerun. A watcher inside
+    /// `connect` ends when that returns (up to the connect + I/O timeouts).
+    pub fn stop(&self) {
+        self.shared.halt(None);
+        // Wake both: the watcher from a wait, the worker from its queue (it checks `stop` first).
+        let _ = self.retry.send(());
+        let _ = self.jobs.send(Job::SyncAll);
+    }
+
+    /// `stop`, then wait until both threads have exited and no longer touch the database (the
+    /// first call waits; later ones, from any clone, return at once).
+    pub fn stop_and_join(&self) {
+        self.stop();
+        let threads = std::mem::take(&mut *lock(&self.threads));
+        for t in threads {
+            let _ = t.join();
+        }
     }
 }
 
@@ -78,20 +140,24 @@ pub fn spawn(acc: Account, paths: Paths, hub: Hub) -> Handle {
 fn spawn_with(acc: Account, db: PathBuf, hub: Hub, connect: Connector) -> Handle {
     let (jobs, queue) = channel();
     let (retry, retries) = channel();
-    let h = Handle { email: acc.email.clone(), jobs, kill: KillSlot::default(), work_kill: KillSlot::default(), retry };
-    std::thread::spawn({
-        let (email, db, hub, connect, jobs, kill) = (acc.email.clone(), db.clone(), hub.clone(), connect.clone(), h.jobs.clone(), h.kill.clone());
-        move || watch(email, db, hub, connect, jobs, retries, kill)
+    let sh = Arc::new(Shared {
+        email: acc.email.clone(), hub, connect, stop: Mutex::new(false), watch_kill: KillSlot::default(), work_kill: KillSlot::default(),
     });
-    let kill = h.work_kill.clone();
-    std::thread::spawn(move || work(acc, db, hub, connect, queue, kill));
-    h
-}
-
-/// Drains retry pokes; true once every Handle is dropped.
-fn gone(retries: &Receiver<()>) -> bool {
-    retries.try_iter().for_each(drop);
-    retries.try_recv() == Err(TryRecvError::Disconnected)
+    let watcher = std::thread::spawn({
+        let (sh, db, jobs) = (sh.clone(), db.clone(), jobs.clone());
+        move || watch(&sh, &db, &jobs, &retries)
+    });
+    let worker = std::thread::spawn({
+        let sh = sh.clone();
+        move || {
+            let r = catch_unwind(AssertUnwindSafe(|| work(&sh, &acc, &db, &queue))).unwrap_or_else(|_| Err("panicked".into()));
+            if let Err(e) = r {
+                eprintln!("{}: worker stopped: {e}", sh.email);
+                sh.halt(Some(format!("worker stopped: {e}")));
+            }
+        }
+    });
+    Handle { email: sh.email.clone(), jobs, kill: sh.watch_kill.clone(), retry, shared: sh, threads: Arc::new(Mutex::new(vec![watcher, worker])) }
 }
 
 /// SyncFolder(Inbox), or SyncAll while the worker has not listed the folders yet.
@@ -100,74 +166,106 @@ fn inbox_sync(db: Option<&Db>, email: &str) -> Job {
     inbox.map_or(Job::SyncAll, |f| Job::SyncFolder(f.id))
 }
 
-fn watch(email: String, db: PathBuf, hub: Hub, connect: Connector, jobs: Sender<Job>, retries: Receiver<()>, kill: KillSlot) {
-    let db = Db::open(&db).map_err(|e| eprintln!("{email}: {e}")).ok();
-    hub.set_status(&email, Status::Connecting);
+fn watch(sh: &Shared, db: &Path, jobs: &Sender<Job>, retries: &Receiver<()>) {
+    let db = Db::open(db).map_err(|e| eprintln!("{}: {e}", sh.email)).ok();
+    // False: the worker is gone, nothing left to watch for.
+    let send = |job: Job| {
+        let sent = jobs.send(job).is_ok();
+        if !sent {
+            eprintln!("{}: worker stopped", sh.email);
+            sh.status(Status::Offline("worker stopped".into()));
+        }
+        sent
+    };
+    if !sh.status(Status::Connecting) {
+        return;
+    }
     let (mut fails, mut first) = (0, true);
     loop {
-        if fails > 0 && retries.recv_timeout(BACKOFF[(fails - 1).min(BACKOFF.len() - 1)]) == Err(RecvTimeoutError::Disconnected) {
+        if fails > 0 {
+            // `retry` and `stop` end the wait early.
+            let _ = retries.recv_timeout(BACKOFF[(fails - 1).min(BACKOFF.len() - 1)]);
+        }
+        if sh.stopped() {
             return;
         }
-        let mut conn = match connect() {
+        let mut conn = match (sh.connect)() {
             Ok(c) => c,
             Err(e) if e.starts_with(AUTH_FAILED) => {
-                eprintln!("{email}: {e}");
-                hub.set_status(&email, Status::AuthFailed);
+                eprintln!("{}: {e}", sh.email);
+                if !sh.status(Status::AuthFailed) {
+                    return;
+                }
+                retries.try_iter().for_each(drop); // pokes from before the failure
                 // No attempts on its own: repeated bad logins get accounts locked.
-                if retries.recv().is_err() {
+                if sh.stopped() || retries.recv().is_err() || !sh.status(Status::Connecting) {
                     return;
                 }
                 (fails, first) = (0, false);
-                hub.set_status(&email, Status::Connecting);
                 continue;
             }
             Err(e) => {
-                hub.set_status(&email, Status::Offline(e));
+                if !sh.status(Status::Offline(e)) {
+                    return;
+                }
                 (fails, first) = (fails + 1, false);
                 continue;
             }
         };
-        conn.set_kill_slot(kill.clone());
-        hub.set_status(&email, Status::Online);
+        conn.set_kill_slot(sh.watch_kill.clone());
+        // After the slot is set: a `stop` before it could not break this connection.
+        if !sh.status(Status::Online) {
+            return;
+        }
         // The worker's start-up SyncAll covers the first session; after a break anything may have changed.
-        if !first {
-            let _ = jobs.send(Job::SyncAll);
+        if !first && !send(Job::SyncAll) {
+            return;
         }
         first = false;
         let since = Instant::now();
         let e = loop {
             match conn.idle_inbox(IDLE_TIMEOUT) {
-                Ok(true) => { let _ = jobs.send(inbox_sync(db.as_ref(), &email)); }
-                Ok(false) => {}
+                Ok(true) if !send(inbox_sync(db.as_ref(), &sh.email)) => return,
+                Ok(_) => {}
                 Err(e) => break e,
             }
-            if gone(&retries) {
+            if sh.stopped() {
                 return;
             }
         };
-        if gone(&retries) {
+        if sh.stopped() {
             return;
         }
-        eprintln!("{email}: IDLE: {e}");
-        hub.set_status(&email, Status::Connecting);
+        eprintln!("{}: IDLE: {e}", sh.email);
+        if !sh.status(Status::Connecting) {
+            return;
+        }
         fails = if since.elapsed() >= STEADY { 0 } else { fails + 1 };
     }
 }
 
 /// Runs `f` on the connection, opening it first if needed. A failed job drops the connection and
-/// gets one more try on a fresh one.
-fn attempt<T>(conn: &mut Option<Conn>, open: &dyn Fn() -> Result<Conn, String>, mut f: impl FnMut(&mut Conn) -> Result<T, String>) -> Result<T, String> {
+/// gets one more try on a fresh one, unless the account is stopping.
+fn attempt<T>(sh: &Shared, conn: &mut Option<Conn>, mut f: impl FnMut(&mut Conn) -> Result<T, String>) -> Result<T, String> {
     let mut again = true;
     loop {
         let c = match conn {
             Some(c) => c,
-            None => conn.insert(open()?),
+            None => {
+                let mut c = (sh.connect)()?;
+                c.set_kill_slot(sh.work_kill.clone());
+                // After the slot is set: a `stop` before it could not break this connection.
+                if sh.stopped() {
+                    return Err("stopped".into());
+                }
+                conn.insert(c)
+            }
         };
         match f(c) {
             Ok(v) => return Ok(v),
             Err(e) => {
                 *conn = None;
-                if !std::mem::take(&mut again) {
+                if !std::mem::take(&mut again) || sh.stopped() {
                     return Err(e);
                 }
             }
@@ -175,15 +273,9 @@ fn attempt<T>(conn: &mut Option<Conn>, open: &dyn Fn() -> Result<Conn, String>, 
     }
 }
 
-fn work(acc: Account, db: PathBuf, hub: Hub, connect: Connector, queue: Receiver<Job>, kill: KillSlot) {
-    let db = match Db::open(&db) {
-        Ok(db) => db,
-        Err(e) => return eprintln!("{}: {e}", acc.email),
-    };
-    let open = || connect().map(|mut c| {
-        c.set_kill_slot(kill.clone());
-        c
-    });
+/// Returns only when stopped (`Ok`) or on a fatal error.
+fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<(), String> {
+    let db = Db::open(db)?;
     let mut conn = None;
     let mut auth_failed = false;
     let mut next = Some(Job::SyncAll);
@@ -199,16 +291,19 @@ fn work(acc: Account, db: PathBuf, hub: Hub, connect: Connector, queue: Receiver
                     continue;
                 }
                 Err(RecvTimeoutError::Timeout) => Job::SyncAll,
-                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
             },
         };
+        if sh.stopped() {
+            return Ok(());
+        }
         let (r, always) = match job {
             Job::SyncAll => {
                 due = Instant::now() + PERIOD;
-                (attempt(&mut conn, &open, |c| sync::sync_account(c, &db, &acc)), false)
+                (attempt(sh, &mut conn, |c| sync::sync_account(c, &db, acc)), false)
             }
             // Flag changes and deletions insert nothing, but the window still has to refresh.
-            Job::SyncFolder(id) => (attempt(&mut conn, &open, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
+            Job::SyncFolder(id) => (attempt(sh, &mut conn, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
                 Some(f) => sync::sync_folder(c, &db, &f),
                 None => Ok(vec![]),
             }), true),
@@ -228,7 +323,7 @@ fn work(acc: Account, db: PathBuf, hub: Hub, connect: Connector, queue: Receiver
         };
         auth_failed = matches!(&r, Err(e) if e.starts_with(AUTH_FAILED));
         match r {
-            Ok(ids) if always || !ids.is_empty() => hub.emit(Event::Changed { folders: true, ids }),
+            Ok(ids) if always || !ids.is_empty() => sh.hub.emit(Event::Changed { folders: true, ids }),
             Ok(_) => {}
             Err(e) => eprintln!("{}: {e}", acc.email),
         }
@@ -313,6 +408,52 @@ mod tests {
 
         h.retry();
         until("retry", || count(&logins) == 4);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Logs in (counted), lists INBOX, idles silently.
+    fn quiet_server(logins: Arc<AtomicUsize>) -> SocketAddr {
+        fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => { logins.fetch_add(1, SeqCst); String::new() }
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => "* 0 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH\r\n".into(),
+            "IDLE" => String::new(),
+            _ => return None,
+        }))
+    }
+
+    #[test]
+    fn remove_handle_stops_and_joins() {
+        let logins = Arc::new(AtomicUsize::new(0));
+        let hub = Hub::default();
+        let (h, dir) = start(quiet_server(logins.clone()), "stop", &hub);
+        hub.add_handle(h);
+        until("both threads logged in", || count(&logins) == 2 && hub.statuses().first().is_some_and(|a| a.status == Status::Online));
+
+        let t = Instant::now();
+        hub.remove_handle("me@x");
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert!(hub.handles().is_empty() && hub.statuses().is_empty());
+        std::thread::sleep(BACKOFF[2] * 4);
+        assert_eq!(count(&logins), 2, "reconnected after stop");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dead_worker_is_visible() {
+        let hub = Hub::default();
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-dead", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // a directory where the database file should be: the worker's Db::open fails
+        std::fs::create_dir_all(dir.join("mail.db")).unwrap();
+        let addr = quiet_server(Arc::new(AtomicUsize::new(0)));
+        let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = spawn_with(acc(), dir.join("mail.db"), hub.clone(), Arc::new(connect));
+        let dead = || hub.statuses().first().is_some_and(|a| matches!(&a.status, Status::Offline(e) if e.starts_with("worker stopped")));
+        until("worker stopped", dead);
+        h.stop_and_join();
+        assert!(dead());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

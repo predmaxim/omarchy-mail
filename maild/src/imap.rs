@@ -220,7 +220,9 @@ impl Conn {
     /// EXAMINE INBOX (once per session), then IDLE until an update arrives (`true`) or `timeout`
     /// passes (`false`, time to renew). `* OK` keepalive lines are not updates.
     // ponytail: the imap crate drops updates the server sends in its answer to DONE (a round trip
-    // per renewal); the next update or the worker's 15-minute SyncAll picks them up.
+    // per renewal); the next update or the worker's 15-minute SyncAll picks them up. And `timeout`
+    // is a read timeout: a server sending `* OK` keepalives more often never gets IDLE renewed
+    // (a deadline check in the callback would fix it).
     pub fn idle_inbox(&mut self, timeout: Duration) -> Result<bool, String> {
         if !self.inbox {
             self.examine("INBOX")?;

@@ -30,7 +30,7 @@ pub struct Hub {
 }
 
 /// Nothing panics while holding these locks, but a poisoned one must not take the service down.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -62,17 +62,28 @@ impl Hub {
 
     /// Emits `Status` with every account (and logs) when this one's status changed.
     pub fn set_status(&self, email: &str, status: Status) {
-        let accounts = {
+        {
             let mut v = lock(&self.accounts);
             match v.iter_mut().find(|a| a.email == email) {
                 Some(a) if a.status == status => return,
                 Some(a) => a.status = status.clone(),
                 None => v.push(AccountState { email: email.into(), status: status.clone() }),
             }
-            v.clone()
-        };
+            // Under the lock, so concurrent changes reach subscribers in order (accounts → subs).
+            self.emit(Event::Status { accounts: v.clone() });
+        }
         eprintln!("{email}: {status:?}");
-        self.emit(Event::Status { accounts });
+    }
+
+    /// Stops the account's threads and waits for them, then forgets its status.
+    pub fn remove_handle(&self, email: &str) {
+        let gone: Vec<Handle> = lock(&self.handles).extract_if(.., |h| h.email == email).collect();
+        for h in gone {
+            h.stop_and_join();
+        }
+        let mut v = lock(&self.accounts);
+        v.retain(|a| a.email != email);
+        self.emit(Event::Status { accounts: v.clone() });
     }
 
     pub fn statuses(&self) -> Vec<AccountState> {
@@ -112,5 +123,15 @@ mod tests {
             r#"{"event":"status","accounts":[{"email":"a@x","status":{"offline":"down"}},{"email":"b@x","status":"auth_failed"}]}"#,
         ]);
         assert_eq!(hub.statuses().len(), 2);
+    }
+
+    #[test]
+    fn remove_handle_drops_status() {
+        let hub = Hub::default();
+        hub.set_status("a@x", Status::Online);
+        let rx = hub.subscribe(false);
+        hub.remove_handle("a@x");
+        assert!(hub.statuses().is_empty());
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [r#"{"event":"status","accounts":[]}"#]);
     }
 }
