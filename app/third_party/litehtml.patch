@@ -34,10 +34,10 @@ index d046eac5..f4642d77 100644
  
  #define text_transform_strings		"none;capitalize;uppercase;lowercase"
 diff --git a/src/css_properties.cpp b/src/css_properties.cpp
-index 59ef0f70..a6cf4330 100644
+index 59ef0f70..3a8dd6dc 100644
 --- a/src/css_properties.cpp
 +++ b/src/css_properties.cpp
-@@ -233,7 +233,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
+@@ -233,12 +233,15 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
  		m_line_height.computed_value = m_font_metrics.height;
  	} else if(m_line_height.css_value.units() == css_units_none)
  	{
@@ -46,6 +46,14 @@ index 59ef0f70..a6cf4330 100644
  	} else
  	{
  		m_line_height.computed_value = doc->to_pixels(m_line_height.css_value, m_font_metrics, m_font_metrics.font_size);
+ 		m_line_height.css_value = (float) m_line_height.computed_value;
+ 	}
++	// a raised font (container's minimum size) must not overlap its lines, whatever unit the line-height has
++	if(m_font_metrics.font_size > font_size && m_line_height.computed_value < m_font_metrics.height)
++		m_line_height.computed_value = m_font_metrics.height;
+ 
+ 	m_list_style_type     = (list_style_type)     el->get_property<int>(_list_style_type_,     true, list_style_type_disc,        offset(m_list_style_type));
+ 	m_list_style_position = (list_style_position) el->get_property<int>(_list_style_position_, true, list_style_position_outside, offset(m_list_style_position));
 diff --git a/src/el_div.cpp b/src/el_div.cpp
 index a23681cd..689358a9 100644
 --- a/src/el_div.cpp

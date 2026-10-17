@@ -297,6 +297,23 @@ private Q_SLOTS:
         QVERIFY(has(r, QStringLiteral("Payslip total")));
     }
 
+    // only 6..13 px is raised: smaller sizes are layout tricks (spacers, preheaders), and a raised font keeps its lines apart
+    void minimum_font_spares_spacers()
+    {
+        const auto height = [&](const QString &style, const QString &text = QStringLiteral("Hg word<br>Hg word")) {
+            const Rendered r = run(job(QStringLiteral("<body style=\"margin:0\"><a href=\"https://x.org/\" style=\"display:block;%1\">%2</a></body>")
+                                           .arg(style, text)));
+            return r.links.size() == 1 ? r.links.at(0).rect.height() : -1;
+        };
+        QVERIFY(height("font-size:9px;line-height:11px") >= height("font-size:13px;line-height:1"));
+        QVERIFY(height("font-size:9px;line-height:1") >= height("font-size:13px;line-height:1"));
+        QVERIFY(height("font-size:9px;line-height:100%") >= height("font-size:13px;line-height:1"));
+        QVERIFY(height("font-size:1px;line-height:1", "&nbsp;") <= 3);
+        QVERIFY(height("font-size:0", "&nbsp;") <= 1);
+        QCOMPARE(height("font-size:5px;line-height:1", "Hg"), height("font-size:5px;line-height:5px", "Hg"));
+        QVERIFY(height("font-size:5px;line-height:1", "Hg") < 8);
+    }
+
     // A newsletter's 600 px shell: its rule for phones applies only in a narrow window, and a centred
     // cell or <center> centres it, as in browsers (HTML "align descendants", WebKit's -webkit-center)
     void fixed_width_shell_centred()
