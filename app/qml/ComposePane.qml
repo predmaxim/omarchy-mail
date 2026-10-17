@@ -12,7 +12,36 @@ Item {
     property int suggestion: -1   // the highlighted suggestion; -1: none
     signal closed()               // the window takes its keys back
 
-    function appKey(e) { return app.key(e.key, e.nativeScanCode, e.modifiers, e.isAutoRepeat, "compose") }
+    // The Tab chain: From (when shown), To, Subject, every plaque, the text; it wraps. Tab in the text moves on, no tab characters.
+    function chain() {
+        const out = fromRow.visible ? [from] : []
+        out.push(toField, subject)
+        for (let i = 0; i < attachments.count; ++i)
+            out.push(attachments.itemAt(i))
+        out.push(body)
+        return out
+    }
+    function step(dir) {
+        const c = chain()
+        let i = c.findIndex(x => x.activeFocus)
+        c[(i + dir + c.length) % c.length].forceActiveFocus()
+    }
+    function removeAt(i) {   // the plaque dies with the model: the focus is placed from here
+        compose.removeAttachment(i)
+        Qt.callLater(focusPlaque, i)
+    }
+    function focusPlaque(i) {   // after a removal: the next plaque, else the previous, else the text
+        const n = attachments.count
+        const next = n > 0 ? attachments.itemAt(Math.min(i, n - 1)) : body
+        next.forceActiveFocus()
+    }
+    function appKey(e) {
+        if (e.modifiers === Qt.NoModifier && e.key === Qt.Key_Tab || e.modifiers === Qt.ShiftModifier && e.key === Qt.Key_Backtab) {
+            step(e.key === Qt.Key_Tab ? 1 : -1)
+            return true
+        }
+        return app.key(e.key, e.nativeScanCode, e.modifiers, e.isAutoRepeat, "compose")
+    }
     function lastAddress(text) { return text.split(/[,;]/).pop().trim() }
 
     onVisibleChanged: {
@@ -95,6 +124,7 @@ Item {
             bottomPadding: theme.space(4)
         }
         Row {
+            id: fromRow
             visible: app.accounts.length > 1
             width: parent.width
             Text {
@@ -107,7 +137,9 @@ Item {
                 font.letterSpacing: 1.2
             }
             Picker {
+                id: from
                 objectName: "composeFrom"
+                beforeKeys: e => pane.appKey(e)
                 width: parent.width - theme.space(92)
                 choices: app.accounts.map(a => a.email)
                 current: choices.indexOf(compose.account)
@@ -126,7 +158,6 @@ Item {
                 selectionColor: theme.selection
                 selectedTextColor: theme.foreground
                 font.pixelSize: theme.fontTitle
-                KeyNavigation.tab: subject
                 onTextEdited: {
                     compose.to = text
                     app.suggest(pane.lastAddress(text))
@@ -201,8 +232,6 @@ Item {
                 selectionColor: theme.selection
                 selectedTextColor: theme.foreground
                 font.pixelSize: theme.fontTitle
-                KeyNavigation.tab: body
-                KeyNavigation.backtab: toField
                 onTextEdited: compose.subject = text
                 Keys.onPressed: e => e.accepted = pane.appKey(e)
             }
@@ -225,10 +254,9 @@ Item {
                     color: activeFocus ? theme.hoverFill : "transparent"
                     border.width: 1
                     border.color: activeFocus ? theme.cursorBorder : theme.muted
-                    activeFocusOnTab: true
                     Keys.onPressed: e => {
-                        if (e.key === Qt.Key_Delete && e.modifiers === Qt.NoModifier) {
-                            compose.removeAttachment(index)
+                        if ((e.key === Qt.Key_Delete || e.key === Qt.Key_Backspace) && e.modifiers === Qt.NoModifier) {
+                            pane.removeAt(index)
                             e.accepted = true
                         } else {
                             e.accepted = pane.appKey(e)
@@ -244,10 +272,16 @@ Item {
                         color: theme.foreground
                         font.pixelSize: theme.fontBody
                     }
-                    MouseArea {
+                    MouseArea {   // a click focuses the plaque; only the ✕ removes
                         anchors.fill: parent
-                        onClicked: compose.removeAttachment(chip.index)   // ponytail: the whole plaque removes; the file is only attached, never deleted
+                        onClicked: m => {
+                            if (m.x > parent.width - theme.space(10) - cross.implicitWidth - theme.space(4))
+                                pane.removeAt(chip.index)
+                            else
+                                chip.forceActiveFocus()
+                        }
                     }
+                    TextMetrics { id: cross; font.pixelSize: theme.fontBody; text: "✕" }
                 }
             }
         }
@@ -290,7 +324,6 @@ Item {
             selectedTextColor: theme.foreground
             font.family: "monospace"
             font.pixelSize: theme.fontTitle
-            KeyNavigation.backtab: subject
             onTextChanged: if (text !== compose.body) compose.body = text
             onCursorRectangleChanged: flick.follow()
             Keys.onPressed: e => e.accepted = pane.appKey(e)

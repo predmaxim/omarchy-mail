@@ -288,6 +288,66 @@ private Q_SLOTS:
         if (const QString shot = qEnvironmentVariable("OM_SHOT"); !shot.isEmpty())
             QVERIFY(win->grabWindow().save(shot));
     }
+    void tab_chain_reaches_every_control()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        QFile f(dir->filePath("note.txt"));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hi");
+        f.close();
+        s->compose.addFiles({QUrl::fromLocalFile(f.fileName())});
+        QTRY_COMPARE(item("composeAttachments")->property("count").toInt(), 1);
+        QQuickItem *plaque = itemAt(item("composeAttachments"), 0);
+        const QList<QQuickItem *> order{item("composeSubject"), plaque, item("composeBody"), item("composeFrom"), item("composeTo")};
+        for (QQuickItem *next : order) {
+            QTest::keyClick(win, Qt::Key_Tab);
+            QVERIFY(next->hasActiveFocus());
+        }
+        QTest::keyClick(win, Qt::Key_Backtab, Qt::ShiftModifier);   // back: From <- To
+        QVERIFY(item("composeFrom")->hasActiveFocus());
+    }
+    void tab_in_body_inserts_nothing()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        item("composeBody")->forceActiveFocus();
+        QTest::keyClick(win, Qt::Key_Tab);
+        QCOMPARE(item("composeBody")->property("text").toString(), QString());
+        QVERIFY(!item("composeBody")->hasActiveFocus());
+    }
+    void del_on_focused_plaque_removes_it()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        QFile f(dir->filePath("note.txt"));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hi");
+        f.close();
+        s->compose.addFiles({QUrl::fromLocalFile(f.fileName())});
+        QTRY_COMPARE(item("composeAttachments")->property("count").toInt(), 1);
+        QTest::keyClick(win, Qt::Key_Tab);
+        QTest::keyClick(win, Qt::Key_Tab);   // Subject, then the plaque
+        QVERIFY(itemAt(item("composeAttachments"), 0)->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Delete);
+        QTRY_COMPARE(item("composeAttachments")->property("count").toInt(), 0);
+        QTRY_VERIFY(item("composeBody")->hasActiveFocus());
+    }
+    void from_picker_opens_from_the_keyboard()
+    {
+        start();
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Backtab, Qt::ShiftModifier);
+        QVERIFY(item("composeFrom")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Return);
+        QTRY_COMPARE(s->compose.account(), s->app.accounts().at(1).toMap().value("email").toString());
+    }
     void unread_row_has_accent_bar()
     {
         start();

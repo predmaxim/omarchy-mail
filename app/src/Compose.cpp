@@ -59,7 +59,7 @@ QVariantList Compose::attachments() const
         const QFileInfo fi(a.path);
         const bool img = QStringList{"png", "jpg", "jpeg", "gif", "webp"}.contains(fi.suffix().toLower());
         out << QVariantMap{{"name", fi.fileName()}, {"sizeText", format::size(fi.size())},
-                           {"icon", img ? QStringLiteral("image") : QStringLiteral("file")}};
+                           {"icon", img ? QStringLiteral("󰋩") : QStringLiteral("󰈙")}};
     }
     return out;
 }

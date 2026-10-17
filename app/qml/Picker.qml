@@ -9,6 +9,7 @@ Rectangle {
     property var choices: []
     property int current: -1
     property bool hasCursor: false   // the window cursor (`nav`) is on it
+    property var beforeKeys: null   // (key event) -> bool: the owner's keys first (the compose form's)
     signal picked(int index)
 
     function open() { popup.open() }
@@ -22,7 +23,15 @@ Rectangle {
     radius: theme.space(8)
     color: hasCursor || mouse.containsMouse ? theme.hoverFill : "transparent"
     border.width: 1
-    border.color: popup.visible ? theme.accent : theme.muted
+    border.color: popup.visible || activeFocus ? theme.accent : theme.muted
+    Keys.onPressed: e => {   // focused (the form's Tab chain): Enter, Space and ↓ open the list
+        if (beforeKeys && beforeKeys(e)) {
+            e.accepted = true
+        } else if (e.modifiers === Qt.NoModifier && [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Down].includes(e.key)) {
+            popup.open()
+            e.accepted = true
+        }
+    }
 
     Text {
         id: label
