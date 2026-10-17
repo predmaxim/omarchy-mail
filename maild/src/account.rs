@@ -5,7 +5,7 @@ use crate::config::{Account, Paths};
 use crate::db::{Db, Role};
 use crate::hub::{Event, Hub, lock};
 use crate::imap::{self, AUTH_FAILED, Conn, KillSlot};
-use crate::{actions, notify, secret, sync};
+use crate::{actions, fetch, notify, secret, sync};
 use serde::Serialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -28,8 +28,8 @@ const STEADY: Duration = Duration::from_secs(60);
 const PERIOD: Duration = Duration::from_secs(15 * 60);
 const NOT_IMPLEMENTED: &str = "not implemented";
 
-/// Worker jobs. `Fetch*`, `Attachment`, `Search`, `Append` are filled in by tasks 9–11.
-#[allow(dead_code)] // constructed by tasks 9–11
+/// Worker jobs. `FetchRemote`, `Search`, `Append` are filled in by tasks 10–11.
+#[allow(dead_code)] // constructed by tasks 10–11
 pub enum Job {
     SyncFolder(i64),
     SyncAll,
@@ -51,6 +51,7 @@ struct Shared {
     email: String,
     hub: Hub,
     connect: Connector,
+    cache: PathBuf,
     /// Set once, by `Handle::stop` or a dead worker. Statuses are set under this lock, so none
     /// comes after it.
     stop: Mutex<bool>,
@@ -134,14 +135,14 @@ type Connector = Arc<dyn Fn() -> Result<Conn, String> + Send + Sync>;
 
 pub fn spawn(acc: Account, paths: Paths, hub: Hub) -> Handle {
     let a = acc.clone();
-    spawn_with(acc, paths.db, hub, Arc::new(move || Conn::connect(&a, &secret::lookup(&a.email)?)))
+    spawn_with(acc, paths.db, paths.cache, hub, Arc::new(move || Conn::connect(&a, &secret::lookup(&a.email)?)))
 }
 
-fn spawn_with(acc: Account, db: PathBuf, hub: Hub, connect: Connector) -> Handle {
+fn spawn_with(acc: Account, db: PathBuf, cache: PathBuf, hub: Hub, connect: Connector) -> Handle {
     let (jobs, queue) = channel();
     let (retry, retries) = channel();
     let sh = Arc::new(Shared {
-        email: acc.email.clone(), hub, connect, stop: Mutex::new(false), watch_kill: KillSlot::default(), work_kill: KillSlot::default(),
+        email: acc.email.clone(), hub, connect, cache, stop: Mutex::new(false), watch_kill: KillSlot::default(), work_kill: KillSlot::default(),
     });
     let watcher = std::thread::spawn({
         let (sh, db, jobs) = (sh.clone(), db.clone(), jobs.clone());
@@ -314,16 +315,16 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
             // Nothing queued: no connection. After a rejected login: no new attempts.
             Job::Actions if auth_failed || matches!(actions::has_pending(&db, &acc.email), Ok(false)) => continue,
             Job::Actions => attempt(sh, &mut conn, |c| actions::run(c, &db, &acc.email, &sh.hub)).map(|()| vec![]),
-            Job::Fetch { reply, .. } => {
-                let _ = reply.send(Err(NOT_IMPLEMENTED.into()));
+            Job::Fetch { message, reply } => {
+                let _ = reply.send(attempt(sh, &mut conn, |c| fetch::fetch_body(c, &db, &sh.cache, message)));
                 continue;
             }
             Job::FetchRemote { reply, .. } => {
                 let _ = reply.send(Err(NOT_IMPLEMENTED.into()));
                 continue;
             }
-            Job::Attachment { reply, .. } => {
-                let _ = reply.send(Err(NOT_IMPLEMENTED.into()));
+            Job::Attachment { message, index, reply } => {
+                let _ = reply.send(attempt(sh, &mut conn, |c| fetch::fetch_attachment(c, &db, &sh.cache, message, index)));
                 continue;
             }
             Job::Search { .. } | Job::Append { .. } => continue,
@@ -348,6 +349,7 @@ mod tests {
     use super::*;
     use crate::config::{Provider, Server};
     use crate::imap::fake_server;
+    use std::os::unix::fs::PermissionsExt;
     use std::net::{SocketAddr, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
@@ -361,7 +363,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("maild-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
-        (spawn_with(acc(), dir.join("mail.db"), hub.clone(), Arc::new(connect)), dir)
+        (spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), hub.clone(), Arc::new(connect)), dir)
     }
 
     fn until(what: &str, ok: impl Fn() -> bool) {
@@ -477,7 +479,7 @@ mod tests {
         }));
         let hub = Hub::default();
         let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
-        let h = spawn_with(acc(), dir.join("mail.db"), hub.clone(), Arc::new(connect));
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), hub.clone(), Arc::new(connect));
         until("the queued read reached the server", || count(&stores) == 1 && db.queued_count("me@x").unwrap() == 0);
         assert!(db.message(id).unwrap().unwrap().summary.seen);
         h.stop_and_join();
@@ -493,11 +495,93 @@ mod tests {
         std::fs::create_dir_all(dir.join("mail.db")).unwrap();
         let addr = quiet_server(Arc::new(AtomicUsize::new(0)));
         let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
-        let h = spawn_with(acc(), dir.join("mail.db"), hub.clone(), Arc::new(connect));
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), hub.clone(), Arc::new(connect));
         let dead = || hub.statuses().first().is_some_and(|a| matches!(&a.status, Status::Offline(e) if e.starts_with("worker stopped")));
         until("worker stopped", dead);
         h.stop_and_join();
         assert!(dead());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const RAW: &str = "From: a@x\r\nSubject: s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n\
+--B\r\nContent-Type: text/html\r\n\r\n<p>hi</p><img src=\"cid:logo@x\">\r\n\
+--B\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\naW1n\r\n\
+--B\r\nContent-Type: application/pdf; name=\"../a.pdf\"\r\nContent-Disposition: attachment; filename=\"../a.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\ncGRm\r\n--B--\r\n";
+
+    /// A server with one message (uid 5) that serves `RAW`; counts full fetches.
+    fn mail_server(fetches: Arc<AtomicUsize>) -> SocketAddr {
+        fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => "* 1 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 5\r\n".into(),
+            "UID FETCH 5:* (UID FLAGS)" => "* 1 FETCH (UID 5 FLAGS ())\r\n".into(),
+            "UID FETCH 5 (UID BODY.PEEK[])" => {
+                fetches.fetch_add(1, SeqCst);
+                format!("* 1 FETCH (UID 5 BODY[] {{{}}}\r\n{RAW})\r\n", RAW.len())
+            }
+            "SELECT \"INBOX\"" | "IDLE" => String::new(),
+            _ => return None,
+        }))
+    }
+
+    #[test]
+    fn fetch_and_attachment_jobs() {
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-fetch", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Db::open(&dir.join("mail.db")).unwrap();
+        let inbox = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        // as a big message is stored: no body, attachment list from BODYSTRUCTURE with a shifted index
+        let mut p = crate::mime::Parsed::default();
+        let a = |index, name: &str, mime: &str, cid: Option<&str>| crate::mime::Attachment { index, name: name.into(), mime: mime.into(), size: 1, cid: cid.map(Into::into), inline: cid.is_some() };
+        p.attachments = vec![a(0, "../a.pdf", "application/pdf", None), a(1, "logo", "image/png", Some("logo@x"))];
+        let id = db.insert_message(inbox, 5, false, false, 3 << 20, &p, false).unwrap();
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let addr = mail_server(fetches.clone());
+        let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), Hub::default(), Arc::new(connect));
+
+        let (tx, rx) = channel();
+        h.jobs.send(Job::Fetch { message: id, reply: tx }).unwrap();
+        rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        let f = db.message(id).unwrap().unwrap();
+        assert!(f.has_body && f.html.unwrap().contains("hi"));
+        // the authoritative list: the image comes first in the message
+        assert_eq!((f.attachments[0].name.as_str(), f.attachments[0].cid.as_deref()), ("attachment", Some("logo@x")));
+        let img = dir.join("cache").join(id.to_string()).join("cid-0");
+        assert_eq!(std::fs::read(&img).unwrap(), b"img");
+        assert_eq!(std::fs::metadata(&img).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(img.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+
+        // the stored list was replaced: the pdf is index 1 now
+        let (tx, rx) = channel();
+        h.jobs.send(Job::Attachment { message: id, index: 1, reply: tx }).unwrap();
+        let path = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(path, dir.join("cache").join(id.to_string()).join("a.pdf"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"pdf");
+        h.stop_and_join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn attachment_found_by_name_not_index() {
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-byname", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Db::open(&dir.join("mail.db")).unwrap();
+        let inbox = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        let mut p = crate::mime::Parsed::default();
+        // BODYSTRUCTURE said the pdf is index 0; mail-parser has it at 1
+        p.attachments = vec![crate::mime::Attachment { index: 0, name: "../a.pdf".into(), mime: "application/pdf".into(), size: 1, cid: None, inline: false }];
+        let id = db.insert_message(inbox, 5, false, false, 3 << 20, &p, true).unwrap();
+        let addr = mail_server(Arc::new(AtomicUsize::new(0)));
+        let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), Hub::default(), Arc::new(connect));
+        let (tx, rx) = channel();
+        h.jobs.send(Job::Attachment { message: id, index: 0, reply: tx }).unwrap();
+        let path = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"pdf");
+        assert_eq!(db.message(id).unwrap().unwrap().attachments[1].index, 1, "stored list is mail-parser's now");
+        h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
     }
 }

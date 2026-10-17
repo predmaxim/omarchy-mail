@@ -71,7 +71,7 @@ Failure:
 | `search` | `q` | `{local: Summary[], token}` |
 | `contacts` | `prefix` | `Addr[]` |
 | `sync` | `account?, folder?` | — |
-| `attachment` | `message, index` | `{path}` — *not implemented yet (stage 9)* |
+| `attachment` | `message, index` | `{path}` |
 | `open_remote` | `account, folder_path, uid` | `{id}` — *not implemented yet (stage 10)* |
 | `act` | `ids, op` | `{batch}` |
 | `undo` | `batch` | `{batch}` |
@@ -226,10 +226,25 @@ live in the keyring only.
 - An unknown id is an error ("message not found").
 - `has_body: false` means a big message (over 2 MiB) whose body is not downloaded. Then `text`
   holds what sync took (the text parts) and `html` may be `null`.
-- From stage 9 on:
-  - this call first downloads the body (waiting up to 30 s);
-  - the result gains `inline: {"<cid>": "/absolute/path"}` for images that `html` references as
-    `cid:`.
+- A big message is fetched first: the reply waits up to 30 s, then errors ("no network"). The
+  `attachments` of a fetched big message are the list `attachment` numbers by.
+- The result gains `inline: {"<cid>": "/absolute/path"}`: the cached files of the images that
+  `html` references as `cid:` (`{}` for none). If only the images could not be fetched, the
+  message is still returned, without them in `inline`.
+- Error while a local move waits for the server (`uid` is `null`): "message is being moved".
+
+### `attachment`
+
+```json
+→ {"id": 13, "cmd": "attachment", "message": 42, "index": 0}
+← {"id": 13, "ok": true, "result": {"path": "/absolute/file"}}
+```
+
+- The service downloads attachment `index` (`Attachment.index`) into its cache,
+  `<cache>/<message id>/<name>` (the name is cleaned of `/`, `\` and control characters; an empty
+  one becomes `attachment-<index>`), and returns the absolute path. A file that is already there is
+  returned at once, with no network.
+- Errors: no network or no answer within 30 s, the message is being moved (`uid` is `null`).
 
 ### `search`
 
@@ -326,11 +341,6 @@ live in the keyring only.
 
 These shapes are fixed now; the commands answer `not implemented` until their stage.
 
-- `attachment {message, index}` → `{path}` (stage 9).
-  - The service downloads attachment `index` (`Attachment.index`) into its cache and returns
-    the absolute file path.
-  - If the file is already there, it returns at once.
-  - Without network: an error.
 - `open_remote {account, folder_path, uid}` → `{id}` (stage 10).
   - Downloads a server search hit (`Summary.remote`) into the account's `remote` folder.
   - Returns the local id for `message`.

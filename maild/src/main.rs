@@ -2,6 +2,7 @@ mod account;
 mod actions;
 mod config;
 mod db;
+mod fetch;
 mod hub;
 mod i18n;
 mod imap;

@@ -295,9 +295,13 @@ impl Db {
         }
     }
 
-    #[allow(dead_code)] // task 9
     pub fn set_body(&self, id: i64, text: &str, html: Option<&str>, preview: &str) -> Result<(), String> {
         self.c.execute("UPDATE messages SET text = ?2, html = ?3, preview = ?4, has_body = 1 WHERE id = ?1", params![id, text, html, preview]).map(|_| ()).map_err(e)
+    }
+
+    pub fn set_attachments(&self, id: i64, atts: &[Attachment]) -> Result<(), String> {
+        let json = serde_json::to_string(atts).map_err(|x| x.to_string())?;
+        self.c.execute("UPDATE messages SET attachments_json = ?2 WHERE id = ?1", params![id, json]).map(|_| ()).map_err(e)
     }
 
     pub fn search(&self, q: &str, limit: u32) -> Result<Vec<Summary>, String> {

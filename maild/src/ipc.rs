@@ -3,6 +3,7 @@
 
 use crate::account::{self, Handle, Job};
 use crate::actions::{self, Op};
+use crate::fetch;
 use crate::config::{self, Account, Paths, Provider, Server};
 use crate::db::{Db, ListQuery};
 use crate::hub::{Event, Hub, lock};
@@ -17,13 +18,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A longer request line gets an error and the client is dropped.
 pub const MAX_LINE: usize = 1024 * 1024;
 const NOT_IMPLEMENTED: &str = "not implemented";
+/// How long a client waits for the worker to fetch a message or attachment.
+const FETCH_WAIT: Duration = if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(30) };
 const SEARCH_LIMIT: u32 = 200;
 const CONTACTS_LIMIT: u32 = 10;
 /// A client that does not read for this long is dropped (its events would pile up).
@@ -70,7 +73,7 @@ enum Req {
     Search { q: String },
     Contacts { prefix: String },
     Sync { account: Option<String>, folder: Option<i64> },
-    Attachment,
+    Attachment { message: i64, index: u32 },
     OpenRemote,
     Act { ids: Vec<i64>, op: Op },
     Undo { batch: i64 },
@@ -138,7 +141,8 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
         Req::AccountRemove { email } => account_remove(st, &email),
         Req::Folders { account } => val(st.db.folder_list(account.as_deref())?),
         Req::List(q) => val(st.db.list(&q)?),
-        Req::Message { message } => val(st.db.message(message)?.ok_or_else(|| tr("message not found", "письмо не найдено"))?),
+        Req::Message { message } => message_full(st, message),
+        Req::Attachment { message, index } => attachment(st, message, index),
         Req::Search { q } => Ok(json!({"local": st.db.search(&q, SEARCH_LIMIT)?, "token": TOKEN.fetch_add(1, Relaxed)})),
         Req::Contacts { prefix } => val(st.db.contacts(&prefix, CONTACTS_LIMIT)?),
         Req::Sync { account, folder } => sync(st, account.as_deref(), folder),
@@ -146,8 +150,52 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
         Req::Act { op: Op::Restore, .. } => Err("restore: use undo".into()),
         Req::Act { ids, op } => queued(st, actions::enqueue(&st.db, &ids, op)?),
         Req::Undo { batch } => queued(st, actions::undo(&st.db, batch)?),
-        Req::Attachment | Req::OpenRemote | Req::Send => Err(NOT_IMPLEMENTED.into()),
+        Req::OpenRemote | Req::Send => Err(NOT_IMPLEMENTED.into()),
     }
+}
+
+/// Hands a job to the account's worker and waits for its answer, never forever.
+fn ask<T>(st: &State, account: &str, job: impl FnOnce(Sender<Result<T, String>>) -> Job) -> Result<T, String> {
+    let h = st.hub.handles().into_iter().find(|h| h.email == account).ok_or_else(no_account)?;
+    let (tx, rx) = channel();
+    h.jobs.send(job(tx)).map_err(|_| format!("{account}: worker stopped"))?;
+    match rx.recv_timeout(FETCH_WAIT) {
+        Ok(r) => r,
+        Err(RecvTimeoutError::Timeout) => Err(tr("no network: the server did not answer in time", "нет сети: сервер не ответил вовремя")),
+        Err(RecvTimeoutError::Disconnected) => Err(format!("{account}: worker stopped")),
+    }
+}
+
+/// The message with its body (fetched if it is a big one) and `inline`: `cid` → cached image file.
+fn message_full(st: &State, id: i64) -> Result<Value, String> {
+    let get = || st.db.message(id)?.ok_or_else(|| tr("message not found", "письмо не найдено"));
+    let mut full = get()?;
+    let dir = fetch::msg_dir(&st.paths.cache, id);
+    if !full.has_body || (full.uid.is_some() && fetch::cids_missing(&dir, &full)) {
+        if full.uid.is_none() {
+            return Err(tr("message is being moved, try again", "письмо перемещается, попробуйте ещё раз"));
+        }
+        let r = ask(st, &full.summary.account, |reply| Job::Fetch { message: id, reply });
+        // Without the body there is nothing to show; without the images the text still is.
+        if !full.has_body {
+            r?;
+        }
+        full = get()?;
+    }
+    let mut v = val(&full)?;
+    v["inline"] = val(fetch::inline_map(&dir, &full))?;
+    Ok(v)
+}
+
+/// The file of an attachment: cached, or downloaded by the worker.
+fn attachment(st: &State, id: i64, index: u32) -> Result<Value, String> {
+    let full = st.db.message(id)?.ok_or_else(|| tr("message not found", "письмо не найдено"))?;
+    let path = match fetch::cached_attachment(&fetch::msg_dir(&st.paths.cache, id), &full, index) {
+        Some(p) => p,
+        None if full.uid.is_none() => return Err(tr("message is being moved, try again", "письмо перемещается, попробуйте ещё раз")),
+        None => ask(st, &full.summary.account, |reply| Job::Attachment { message: id, index, reply })?,
+    };
+    Ok(json!({"path": path}))
 }
 
 /// A batch of `act` or `undo` was applied: the workers start on it, the window reloads.
@@ -434,6 +482,33 @@ mod tests {
     }
 
     #[test]
+    fn message_and_attachment_without_worker() {
+        let mut st = state("ondemand");
+        let f = st.db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        // a plain-text message: no fetch, empty `inline`
+        let id = st.db.insert_message(f, 1, false, false, 1, &msg("hello", 5), true).unwrap();
+        assert_eq!(call(&mut st, json!({"id": 1, "cmd": "message", "message": id}))["result"]["inline"], json!({}));
+        // a big one without body, no account running: an error, not a hang
+        let big = st.db.insert_message(f, 2, false, false, 1, &msg("big", 5), false).unwrap();
+        assert_eq!(call(&mut st, json!({"id": 2, "cmd": "message", "message": big}))["ok"], false);
+        // its move is pending: no guessing
+        st.db.c.execute("UPDATE messages SET uid = NULL WHERE id = ?1", [big]).unwrap();
+        let r = call(&mut st, json!({"id": 3, "cmd": "message", "message": big}));
+        assert_eq!(r["error"], tr("message is being moved, try again", "письмо перемещается, попробуйте ещё раз"), "{r}");
+        // an attachment already in the cache is returned without any worker
+        let at = crate::mime::Attachment { index: 0, name: "../x.txt".into(), mime: "text/plain".into(), size: 1, cid: None, inline: false };
+        let mut p = msg("att", 5);
+        p.attachments = vec![at];
+        let a = st.db.insert_message(f, 3, false, false, 1, &p, true).unwrap();
+        let dir = st.paths.cache.join(a.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.txt"), "t").unwrap();
+        let r = call(&mut st, json!({"id": 4, "cmd": "attachment", "message": a, "index": 0}));
+        assert_eq!(r["result"]["path"], dir.join("x.txt").to_str().unwrap(), "{r}");
+        assert_eq!(call(&mut st, json!({"id": 5, "cmd": "attachment", "message": a, "index": 7}))["ok"], false, "not cached, no account");
+    }
+
+    #[test]
     fn search_local_and_token() {
         let mut st = state("search");
         let f = st.db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
@@ -477,7 +552,7 @@ mod tests {
     #[test]
     fn later_tasks_not_implemented() {
         let mut st = state("stubs");
-        for cmd in ["attachment", "open_remote", "send"] {
+        for cmd in ["open_remote", "send"] {
             let r = call(&mut st, json!({"id": 1, "cmd": cmd, "ids": [1], "op": "read"}));
             assert_eq!(r, json!({"id": 1, "ok": false, "error": "not implemented"}), "{cmd}");
         }
