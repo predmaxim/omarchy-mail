@@ -109,6 +109,13 @@ pub fn attachment(raw: &[u8], index: u32) -> Option<(Attachment, Vec<u8>)> {
     Some((attachment_info(index as usize, p), p.contents().to_vec()))
 }
 
+/// Several attachments (indices as in `Parsed::attachments`) with one parse; missing ones are left out.
+pub fn attachments_bytes(raw: &[u8], indices: &[u32]) -> Vec<(u32, Vec<u8>)> {
+    let Some(msg) = MessageParser::default().parse(raw) else { return vec![] };
+    let all: Vec<_> = msg.attachments().collect();
+    indices.iter().filter_map(|&i| Some((i, all.get(i as usize)?.contents().to_vec()))).collect()
+}
+
 /// Decodes one text part fetched separately (BODYSTRUCTURE section) by wrapping it in a synthetic header.
 pub fn decode_part(bytes: &[u8], content_type: &str, encoding: &str) -> String {
     let mut raw = format!("Content-Type: {content_type}\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n").into_bytes();

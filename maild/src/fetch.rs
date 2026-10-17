@@ -10,7 +10,10 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-const NAME_CHARS: usize = 120;
+/// Filesystems limit a name to 255 bytes; room is left for the temporary name.
+const NAME_BYTES: usize = 200;
+/// Failed inline-image fetches are not repeated more often than this.
+pub const CID_RETRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 pub fn msg_dir(cache: &Path, id: i64) -> PathBuf {
     cache.join(id.to_string())
@@ -19,11 +22,27 @@ pub fn msg_dir(cache: &Path, id: i64) -> PathBuf {
 /// The last path component without control characters; nothing left (or `.`/`..`): `attachment-<index>`.
 fn safe_name(name: &str, index: u32) -> String {
     let last = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let clean: String = last.chars().filter(|c| !c.is_control()).take(NAME_CHARS).collect();
+    let clean: String = last.chars().filter(|c| !c.is_control()).collect();
     match clean.trim() {
         "" | "." | ".." => format!("attachment-{index}"),
-        t => t.to_string(),
+        t => cap(t),
     }
+}
+
+/// At most `NAME_BYTES` bytes, cut on a char boundary; a short extension is kept.
+fn cap(name: &str) -> String {
+    if name.len() <= NAME_BYTES {
+        return name.into();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if name.len() - i <= 16 => name.split_at(i),
+        _ => (name, ""),
+    };
+    let mut n = NAME_BYTES - ext.len();
+    while !stem.is_char_boundary(n) {
+        n -= 1;
+    }
+    format!("{}{}", &stem[..n], ext)
 }
 
 /// Where each inline image with a Content-ID is (or will be) stored.
@@ -90,21 +109,22 @@ fn raw(conn: &mut Conn, db: &Db, id: i64) -> Result<(Full, Vec<u8>), String> {
 /// Job::Fetch: stores the body of a big message and caches its inline images. Stored attachments
 /// are replaced with mail-parser's list, the numbering `attachment` uses (a big message's came
 /// from BODYSTRUCTURE).
-pub fn fetch_body(conn: &mut Conn, db: &Db, cache: &Path, id: i64) -> Result<(), String> {
+/// `true` if it stored the body or cached an image.
+pub fn fetch_body(conn: &mut Conn, db: &Db, cache: &Path, id: i64) -> Result<bool, String> {
     let (full, raw) = raw(conn, db, id)?;
     let p = mime::parse(&raw);
+    let mut changed = !full.has_body;
     if !full.has_body {
         db.set_body(id, &p.text, p.html.as_deref(), &p.preview)?;
     }
     db.set_attachments(id, &p.attachments)?;
     let dir = msg_dir(cache, id);
-    for a in p.attachments.iter().filter(|a| is_image(a)) {
-        let path = dir.join(format!("cid-{}", a.index));
-        if let (false, Some((_, bytes))) = (path.is_file(), mime::attachment(&raw, a.index)) {
-            store(&dir, &format!("cid-{}", a.index), &bytes)?;
-        }
+    let want: Vec<u32> = p.attachments.iter().filter(|a| is_image(a)).map(|a| a.index).filter(|i| !dir.join(format!("cid-{i}")).is_file()).collect();
+    for (index, bytes) in mime::attachments_bytes(&raw, &want) {
+        store(&dir, &format!("cid-{index}"), &bytes)?;
+        changed = true;
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Job::Attachment. The requested one is found in the parsed message by (name, mime) of the stored
@@ -125,6 +145,15 @@ pub fn fetch_attachment(conn: &mut Conn, db: &Db, cache: &Path, id: i64, index: 
 mod tests {
     use super::*;
     use crate::mime::Attachment;
+
+    #[test]
+    fn long_cyrillic_name_fits() {
+        let name = format!("{}.pdf", "Договор ".repeat(19));
+        assert!(name.chars().count() > 150 && name.len() > 255);
+        let n = safe_name(&name, 0);
+        assert!(n.len() <= NAME_BYTES && n.ends_with(".pdf") && n.starts_with("Договор"), "{n}");
+        assert!(safe_name(&"я".repeat(150), 0).len() <= NAME_BYTES);
+    }
 
     fn att(index: u32, name: &str, mime: &str, cid: Option<&str>) -> Attachment {
         Attachment { index, name: name.into(), mime: mime.into(), size: 1, cid: cid.map(Into::into), inline: cid.is_some() }

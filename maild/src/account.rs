@@ -131,14 +131,14 @@ impl Handle {
     }
 }
 
-type Connector = Arc<dyn Fn() -> Result<Conn, String> + Send + Sync>;
+pub(crate) type Connector = Arc<dyn Fn() -> Result<Conn, String> + Send + Sync>;
 
 pub fn spawn(acc: Account, paths: Paths, hub: Hub) -> Handle {
     let a = acc.clone();
     spawn_with(acc, paths.db, paths.cache, hub, Arc::new(move || Conn::connect(&a, &secret::lookup(&a.email)?)))
 }
 
-fn spawn_with(acc: Account, db: PathBuf, cache: PathBuf, hub: Hub, connect: Connector) -> Handle {
+pub(crate) fn spawn_with(acc: Account, db: PathBuf, cache: PathBuf, hub: Hub, connect: Connector) -> Handle {
     let (jobs, queue) = channel();
     let (retry, retries) = channel();
     let sh = Arc::new(Shared {
@@ -316,7 +316,12 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
             Job::Actions if auth_failed || matches!(actions::has_pending(&db, &acc.email), Ok(false)) => continue,
             Job::Actions => attempt(sh, &mut conn, |c| actions::run(c, &db, &acc.email, &sh.hub)).map(|()| vec![]),
             Job::Fetch { message, reply } => {
-                let _ = reply.send(attempt(sh, &mut conn, |c| fetch::fetch_body(c, &db, &sh.cache, message)));
+                let r = attempt(sh, &mut conn, |c| fetch::fetch_body(c, &db, &sh.cache, message));
+                // A background fetch has no one waiting: the window learns from the event.
+                if matches!(r, Ok(true)) {
+                    sh.hub.emit(Event::Changed { folders: false, ids: vec![message] });
+                }
+                let _ = reply.send(r.map(drop));
                 continue;
             }
             Job::FetchRemote { reply, .. } => {

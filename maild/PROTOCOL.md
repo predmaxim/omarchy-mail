@@ -228,6 +228,11 @@ live in the keyring only.
   holds what sync took (the text parts) and `html` may be `null`.
 - A big message is fetched first: the reply waits up to 30 s, then errors ("no network"). The
   `attachments` of a fetched big message are the list `attachment` numbers by.
+- A message that has a body is answered at once, never waiting for the network. If its inline
+  images are not cached, the service fetches them in the background (at most every 5 minutes per
+  message) and sends `changed` with the message id when it caches something: re-request then.
+- After a full fetch of a big message its `attachments` list (and so the indices) may change:
+  re-read the message (on `changed` with its id) before using an index.
 - The result gains `inline: {"<cid>": "/absolute/path"}`: the cached files of the images that
   `html` references as `cid:` (`{}` for none). If only the images could not be fetched, the
   message is still returned, without them in `inline`.

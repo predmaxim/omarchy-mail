@@ -16,11 +16,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A longer request line gets an error and the client is dropped.
 pub const MAX_LINE: usize = 1024 * 1024;
@@ -166,21 +167,34 @@ fn ask<T>(st: &State, account: &str, job: impl FnOnce(Sender<Result<T, String>>)
     }
 }
 
+/// Inline-image fetches per message (by cache dir): at most one per `CID_RETRY`.
+fn retry_due(dir: &Path) -> bool {
+    static LAST: Mutex<Option<HashMap<PathBuf, Instant>>> = Mutex::new(None);
+    let mut g = lock(&LAST);
+    let m = g.get_or_insert_with(HashMap::new);
+    if m.get(dir).is_some_and(|t| t.elapsed() < fetch::CID_RETRY) {
+        return false;
+    }
+    m.insert(dir.to_path_buf(), Instant::now());
+    true
+}
+
 /// The message with its body (fetched if it is a big one) and `inline`: `cid` → cached image file.
 fn message_full(st: &State, id: i64) -> Result<Value, String> {
     let get = || st.db.message(id)?.ok_or_else(|| tr("message not found", "письмо не найдено"));
     let mut full = get()?;
     let dir = fetch::msg_dir(&st.paths.cache, id);
-    if !full.has_body || (full.uid.is_some() && fetch::cids_missing(&dir, &full)) {
+    if !full.has_body {
         if full.uid.is_none() {
             return Err(tr("message is being moved, try again", "письмо перемещается, попробуйте ещё раз"));
         }
-        let r = ask(st, &full.summary.account, |reply| Job::Fetch { message: id, reply });
-        // Without the body there is nothing to show; without the images the text still is.
-        if !full.has_body {
-            r?;
-        }
+        ask(st, &full.summary.account, |reply| Job::Fetch { message: id, reply })?;
         full = get()?;
+    } else if full.uid.is_some() && fetch::cids_missing(&dir, &full) && retry_due(&dir) {
+        // The text is shown now; the images come later with a `changed` event.
+        if let Some(h) = st.hub.handles().into_iter().find(|h| h.email == full.summary.account) {
+            let _ = h.jobs.send(Job::Fetch { message: id, reply: channel().0 });
+        }
     }
     let mut v = val(&full)?;
     v["inline"] = val(fetch::inline_map(&dir, &full))?;
@@ -507,6 +521,47 @@ mod tests {
         let r = call(&mut st, json!({"id": 4, "cmd": "attachment", "message": a, "index": 0}));
         assert_eq!(r["result"]["path"], dir.join("0/x.txt").to_str().unwrap(), "{r}");
         assert_eq!(call(&mut st, json!({"id": 5, "cmd": "attachment", "message": a, "index": 7}))["ok"], false, "not cached, no account");
+    }
+
+    #[test]
+    fn missing_cid_does_not_block_or_refetch() {
+        use std::sync::atomic::AtomicUsize;
+        let mut st = state("cidretry");
+        st.db = Db::open(&st.paths.db).unwrap();
+        let f = st.db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        let mut p = msg("cid", 5);
+        p.html = Some("<img src=\"cid:gone@x\">".into());
+        p.attachments = vec![crate::mime::Attachment { index: 0, name: "l".into(), mime: "image/png".into(), size: 1, cid: Some("gone@x".into()), inline: true }];
+        let id = st.db.insert_message(f, 5, false, false, 1, &p, true).unwrap();
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let n = fetches.clone();
+        let raw = "From: a@x\r\n\r\nplain";
+        let addr = crate::imap::fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => "* 1 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 5\r\n".into(),
+            "UID FETCH 5:* (UID FLAGS)" => "* 1 FETCH (UID 5 FLAGS ())\r\n".into(),
+            "UID FETCH 5 (UID BODY.PEEK[])" => { n.fetch_add(1, Relaxed); format!("* 1 FETCH (UID 5 BODY[] {{{}}}\r\n{raw})\r\n", raw.len()) }
+            "SELECT \"INBOX\"" | "IDLE" => String::new(),
+            _ => return None,
+        }));
+        let s = Server { host: "h".into(), port: 1 };
+        let acc = Account { email: "me@x".into(), name: "N".into(), provider: Provider::Imap, login: "me".into(), imap: s.clone(), smtp: s, append_sent: false };
+        let connect = move || Conn::plain(std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = account::spawn_with(acc, st.paths.db.clone(), st.paths.cache.clone(), st.hub.clone(), Arc::new(connect));
+        st.hub.add_handle(h.clone());
+
+        let t = Instant::now();
+        let r = call(&mut st, json!({"id": 1, "cmd": "message", "message": id}));
+        assert!(t.elapsed() < Duration::from_millis(250) && r["result"]["inline"] == json!({}), "{r}");
+        let end = Instant::now() + Duration::from_secs(2);
+        while fetches.load(Relaxed) == 0 { assert!(Instant::now() < end, "no background fetch"); std::thread::sleep(Duration::from_millis(5)); }
+        std::thread::sleep(Duration::from_millis(100));
+        call(&mut st, json!({"id": 2, "cmd": "message", "message": id}));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(fetches.load(Relaxed), 1, "refetched within the backoff");
+        h.stop_and_join();
     }
 
     #[test]
