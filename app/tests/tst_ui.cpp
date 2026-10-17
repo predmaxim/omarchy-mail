@@ -2,6 +2,7 @@
 #include "AppHarness.h"
 #include "Session.h"
 #include <QPointer>
+#include <QScopeGuard>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -182,9 +183,11 @@ private Q_SLOTS:
         };
         QTRY_VERIFY(inView());
         const int lists = h.sent("list").size();
-        h.d->emitEvent({{"event", "changed"}, {"folders", false}, {"ids", QJsonArray()}});   // the rows again: a model reset
+        QSignalSpy resets(&s->list, &QAbstractItemModel::modelReset);
+        h.d->emitEvent({{"event", "changed"}, {"folders", false}, {"ids", QJsonArray()}});   // the rows again
         QTRY_VERIFY(h.sent("list").size() > lists);
-        QTRY_COMPARE(s->list.cursor(), 40);
+        QTRY_COMPARE(resets.size(), 1);
+        QCOMPARE(s->list.cursor(), 40);
         QVERIFY(inView());
     }
     void single_account_hides_account_picker()
@@ -196,10 +199,30 @@ private Q_SLOTS:
     }
     void unread_row_has_accent_bar()
     {
-        start();   // before auto-read (1 s) takes row 3's mark away
-        QQuickItem *unread = itemAt(item("mailList"), 3), *seen = itemAt(item("mailList"), 0);
-        QVERIFY(unread->findChild<QQuickItem *>("unreadBar")->isVisible());
-        QVERIFY(!seen->findChild<QQuickItem *>("unreadBar")->isVisible());
+        start();
+        QQuickItem *view = item("mailList");
+        QVERIFY(!itemAt(view, 0)->findChild<QQuickItem *>("unreadBar")->isVisible());
+        QVERIFY(s->list.cursor() != 10);   // unread, and not the open letter: auto-read never takes its mark
+        QMetaObject::invokeMethod(view, "positionViewAtIndex", Q_ARG(int, 10), Q_ARG(int, 4 /* ListView.Contain */));
+        QVERIFY(itemAt(view, 10)->findChild<QQuickItem *>("unreadBar")->isVisible());
+    }
+    void paddings_follow_a_live_base_size()
+    {
+        start();
+        QQuickItem *bar = itemAt(item("mailList"), 0)->findChild<QQuickItem *>("unreadBar");
+        QCOMPARE(bar->width(), qreal(s->theme.space(3)));
+        const QByteArray config = qgetenv("XDG_CONFIG_HOME");
+        const auto restore = qScopeGuard([config] { qputenv("XDG_CONFIG_HOME", config); });
+        qputenv("XDG_CONFIG_HOME", dir->filePath("config").toUtf8());   // not the shared test home
+        QDir().mkpath(dir->filePath("config/omarchy"));
+        QFile toml(dir->filePath("config/omarchy/shell.toml"));
+        QVERIFY(toml.open(QIODevice::WriteOnly));
+        toml.write(QByteArray("[font]\nbase-size = ") + QByteArray::number(s->theme.baseSize() + 8) + "\n");
+        toml.close();
+        const int before = s->theme.space(3);
+        s->theme.reload();
+        QVERIFY(s->theme.space(3) > before);
+        QCOMPARE(bar->width(), qreal(s->theme.space(3)));
     }
 };
 

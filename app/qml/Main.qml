@@ -3,7 +3,6 @@ import QtQuick
 // The mail window (spec «Окно», layout-v2): the line of commands on top; the search, the mailbox and folder
 // pickers and the list on the left; the open letter on the right. Keys go to `app`: from the root item, from the
 // search field as "search"; an open picker keeps its own.
-// ponytail: theme.space() is a call, not a property: paddings follow a live base-size change only after a restart
 Window {
     id: win
     width: 1200
