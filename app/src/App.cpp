@@ -780,7 +780,8 @@ void App::autoRead()
 {
     const QJsonObject row = m_list->cursorRow();
     const qint64 id = row.value(QStringLiteral("id")).toInteger();
-    if (m_compose->isOpen() || id <= 0 || id != m_letter->id()   // the form hides the letter || row.value(QStringLiteral("seen")).toBool()
+    if (m_compose->isOpen()   // the form hides the letter
+        || id <= 0 || id != m_letter->id() || row.value(QStringLiteral("seen")).toBool()
         || row.value(QStringLiteral("role")).toString() == QLatin1String("remote"))   // maild refuses those
         return;
     act({id}, QStringLiteral("read"), false);   // not undoable: Ctrl+Z goes to what the user did

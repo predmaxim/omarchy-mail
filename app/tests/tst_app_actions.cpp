@@ -343,6 +343,17 @@ private Q_SLOTS:
         QVERIFY(acts("read").isEmpty());
     }
 
+    void seen_letter_is_not_read_again()
+    {
+        bootList();
+        QTRY_COMPARE(list->cursor(), 3);
+        QVERIFY(press(Qt::Key_Down));   // 56: read already
+        QCOMPARE(letter->id(), 56);
+        QTest::qWait(1300);
+        barrier();
+        QVERIFY(acts("read").isEmpty());
+    }
+
     void keys_act_on_the_letter_shown()   // W16: `--open` a letter that isn't among the rows
     {
         boot(7);
