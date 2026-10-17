@@ -75,7 +75,7 @@ Failure:
 | `open_remote` | `account, folder_path, uid` | `{id}` |
 | `act` | `ids, op` | `{batch}` |
 | `undo` | `batch` | `{batch}` |
-| `send` | a `Draft` | `{outbox}` — *not implemented yet (stage 11)* |
+| `send` | a `Draft` | `{outbox}` |
 
 `?` marks an optional parameter: leave it out or send `null`.
 
@@ -351,17 +351,21 @@ live in the keyring only.
 
 ### Later stages
 
-These shapes are fixed now; `send` answers `not implemented` until its stage.
-
 - `open_remote {account, folder_path, uid}` → `{id}`.
   - Downloads a server search hit (`Summary.remote`) into the account's `remote` folders.
   - Returns the local id for `message`; opening the same hit again returns the same id.
   - Waits for the server up to 30 s.
 - `send {account, to: Addr[], subject, text, reply_to: i64|null, attachments: [path]}` →
-  `{outbox}` (stage 11).
-  - The message is queued: it shows in `list {role: "sent"}` as `queued`, and is sent when
-    online.
-  - When the server refuses it permanently, `send_failed {outbox, error}` is sent.
+  `{outbox}`. This is the `Draft`.
+  - `to` must not be empty. `subject` is used as given (the window adds `Re:`). `text` is plain
+    text. `reply_to` is a message id: the mail gets `In-Reply-To` and `References` from it.
+  - `attachments` are absolute paths on the machine of `maild`; a file that cannot be read makes
+    the request fail and nothing is queued.
+  - The message is queued: it shows in `list {role: "sent"}` as `queued` (negative `id` =
+    `-outbox`), and is sent when online; a network error retries every 30 s. Mail on servers that
+    do not file sent mail themselves (`append_sent`) is copied to the Sent folder afterwards.
+  - When the server refuses it permanently, `send_failed {outbox, error}` is sent and the row
+    stays in Sent with `failed: true` (and still `queued: true`: it is an outbox row).
 
 ## Events
 
@@ -374,7 +378,7 @@ They go to subscribed connections only, one JSON object per line.
 | `open` | `id: i64` | A new-mail notification was clicked while a window is subscribed: show message `id` and raise the window. |
 | `search_remote` | `token: u64, hits: Summary[], error?: string` | Server search hits of one mailbox. `error` only when its search failed. |
 | `action_failed` | `batch: i64, error: string` | A server refused an action of `batch` (see `act`). The database is already back to the previous state. |
-| `send_failed` | `outbox: i64, error: string` | Sending failed permanently. The message stays in the outbox as not sent (stage 11). |
+| `send_failed` | `outbox: i64, error: string` | Sending failed permanently. The message stays in the outbox as not sent (`Summary.failed`). |
 
 ```json
 {"event": "changed", "folders": true, "ids": [101, 102]}
@@ -421,14 +425,15 @@ They go to subscribed connections only, one JSON object per line.
 ```json
 {"id": 42, "account": "me@gmail.com", "role": "inbox", "folder_path": "INBOX", "date": 1767312000,
  "from": {"name": "Иван", "addr": "ivan@example.org"}, "subject": "…", "preview": "…",
- "seen": false, "flagged": false, "has_attachments": true, "queued": false}
+ "seen": false, "flagged": false, "has_attachments": true, "queued": false, "failed": false}
 ```
 
 - `date` is in Unix seconds; `0` means the message has no valid date.
 - `preview` is the first part of the text as one plain line.
 - `has_attachments` is true when there is an attachment that is not inline.
 - `queued: true` marks an outbox message: `id` is negative, `folder_path` is empty and `from` is
-  the account.
+  the account. `failed: true` (outbox messages only; otherwise `false`) means the server
+  refused the message for good: show it as not sent.
 - Server search hits have `id: 0`, `role: "remote"` and an extra
   `remote: {account, folder_path, uid}` for `open_remote`. The field is missing on local
   messages.

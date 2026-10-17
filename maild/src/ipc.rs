@@ -10,6 +10,7 @@ use crate::hub::{Event, Hub, lock};
 use crate::i18n::tr;
 use crate::imap::Conn;
 use crate::secret;
+use crate::smtp::{self, Draft};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -25,7 +26,6 @@ use std::time::{Duration, Instant};
 
 /// A longer request line gets an error and the client is dropped.
 pub const MAX_LINE: usize = 1024 * 1024;
-const NOT_IMPLEMENTED: &str = "not implemented";
 /// How long a client waits for the worker to fetch a message or attachment.
 const FETCH_WAIT: Duration = if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(30) };
 const SEARCH_LIMIT: u32 = 200;
@@ -78,7 +78,7 @@ enum Req {
     OpenRemote { account: String, folder_path: String, uid: u32 },
     Act { ids: Vec<i64>, op: Op },
     Undo { batch: i64 },
-    Send,
+    Send(Draft),
 }
 
 /// No `Debug`: it holds the password.
@@ -163,7 +163,13 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
             let id = ask(st, &account, |reply| Job::FetchRemote { folder_path, uid, reply })?;
             Ok(json!({"id": id}))
         }
-        Req::Send => Err(NOT_IMPLEMENTED.into()),
+        Req::Send(d) => {
+            let acc = config::load(&st.paths.config)?.into_iter().find(|a| a.email == d.account).ok_or_else(no_account)?;
+            let outbox = smtp::queue(&st.db, &acc, &d)?;
+            st.hub.emit(Event::Changed { folders: false, ids: vec![] });
+            smtp::wake();
+            Ok(json!({"outbox": outbox}))
+        }
     }
 }
 
@@ -618,10 +624,21 @@ mod tests {
     }
 
     #[test]
-    fn later_tasks_not_implemented() {
-        let mut st = state("stubs");
-        let r = call(&mut st, json!({"id": 1, "cmd": "send"}));
-        assert_eq!(r, json!({"id": 1, "ok": false, "error": "not implemented"}));
+    fn send_queues_and_validates() {
+        let mut st = state("send");
+        let (imap, smtp, append_sent) = (Server { host: "h".into(), port: 1 }, Server { host: "h".into(), port: 465 }, false);
+        let acc = Account { email: "a@x".into(), name: String::new(), provider: Provider::Imap, login: "a".into(), imap, smtp, append_sent };
+        config::save(&st.paths.config, &[acc]).unwrap();
+        let events = st.hub.subscribe(false);
+        let draft = |account: &str, to: Value| json!({"id": 1, "cmd": "send", "account": account, "to": to, "subject": "s", "text": "t"});
+        let r = call(&mut st, draft("a@x", json!([{"name": "", "addr": "b@y.org"}])));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(r["result"]["outbox"].as_i64().unwrap() > 0);
+        assert_eq!(st.db.queued_count("a@x").unwrap(), 1);
+        assert_eq!(events.try_recv().unwrap(), r#"{"event":"changed","folders":false,"ids":[]}"#);
+        assert_eq!(call(&mut st, draft("no@x", json!([{"name": "", "addr": "b@y.org"}])))["ok"], false);
+        assert_eq!(call(&mut st, draft("a@x", json!([])))["ok"], false);
+        assert_eq!(st.db.queued_count("a@x").unwrap(), 1);
     }
 
     #[test]

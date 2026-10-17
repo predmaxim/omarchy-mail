@@ -66,7 +66,7 @@ fn one_folder(conn: &mut Conn, acc: &Account, path: &str, crit: &str, hits: &mut
             date: if p.date != 0 { p.date } else { f.internal_date().map_or(0, |d| d.timestamp()) },
             from: p.from, subject: p.subject, preview: String::new(),
             seen: f.flags().contains(&Flag::Seen), flagged: f.flags().contains(&Flag::Flagged),
-            has_attachments: false, queued: false,
+            has_attachments: false, queued: false, failed: false,
             remote: Some(Remote { account: acc.email.clone(), folder_path: path.to_string(), uid }),
         });
     }

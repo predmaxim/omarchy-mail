@@ -35,6 +35,9 @@ pub struct Summary {
     pub id: i64, pub account: String, pub role: Role, pub folder_path: String, pub date: i64,
     pub from: Addr, pub subject: String, pub preview: String, pub seen: bool, pub flagged: bool,
     pub has_attachments: bool, pub queued: bool,
+    /// An outbox row the server refused for good (`queued` stays true).
+    #[serde(default)]
+    pub failed: bool,
     /// Server search hits only (`id` 0): what `open_remote` takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<Remote>,
@@ -122,7 +125,7 @@ fn summary(r: &Row) -> rusqlite::Result<Summary> {
     Ok(Summary {
         id: r.get(0)?, account: r.get(1)?, role: Role::from_db(&r.get::<_, String>(2)?), folder_path: r.get(3)?, date: r.get(4)?,
         from: Addr { name: r.get(5)?, addr: r.get(6)? }, subject: r.get(7)?, preview: r.get(8)?,
-        seen: r.get(9)?, flagged: r.get(10)?, has_attachments: att.iter().any(|a| !a.inline), queued: false, remote: None,
+        seen: r.get(9)?, flagged: r.get(10)?, has_attachments: att.iter().any(|a| !a.inline), queued: false, failed: false, remote: None,
     })
 }
 
@@ -251,13 +254,13 @@ impl Db {
 
     /// Outbox rows as summaries: negative `id`, `queued = true`, newest first.
     fn queued(&self, account: Option<&str>) -> Result<Vec<Summary>, String> {
-        let mut st = self.c.prepare("SELECT id, account, date, subject FROM outbox WHERE (?1 IS NULL OR account = ?1) ORDER BY date DESC, id DESC").map_err(e)?;
+        let mut st = self.c.prepare("SELECT id, account, date, subject, COALESCE(state, '') = 'failed' FROM outbox WHERE (?1 IS NULL OR account = ?1) ORDER BY date DESC, id DESC").map_err(e)?;
         st.query_map([account], |r| {
             let acc: String = r.get(1)?;
             Ok(Summary {
                 id: -r.get::<_, i64>(0)?, account: acc.clone(), role: Role::Sent, folder_path: String::new(), date: r.get(2)?,
                 from: Addr { name: String::new(), addr: acc }, subject: r.get(3)?, preview: String::new(),
-                seen: true, flagged: false, has_attachments: false, queued: true, remote: None,
+                seen: true, flagged: false, has_attachments: false, queued: true, failed: r.get(4)?, remote: None,
             })
         }).map_err(e)?.collect::<Result<_, _>>().map_err(e)
     }
@@ -336,6 +339,29 @@ impl Db {
         let mut v: Vec<_> = seen.into_values().filter(|(a, _)| a.addr.to_lowercase().contains(&p) || a.name.to_lowercase().contains(&p)).collect();
         v.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.addr.cmp(&y.0.addr)));
         Ok(v.into_iter().take(limit as usize).map(|x| x.0).collect())
+    }
+
+    /// Queues a built message; the id (positive here, negative in `list`).
+    pub fn outbox_add(&self, account: &str, raw: &[u8], to: &[Addr], subject: &str, date: i64) -> Result<i64, String> {
+        let to_json = serde_json::to_string(to).map_err(|x| x.to_string())?;
+        self.c.execute("INSERT INTO outbox(account, raw, to_json, subject, date, state) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+            params![account, raw, to_json, subject, date]).map_err(e)?;
+        Ok(self.c.last_insert_rowid())
+    }
+
+    /// `(id, account, recipients, raw)` of the rows still to send, in id order.
+    pub fn outbox_queued(&self) -> Result<Vec<(i64, String, Vec<Addr>, Vec<u8>)>, String> {
+        let mut st = self.c.prepare("SELECT id, account, to_json, raw FROM outbox WHERE state = 'queued' ORDER BY id").map_err(e)?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default(), r.get(3)?)))
+            .map_err(e)?.collect::<Result<_, _>>().map_err(e)
+    }
+
+    pub fn outbox_done(&self, id: i64) -> Result<(), String> {
+        self.c.execute("DELETE FROM outbox WHERE id = ?1", [id]).map(drop).map_err(e)
+    }
+
+    pub fn outbox_fail(&self, id: i64, error: &str) -> Result<(), String> {
+        self.c.execute("UPDATE outbox SET state = 'failed', error = ?2 WHERE id = ?1", params![id, error]).map(drop).map_err(e)
     }
 
     /// What still has to reach the server: pending actions + queued outbox rows.

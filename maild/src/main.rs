@@ -11,6 +11,7 @@ mod mime;
 mod notify;
 mod search;
 mod secret;
+mod smtp;
 mod sync;
 mod wake;
 
@@ -55,6 +56,7 @@ fn daemon() -> Result<(), String> {
     for acc in config::load(&paths.config)? {
         hub.add_handle(account::spawn(acc, paths.clone(), hub.clone()));
     }
+    smtp::spawn(paths.clone(), hub.clone());
     let h = hub.clone();
     wake::spawn(move || h.handles().iter().for_each(account::Handle::interrupt));
     eprintln!("maild: listening on {}", paths.socket.display());

@@ -27,8 +27,7 @@ const STEADY: Duration = Duration::from_secs(60);
 /// The worker runs SyncAll at least this often.
 const PERIOD: Duration = Duration::from_secs(15 * 60);
 
-/// Worker jobs. `Append` is filled in by task 11.
-#[allow(dead_code)] // constructed by task 11
+/// Worker jobs.
 pub enum Job {
     SyncFolder(i64),
     SyncAll,
@@ -349,7 +348,16 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                 sh.hub.emit(Event::SearchRemote { token, hits, error });
                 continue;
             }
-            Job::Append { .. } => continue,
+            // The copy for servers that do not file sent mail themselves; then the folder is synced.
+            // ponytail: not retried — a failed APPEND (offline) loses only the Sent copy, the mail went out.
+            Job::Append { role, raw } => {
+                let Some(f) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == role)) else { continue };
+                match attempt(sh, &mut conn, |c| c.append(&f.path, &raw).map_err(String::from)) {
+                    Ok(()) => next = Some(Job::SyncFolder(f.id)),
+                    Err(e) => eprintln!("{}: append to {}: {e}", acc.email, f.path),
+                }
+                continue;
+            }
         };
         auth_failed = matches!(&r, Err(e) if e.starts_with(AUTH_FAILED));
         if r.is_ok() {

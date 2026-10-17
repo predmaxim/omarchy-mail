@@ -304,6 +304,14 @@ impl Conn {
         Ok(self.session.select(path).map_err(refused)?.uid_validity)
     }
 
+    /// APPENDs a message to `path` flagged `\Seen`.
+    pub fn append(&mut self, path: &str, raw: &[u8]) -> Result<(), Error> {
+        if quote(path).is_none() {
+            return Err(Error::Refused(format!("{path}: bad folder name")));
+        }
+        self.session.append(path, raw).flag(::imap::types::Flag::Seen).finish().map_err(refused).map(drop)
+    }
+
     /// A command that answers just OK or not (`UID MOVE`, `UID STORE … .SILENT`, `EXPUNGE`, …).
     /// Untagged lines in the answer are not looked at.
     pub fn command(&mut self, cmd: &str) -> Result<(), Error> {
