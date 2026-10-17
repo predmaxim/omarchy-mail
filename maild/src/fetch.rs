@@ -19,6 +19,16 @@ pub fn msg_dir(cache: &Path, id: i64) -> PathBuf {
     cache.join(id.to_string())
 }
 
+/// At start-up: drops the cached files of messages that are gone.
+pub fn sweep(db: &Db, cache: &Path) {
+    let Ok(dirs) = std::fs::read_dir(cache) else { return };
+    for d in dirs.flatten() {
+        if let Some(id) = d.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) && matches!(db.message(id), Ok(None)) {
+            let _ = std::fs::remove_dir_all(d.path());
+        }
+    }
+}
+
 /// The last path component without control characters; nothing left (or `.`/`..`): `attachment-<index>`.
 fn safe_name(name: &str, index: u32) -> String {
     let last = name.rsplit(['/', '\\']).next().unwrap_or("");
@@ -167,6 +177,21 @@ mod tests {
         assert_eq!(safe_name("..", 4), "attachment-4");
         assert_eq!(safe_name("a/", 5), "attachment-5");
         assert_eq!(safe_name("сч\u{7}ёт.pdf", 0), "счёт.pdf");
+    }
+
+    #[test]
+    fn sweep_drops_cache_of_gone_messages() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "INBOX", crate::db::Role::Inbox).unwrap();
+        let id = db.insert_message(f, 1, true, false, 1, &mime::Parsed::default(), true).unwrap();
+        let cache = std::env::temp_dir().join(format!("maild-test-{}-sweep", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        for n in [id.to_string(), (id + 1).to_string(), "x".into()] {
+            std::fs::create_dir_all(cache.join(n).join("0")).unwrap();
+        }
+        sweep(&db, &cache);
+        assert!(msg_dir(&cache, id).is_dir() && !msg_dir(&cache, id + 1).exists() && cache.join("x").is_dir());
+        std::fs::remove_dir_all(&cache).unwrap();
     }
 
     #[test]

@@ -77,13 +77,15 @@ pub struct Db { pub(crate) c: Connection }
 
 fn e(err: rusqlite::Error) -> String { err.to_string() }
 
+/// Version 1. Message and outbox ids are never reused (AUTOINCREMENT): the cache, notifications
+/// and the window refer to mail by id.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS folders(
   id INTEGER PRIMARY KEY, account TEXT NOT NULL, path TEXT NOT NULL, role TEXT NOT NULL,
   uidvalidity INTEGER, last_uid INTEGER NOT NULL DEFAULT 0, notified_uid INTEGER NOT NULL DEFAULT 0,
   UNIQUE(account, path));
 CREATE TABLE IF NOT EXISTS messages(
-  id INTEGER PRIMARY KEY, folder INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE, uid INTEGER,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, folder INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE, uid INTEGER,
   message_id TEXT NOT NULL DEFAULT '', in_reply_to TEXT NOT NULL DEFAULT '', refs TEXT NOT NULL DEFAULT '',
   date INTEGER NOT NULL DEFAULT 0, from_name TEXT NOT NULL DEFAULT '', from_addr TEXT NOT NULL DEFAULT '',
   to_json TEXT NOT NULL DEFAULT '[]', subject TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '',
@@ -95,17 +97,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   subject, from_text, to_text, body, content='messages', tokenize='unicode61 remove_diacritics 2');
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
   INSERT INTO messages_fts(rowid, subject, from_text, to_text, body) VALUES (new.id, new.subject,
-    new.from_name || ' ' || new.from_addr, new.to_json, CASE WHEN new.text <> '' THEN new.text ELSE mail_strip(new.html) END);
+    new.from_name || ' ' || new.from_addr, mail_addrs(new.to_json), CASE WHEN new.text <> '' THEN new.text ELSE mail_strip(new.html) END);
 END;
 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, subject, from_text, to_text, body) VALUES ('delete', old.id, old.subject,
-    old.from_name || ' ' || old.from_addr, old.to_json, CASE WHEN old.text <> '' THEN old.text ELSE mail_strip(old.html) END);
+    old.from_name || ' ' || old.from_addr, mail_addrs(old.to_json), CASE WHEN old.text <> '' THEN old.text ELSE mail_strip(old.html) END);
 END;
 CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF subject, from_name, from_addr, to_json, text, html ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, subject, from_text, to_text, body) VALUES ('delete', old.id, old.subject,
-    old.from_name || ' ' || old.from_addr, old.to_json, CASE WHEN old.text <> '' THEN old.text ELSE mail_strip(old.html) END);
+    old.from_name || ' ' || old.from_addr, mail_addrs(old.to_json), CASE WHEN old.text <> '' THEN old.text ELSE mail_strip(old.html) END);
   INSERT INTO messages_fts(rowid, subject, from_text, to_text, body) VALUES (new.id, new.subject,
-    new.from_name || ' ' || new.from_addr, new.to_json, CASE WHEN new.text <> '' THEN new.text ELSE mail_strip(new.html) END);
+    new.from_name || ' ' || new.from_addr, mail_addrs(new.to_json), CASE WHEN new.text <> '' THEN new.text ELSE mail_strip(new.html) END);
 END;
 CREATE TABLE IF NOT EXISTS actions(
   id INTEGER PRIMARY KEY, batch INTEGER, account TEXT, op TEXT, message INTEGER, from_folder INTEGER,
@@ -113,7 +115,7 @@ CREATE TABLE IF NOT EXISTS actions(
   tries INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS actions_message ON actions(message);
 CREATE TABLE IF NOT EXISTS outbox(
-  id INTEGER PRIMARY KEY, account TEXT NOT NULL, raw BLOB, to_json TEXT NOT NULL DEFAULT '[]',
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, raw BLOB, to_json TEXT NOT NULL DEFAULT '[]',
   subject TEXT NOT NULL DEFAULT '', date INTEGER NOT NULL DEFAULT 0, state TEXT, error TEXT);
 ";
 
@@ -131,11 +133,15 @@ fn summary(r: &Row) -> rusqlite::Result<Summary> {
 
 impl Db {
     pub fn open(path: &Path) -> Result<Db, String> {
-        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).map_err(|x| x.to_string())?; }
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let io = |x: std::io::Error| format!("{}: {x}", path.display());
+        if let Some(dir) = path.parent() { std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(io)?; }
         // Connections switching a fresh file to WAL at the same moment get "database is locked"
         // at once, busy_timeout or not. Only maild opens this file, so one opener at a time suffices.
         static OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _one_at_a_time = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Private mail: a new file is created 0600 (SQLite gives its -wal and -shm the same mode).
+        std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(path).map_err(io)?;
         Self::init(Connection::open(path).map_err(e)?)
     }
 
@@ -149,7 +155,17 @@ impl Db {
         c.create_scalar_function("mail_strip", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
             Ok(ctx.get::<Option<String>>(0)?.map(|h| mime::strip_tags(&h)).unwrap_or_default())
         }).map_err(e)?;
-        c.execute_batch(SCHEMA).map_err(e)?;
+        // The FTS index holds names and addresses, not the JSON around them.
+        c.create_scalar_function("mail_addrs", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+            let to: Vec<Addr> = ctx.get::<Option<String>>(0)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+            Ok(to.iter().map(|a| format!("{} {}", a.name, a.addr)).collect::<Vec<_>>().join(" "))
+        }).map_err(e)?;
+        // A later schema change adds a step here (`1 => migrate to 2`), run once per database.
+        match c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).map_err(e)? {
+            0 => c.execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = 1; COMMIT;")).map_err(e)?,
+            1 => {}
+            v => return Err(format!("database schema version {v} is newer than this maild")),
+        }
         Ok(Db { c })
     }
 
@@ -622,6 +638,52 @@ mod tests {
         let f = &db.folder_list(Some("a@x")).unwrap()[0];
         assert_eq!((f.name.as_str(), f.path.as_str()), ("Отправленные", "[Gmail]/&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-"));
         assert_eq!(db.folder_list(None).unwrap()[0].name, "inbox");
+    }
+
+    #[test]
+    fn ids_are_never_reused() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let old = db.insert_message(f, 1, false, false, 1, &p("s", 5, "t"), true).unwrap();
+        db.remove_missing(f, &[]).unwrap(); // the newest row goes
+        assert_ne!(db.insert_message(f, 2, false, false, 1, &p("s", 6, "t"), true).unwrap(), old);
+        let o = db.outbox_add("a@x", b"x", &[], "s", 1).unwrap();
+        db.outbox_done(o).unwrap();
+        assert_ne!(db.outbox_add("a@x", b"x", &[], "s", 1).unwrap(), o);
+    }
+
+    #[test]
+    fn schema_version_and_private_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let v: i64 = Db::memory().c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 1);
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-version", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("data").join("mail.db");
+        drop(Db::open(&path).unwrap());
+        assert_eq!((mode(path.parent().unwrap()), mode(&path)), (0o700, 0o600));
+        drop(Db::open(&path).unwrap()); // version 1 opens as it is
+        Connection::open(&path).unwrap().pragma_update(None, "user_version", 99).unwrap();
+        let e = Db::open(&path).err().unwrap();
+        assert!(e.contains("99"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fts_indexes_names_and_addresses_not_json() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let mut m = p("s", 5, "t");
+        m.to = vec![Addr { name: "Иван Петров".into(), addr: "ivan@y.org".into() }];
+        db.insert_message(f, 1, true, false, 1, &m, true).unwrap();
+        assert_eq!(db.search("петров", 10).unwrap().len(), 1);
+        assert_eq!(db.search("ivan", 10).unwrap().len(), 1);
+        assert!(db.search("name", 10).unwrap().is_empty() && db.search("addr", 10).unwrap().is_empty());
+        m.to = vec![Addr { name: String::new(), addr: "olga@y.org".into() }];
+        db.insert_message(f, 1, true, false, 1, &m, true).unwrap(); // the update path
+        assert!(db.search("петров", 10).unwrap().is_empty());
+        assert_eq!(db.search("olga", 10).unwrap().len(), 1);
     }
 
     #[test]

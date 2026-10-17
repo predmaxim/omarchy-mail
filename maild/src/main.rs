@@ -51,7 +51,8 @@ fn daemon() -> Result<(), String> {
     let paths = config::paths();
     // First: a second maild must not start syncing next to a running one.
     let listener = ipc::listen(&paths.socket)?;
-    drop(db::Db::open(&paths.db)?); // the schema exists before the threads open their own
+    // The schema exists before the threads open their own.
+    fetch::sweep(&db::Db::open(&paths.db)?, &paths.cache);
     let hub = hub::Hub::default();
     for acc in config::load(&paths.config)? {
         hub.add_handle(account::spawn(acc, paths.clone(), hub.clone()));
