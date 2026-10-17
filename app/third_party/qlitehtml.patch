@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..d227c1c 100644
+index 6fa2c82..2994627 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -307,9 +307,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
@@ -33,7 +33,23 @@ index 6fa2c82..d227c1c 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
-@@ -1589,6 +1590,22 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1077,11 +1078,10 @@ void DocumentContainerPrivate::import_css(litehtml::string &text,
+                                           const litehtml::string &url,
+                                           litehtml::string &baseurl)
+ {
+-    const QUrl actualUrl = resolveUrl(QString::fromStdString(url), QString::fromStdString(baseurl));
+-    const QString urlString = actualUrl.toString(QUrl::None);
+-    const int lastSlash = urlString.lastIndexOf('/');
+-    baseurl = urlString.left(lastSlash).toStdString();
+-    text = QString::fromUtf8(m_dataCallback(actualUrl)).toStdString();
++    // external stylesheets are never loaded: the network of a letter is its images only
++    Q_UNUSED(text)
++    Q_UNUSED(url)
++    Q_UNUSED(baseurl)
+ }
+ 
+ void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
+@@ -1589,6 +1589,22 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  

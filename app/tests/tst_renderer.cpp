@@ -126,6 +126,15 @@ private Q_SLOTS:
         QVERIFY(isRed(drawn(again).pixel(5, 5)));
     }
 
+    void external_css_ignored()
+    {
+        const Rendered r = run(job(QStringLiteral(
+            "<link rel=\"stylesheet\" href=\"https://example.invalid/s.css\">"
+            "<style>@import url(https://example.invalid/i.css);</style><p>Hi</p>")));
+        QVERIFY(r.doc);
+        QVERIFY(r.wanted.isEmpty());
+    }
+
     void data_url_image()
     {
         const QString b64 = QString::fromLatin1(readFile(fixture("logo.png")).toBase64());
