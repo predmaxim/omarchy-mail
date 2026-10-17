@@ -6,9 +6,13 @@ use crate::i18n;
 use notify_rust::{Hint, Notification};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 /// Up to this many new messages get a notification each; more are folded into one.
 const EACH: usize = 3;
+/// Threads blocked in `wait_for_action`; past `MAX_WAITING` notifications are shown without a click action.
+const MAX_WAITING: usize = 32;
+static WAITING: AtomicUsize = AtomicUsize::new(0);
 const DESKTOP_ID: &str = "omarchy-mail";
 
 /// (title, text, id to open) for each notification.
@@ -26,6 +30,10 @@ pub fn plan(new: &[Summary]) -> Vec<(String, String, Option<i64>)> {
 /// Notifies about unread Inbox mail newer than `notified_uid`, then marks everything up to
 /// `last_uid` as notified. Failures to notify are logged, never returned.
 pub fn announce(db: &Db, hub: &Hub, folder: &Folder) {
+    announce_with(db, folder, |t, b, id| show(hub, t, b, id));
+}
+
+fn announce_with(db: &Db, folder: &Folder, show: impl Fn(&str, &str, Option<i64>)) {
     let new = match db.unread_inbox(&folder.account) {
         Ok(n) => n,
         Err(e) => return eprintln!("{}: notify: {e}", folder.account),
@@ -35,26 +43,53 @@ pub fn announce(db: &Db, hub: &Hub, folder: &Folder) {
         return eprintln!("{}: notify: {e}", folder.account);
     }
     for (title, text, id) in plan(&new) {
-        show(hub, &title, &text, id);
+        show(&title, &text, id);
+    }
+}
+
+/// Holds one slot of `WAITING`; frees it on drop, whatever way the thread ends.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl<'a> Slot<'a> {
+    fn take(max: usize, n: &'a AtomicUsize) -> Option<Slot<'a>> {
+        n.fetch_update(SeqCst, SeqCst, |c| (c < max).then_some(c + 1)).ok().map(|_| Slot(n))
+    }
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, SeqCst);
     }
 }
 
 fn show(hub: &Hub, title: &str, text: &str, id: Option<i64>) {
-    let shown = Notification::new()
+    let slot = Slot::take(MAX_WAITING, &WAITING);
+    if slot.is_none() {
+        eprintln!("notify: {MAX_WAITING} notifications unanswered, new ones get no click action");
+    }
+    let mut n = Notification::new();
+    n
         .appname(if i18n::is_ru() { "Почта" } else { "Mail" })
         .summary(title)
         .body(text)
         .icon("mail-unread")
         .hint(Hint::DesktopEntry(DESKTOP_ID.into()))
         .hint(Hint::Category("email.arrived".into()))
-        .action("default", "default")
-        .show();
+        ;
+    if slot.is_some() {
+        n.action("default", "default");
+    }
+    let shown = n.show();
     match shown {
         // One short-lived thread per notification, until it is clicked or closed.
-        Ok(handle) => {
+        Ok(handle) if slot.is_some() => {
             let hub = hub.clone();
-            std::thread::spawn(move || handle.wait_for_action(|a| if a == "default" && let Some(id) = id { clicked(&hub, id) }));
+            std::thread::spawn(move || {
+                let _slot = slot;
+                handle.wait_for_action(|a| if a == "default" && let Some(id) = id { clicked(&hub, id) })
+            });
         }
+        Ok(_) => {}
         Err(e) => eprintln!("notify: {e}"),
     }
 }
@@ -69,8 +104,10 @@ fn clicked(hub: &Hub, id: i64) {
     cmd.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // SAFETY: setsid is async-signal-safe and touches no memory.
     unsafe { cmd.pre_exec(|| if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }) };
-    if let Err(e) = cmd.spawn() {
-        eprintln!("notify: {}: {e}", argv.join(" "));
+    match cmd.spawn() {
+        // Reaped, or it stays defunct; may wait long when `uwsm-app` lingers.
+        Ok(mut child) => drop(std::thread::spawn(move || drop(child.wait()))),
+        Err(e) => eprintln!("notify: {}: {e}", argv.join(" ")),
     }
 }
 
@@ -146,6 +183,40 @@ mod tests {
         db.set_folder_marks(f.id, 2, 2).unwrap();
         assert!(Db::open(&path).unwrap().unread_inbox("me@x").unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn slots_are_capped_and_freed() {
+        let n = AtomicUsize::new(0);
+        let a = Slot::take(2, &n).unwrap();
+        let _b = Slot::take(2, &n).unwrap();
+        assert!(Slot::take(2, &n).is_none());
+        assert_eq!(n.load(SeqCst), 2);
+        drop(a);
+        assert!(Slot::take(2, &n).is_some());
+    }
+
+    fn folder(db: &Db) -> Folder {
+        db.folders_of("me@x").unwrap().remove(0)
+    }
+
+    #[test]
+    fn announce_marks_and_does_not_repeat() {
+        use std::cell::RefCell;
+        let db = Db::memory();
+        let f = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        db.set_folder_marks(f, 0, 0).unwrap();
+        (1..=5).for_each(|u| msg(&db, f, u, false, "A"));
+        db.set_folder_marks(f, 5, 0).unwrap();
+        let shown = RefCell::new(vec![]);
+        let rec = |t: &str, b: &str, id| shown.borrow_mut().push((t.to_string(), b.to_string(), id));
+        announce_with(&db, &folder(&db), &rec);
+        assert_eq!(shown.borrow().len(), 1);
+        assert_eq!(shown.borrow()[0].0, i18n::new_messages(5));
+        let fo = folder(&db);
+        assert_eq!((fo.last_uid, fo.notified_uid), (5, 5));
+        announce_with(&db, &fo, &rec);
+        assert_eq!(shown.borrow().len(), 1);
     }
 
     #[test]
