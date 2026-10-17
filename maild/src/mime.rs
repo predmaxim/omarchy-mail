@@ -126,22 +126,13 @@ pub fn preview(text: &str, html: Option<&str>) -> String {
     collapsed.chars().take(PREVIEW_CHARS).collect()
 }
 
-const DROP_WITH_CONTENT: [&str; 3] = ["script", "iframe", "object"];
-const DROP_TAG: [&str; 5] = ["embed", "form", "input", "button", "meta"];
+const DROP_WITH_CONTENT: [&str; 5] = ["script", "iframe", "object", "svg", "math"];
+const DROP_TAG: [&str; 7] = ["embed", "form", "input", "button", "meta", "base", "link"];
 const URL_ATTRS: [&str; 5] = ["href", "src", "action", "background", "xlink:href"];
 
-/// End (exclusive) of the tag starting at `i` (`s[i] == '<'`), honouring quoted attribute values.
+/// End (exclusive) of a non-start tag (end tag, doctype, `<?..>`): the first `>`, like a browser.
 fn tag_end(s: &str, i: usize) -> usize {
-    let mut quote = None;
-    for (k, c) in s[i..].char_indices() {
-        match (quote, c) {
-            (None, '>') => return i + k + 1,
-            (None, '"' | '\'') => quote = Some(c),
-            (Some(q), c) if c == q => quote = None,
-            _ => {}
-        }
-    }
-    s.len()
+    s[i..].find('>').map_or(s.len(), |k| i + k + 1)
 }
 
 /// Position right after the closing `</name ...>` at or after `from`, or end of input.
@@ -153,73 +144,121 @@ fn after_close(lower: &str, from: usize, name: &str) -> usize {
     }
 }
 
+/// Decodes character references the way a browser does in an attribute value (one pass).
+fn decode_entities(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut rest = v;
+    while let Some(k) = rest.find('&') {
+        out.push_str(&rest[..k]);
+        rest = &rest[k..];
+        let body = &rest[1..];
+        let (decoded, used) = if let Some(num) = body.strip_prefix('#') {
+            let (digits, radix) = match num.strip_prefix(['x', 'X']) {
+                Some(h) => (h, 16),
+                None => (num, 10),
+            };
+            let n = digits.chars().take_while(|c| c.is_digit(radix)).count();
+            let ch = u32::from_str_radix(&digits[..n], radix).ok().and_then(char::from_u32);
+            let prefix = num.len() - digits.len();
+            let semi = digits[n..].starts_with(';') as usize;
+            (ch, 1 + 1 + prefix + n + semi)
+        } else {
+            let named = [("colon;", ':'), ("tab;", '\t'), ("newline;", '\n'), ("amp;", '&'), ("lt;", '<'), ("gt;", '>'), ("quot;", '"'), ("apos;", '\''), ("nbsp;", '\u{a0}')];
+            match named.iter().find(|(n, _)| body.starts_with(n)) {
+                Some((n, c)) => (Some(*c), 1 + n.len()),
+                None => (None, 0),
+            }
+        };
+        match decoded {
+            Some(c) if used > 0 => {
+                out.push(c);
+                rest = &rest[used..];
+            }
+            _ => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn url_is_unsafe(v: &str) -> bool {
-    let c: String = v.chars().filter(|c| !c.is_whitespace() && !c.is_control()).collect::<String>().to_lowercase();
+    let c: String = decode_entities(v).chars().filter(|c| !c.is_whitespace() && !c.is_control()).collect::<String>().to_lowercase();
     c.starts_with("javascript:") || c.starts_with("vbscript:") || (c.starts_with("data:") && !c.starts_with("data:image/"))
 }
 
-/// Rebuilds a tag keeping only safe attributes. `inner` is the text after `<`, without the closing `>`.
-fn clean_tag(inner: &str, name_end: usize) -> String {
-    let mut out = String::from("<");
-    out.push_str(&inner[..name_end]);
-    let rest = &inner[name_end..];
-    let b = rest.as_bytes();
-    let mut i = 0;
+/// Tokenizes the start tag at `s[i]` (name is `name_len` bytes) with HTML-tokenizer rules: quotes matter only
+/// right after `=`. Returns the end of the tag and a rebuilt tag holding only safe attributes.
+fn start_tag(s: &str, i: usize, name_len: usize) -> (usize, String) {
+    let b = s.as_bytes();
+    let ws = |c: u8| c.is_ascii_whitespace();
+    let mut out = format!("<{}", &s[i + 1..i + 1 + name_len]);
+    let mut p = i + 1 + name_len;
     let mut selfclose = false;
-    while i < b.len() {
-        if b[i].is_ascii_whitespace() || b[i] == b'/' {
-            selfclose = b[i] == b'/';
-            i += 1;
-            continue;
+    loop {
+        while p < b.len() && (ws(b[p]) || b[p] == b'/') {
+            selfclose = b[p] == b'/';
+            p += 1;
+        }
+        if p >= b.len() {
+            break;
+        }
+        if b[p] == b'>' {
+            p += 1;
+            break;
         }
         selfclose = false;
-        let start = i;
-        while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'=' && b[i] != b'/' {
-            i += 1;
+        let st = p;
+        if b[p] == b'=' {
+            p += 1;
         }
-        let name = rest[start..i].to_lowercase();
-        let mut j = i;
-        while j < b.len() && b[j].is_ascii_whitespace() {
-            j += 1;
+        while p < b.len() && !ws(b[p]) && !matches!(b[p], b'=' | b'/' | b'>') {
+            p += 1;
+        }
+        let name = s[st..p].to_lowercase();
+        let mut q = p;
+        while q < b.len() && ws(b[q]) {
+            q += 1;
         }
         let mut value = "";
-        if j < b.len() && b[j] == b'=' {
-            j += 1;
-            while j < b.len() && b[j].is_ascii_whitespace() {
-                j += 1;
+        if q < b.len() && b[q] == b'=' {
+            q += 1;
+            while q < b.len() && ws(b[q]) {
+                q += 1;
             }
-            let vs = j;
-            if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
-                let q = b[j];
-                j += 1;
-                while j < b.len() && b[j] != q {
-                    j += 1;
+            if q < b.len() && (b[q] == b'"' || b[q] == b'\'') {
+                let quote = b[q];
+                let vs = q + 1;
+                q = vs;
+                while q < b.len() && b[q] != quote {
+                    q += 1;
                 }
-                value = &rest[vs + 1..j.min(b.len())];
-                j = (j + 1).min(b.len());
+                value = &s[vs..q];
+                q = (q + 1).min(b.len());
             } else {
-                while j < b.len() && !b[j].is_ascii_whitespace() {
-                    j += 1;
+                let vs = q;
+                while q < b.len() && !ws(b[q]) && b[q] != b'>' {
+                    q += 1;
                 }
-                value = &rest[vs..j];
+                value = &s[vs..q];
             }
-            i = j;
+            p = q;
         }
-        let bad = name.starts_with("on") || (URL_ATTRS.contains(&name.as_str()) && url_is_unsafe(value));
-        if !bad {
+        if !(name.starts_with("on") || (URL_ATTRS.contains(&name.as_str()) && url_is_unsafe(value))) {
             out.push(' ');
-            out.push_str(&rest[start..i]);
+            out.push_str(&s[st..p]);
         }
     }
     if selfclose {
         out.push_str(" /");
     }
     out.push('>');
-    out
+    (p, out)
 }
 
 /// One pass over the tags: drops active content and event/script URLs, keeps `<style>` and everything else.
-// ponytail: HTML-entity-obfuscated schemes (`java&#115;cript:`) are not decoded; add if the viewer ever resolves them.
 pub fn sanitize_html(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len());
@@ -236,28 +275,36 @@ pub fn sanitize_html(html: &str) -> String {
             continue;
         }
         let nb = html.as_bytes().get(i + 1).copied().unwrap_or(0);
-        if !(nb.is_ascii_alphabetic() || nb == b'/' || nb == b'!' || nb == b'?') {
+        if nb == b'!' || nb == b'?' {
+            let end = tag_end(html, i);
+            out.push_str(&html[i..end]);
+            i = end;
+            continue;
+        }
+        let closing = nb == b'/';
+        let name_start = i + 1 + closing as usize;
+        if !html.as_bytes().get(name_start).is_some_and(u8::is_ascii_alphabetic) {
             out.push('<');
             i += 1;
             continue;
         }
-        let end = tag_end(html, i);
-        let closing = nb == b'/';
-        let name_start = i + 1 + closing as usize;
-        let name_len = lower[name_start..end]
+        let name_len = lower[name_start..]
             .find(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
-            .unwrap_or(end - name_start);
+            .unwrap_or(html.len() - name_start);
         let name = &lower[name_start..name_start + name_len];
-        if DROP_WITH_CONTENT.contains(&name) {
-            i = if closing { end } else { after_close(&lower, end, name) };
+        if closing {
+            let end = tag_end(html, i);
+            if !DROP_WITH_CONTENT.contains(&name) && !DROP_TAG.contains(&name) {
+                out.push_str(&format!("</{}>", &html[name_start..name_start + name_len]));
+            }
+            i = end;
+        } else if DROP_WITH_CONTENT.contains(&name) {
+            i = after_close(&lower, start_tag(html, i, name_len).0, name);
         } else if DROP_TAG.contains(&name) {
-            i = end;
-        } else if nb == b'!' || nb == b'?' || closing {
-            out.push_str(&html[i..end]);
-            i = end;
+            i = start_tag(html, i, name_len).0;
         } else {
-            let inner = html[i + 1..end].strip_suffix('>').unwrap_or(&html[i + 1..end]);
-            out.push_str(&clean_tag(inner, name_len));
+            let (end, tag) = start_tag(html, i, name_len);
+            out.push_str(&tag);
             i = end;
         }
     }
@@ -379,6 +426,40 @@ mod tests {
         assert!(!s.to_lowercase().contains("javascript"));
         assert!(!s.to_lowercase().contains("onclick"));
         assert!(s.contains("class=c"));
+    }
+
+    #[test]
+    fn sanitize_tag_boundaries() {
+        for h in [
+            r#"<p class=a"b><script>alert(1)</script>""#,
+            r#"<!x"><script>alert(1)</script>""#,
+            r#"</a "><script>alert(1)</script>""#,
+            r#"<p a=b"c><script>alert(1)</script>">"#,
+        ] {
+            let s = sanitize_html(h).to_lowercase();
+            assert!(!s.contains("<script") && !s.contains("alert"), "{h} -> {s}");
+        }
+    }
+
+    #[test]
+    fn sanitize_entity_schemes() {
+        for h in [
+            r#"<a href="java&#115;cript:alert(1)">x</a>"#,
+            r#"<a href="&#x6A;avascript:alert(1)">x</a>"#,
+            r#"<a href="javascript&colon;alert(1)">x</a>"#,
+            r#"<a href="jav&#x09;ascript:alert(1)">x</a>"#,
+            r#"<a href=&#106avascript:alert(1)>x</a>"#,
+        ] {
+            let s = sanitize_html(h);
+            assert!(!s.contains("href"), "{h} -> {s}");
+        }
+        assert!(sanitize_html(r#"<a href="https://e.com/?a=1&amp;b=2">x</a>"#).contains("href"));
+    }
+
+    #[test]
+    fn sanitize_drops_base_link_svg() {
+        let s = sanitize_html(r#"<base href="http://e.com/"><link rel=stylesheet href="http://e.com/a.css"><svg onload=x><script>1</script></svg><math><mi>x</mi></math><p>ok</p>"#);
+        assert_eq!(s, "<p>ok</p>");
     }
 
     #[test]
