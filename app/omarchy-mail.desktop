@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mail
+Name[ru]=Почта
+Comment=Mail for Omarchy
+Exec=omarchy-mail %u
+Icon=internet-mail
+Terminal=false
+Categories=Network;Email;
+StartupWMClass=omarchy-mail
+MimeType=x-scheme-handler/mailto;
