@@ -72,6 +72,7 @@ Q_SIGNALS:
     void documentChanged(bool sameLetter);
     void composeTo(const QUrl &url);
     void note(const QString &text, bool error);
+    void quotesOpened();   // its links move: a link picked by the keyboard is another one now
 
 private:
     QJsonObject summary() const;

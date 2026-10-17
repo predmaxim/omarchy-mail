@@ -73,6 +73,8 @@ class TstRenderer : public QObject
         j.foreground = QColor(QStringLiteral("#eaeff5"));
         j.muted = QColor(QStringLiteral("#3a3f4c"));
         j.dim = j.foreground.darker(140);
+        j.accent = QColor(QStringLiteral("#8999aa"));
+        j.quotesLabel = QStringLiteral("Show quoted text");
         return j;
     }
 
@@ -354,6 +356,19 @@ private Q_SLOTS:
         QVERIFY(height("Hg " + img.arg("")) > block);   // text keeps its line
     }
 
+    // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
+    void blank_lines_stay()
+    {
+        const auto height = [&](const QString &html) {
+            const Rendered r = run(job(html));
+            return r.doc ? r.size.height() : -1;
+        };
+        const int two = height("<p>a<br><br>b</p>");
+        QCOMPARE(height("<p>a<br><span><br></span>b</p>"), two);
+        QCOMPARE(height("<p><font>a<br></font><font><br></font><font>b</font></p>"), two);
+        QCOMPARE(height("<pre>a\n<span>\n</span>b</pre>"), height("<pre>a\n\nb</pre>"));
+    }
+
     // the colour filter turns the quote's bar into the theme's muted and its text into dim, on a light
     // letter and on a dark one
     void quote_colours_are_the_theme_s()
@@ -407,6 +422,36 @@ private Q_SLOTS:
         QVERIFY(has(r, "Quoted line 7"));
         QVERIFY(has(r, "Deepest"));
         QVERIFY(r.links.isEmpty());
+    }
+
+    // the link is ours: the letter's CSS for a and div neither hides nor recolours it; it's the theme's accent
+    void collapse_link_is_ours()
+    {
+        QString lines;
+        for (int i = 1; i <= 20; ++i)
+            lines += QStringLiteral("Quoted line %1<br>").arg(i);
+        const RenderJob j = job(QStringLiteral(
+            "<style>a{display:none!important;color:#000!important;visibility:hidden;font-size:0;text-decoration:none}"
+            "div{display:none}</style><p>See below.</p><blockquote>%1</blockquote>").arg(lines));
+        const Rendered r = run(j);
+        QVERIFY(r.doc);
+        QCOMPARE(r.links.size(), 1);
+        const QRect link = r.links.at(0).rect;
+        QVERIFY2(link.width() > 50 && link.height() > 10, qPrintable(QStringLiteral("%1x%2").arg(link.width()).arg(link.height())));
+        QImage img(760, r.size.height(), QImage::Format_RGB32);
+        img.fill(j.background);
+        r.doc->setColorFilter(recolor::filter(j.background, j.foreground, r.dark));
+        QPainter painter(&img);
+        r.doc->draw(&painter, img.rect());
+        painter.end();
+        int best = 999;
+        for (int y = link.top(); y <= link.bottom(); ++y)
+            for (int x = link.left(); x <= link.right(); ++x) {
+                const QColor p = img.pixelColor(x, y);
+                best = qMin(best, qAbs(p.red() - j.accent.red()) + qAbs(p.green() - j.accent.green())
+                                      + qAbs(p.blue() - j.accent.blue()));
+            }
+        QVERIFY2(best < 30, qPrintable(QString::number(best)));
     }
 
     // plain text: runs of "> " lines are quotes too, without the marks

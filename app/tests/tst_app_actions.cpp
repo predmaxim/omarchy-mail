@@ -56,7 +56,8 @@ private Q_SLOTS:
             for (int i = 1; i <= 20; ++i)
                 lines += QStringLiteral("Quoted line %1<br>").arg(i);
             return QJsonObject{{"result", QJsonObject{{"summary", QJsonObject{{"id", r.value("message")}}},
-                                                      {"html", QStringLiteral("<p>See below.</p><blockquote>%1</blockquote>").arg(lines)}}}};
+                                                      {"html", QStringLiteral("<p>See below.</p><blockquote>%1"
+                                                                              "<a href=\"https://x.org/inside\">inside</a></blockquote>").arg(lines)}}}};
         });
         letter->setWidth(760);
         bootList();
@@ -64,7 +65,10 @@ private Q_SLOTS:
         QVERIFY(press(Qt::Key_Right));
         QCOMPARE(nav->row(), int(Row::Links));
         QVERIFY(press(Qt::Key_Return, 36));
-        QTRY_COMPARE_WITH_TIMEOUT(letter->linkCount(), 0, 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(letter->links().value(0).url, QUrl("https://x.org/inside"), 10000);   // opened
+        QCOMPARE(letter->linkCount(), 1);
+        // W39: the links moved under the cursor: nothing stays picked that a second Enter would open
+        QCOMPARE(nav->row(), int(Row::Text));
     }
     void d_deletes_and_moves_cursor()
     {

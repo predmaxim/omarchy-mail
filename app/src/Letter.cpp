@@ -266,6 +266,8 @@ void Letter::layout()
     job.foreground = m_theme->foreground();
     job.muted = m_theme->muted();
     job.dim = m_theme->dim();
+    job.accent = m_theme->accent();
+    job.quotesLabel = t("Show quoted text");
     job.expanded = m_expanded;
     m_renderer->render(job);
 }
@@ -369,9 +371,13 @@ void Letter::activateLink(const QUrl &url)
 {
     const QString scheme = url.scheme();
     if (scheme == QLatin1String("omarchy-mail")) {   // "··· Show quoted text": the Renderer's own link
-        if (const QString path = url.path(); path.startsWith(QLatin1String("quotes/"))) {
-            m_expanded.insert(path.mid(7).toInt());
+        bool ok = false;
+        const QString path = url.path();
+        const int quote = path.startsWith(QLatin1String("quotes/")) ? path.mid(7).toInt(&ok) : 0;
+        if (ok) {
+            m_expanded.insert(quote);
             layout();
+            Q_EMIT quotesOpened();
         }
         return;
     }

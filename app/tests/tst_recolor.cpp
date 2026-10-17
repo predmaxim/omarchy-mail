@@ -49,6 +49,16 @@ private Q_SLOTS:
                              qPrintable(c.name() + " " + o.name() + (dark ? " dark" : " light")));
                 }
     }
+    // a theme colour with a hue (the accent) comes back with its hue too
+    void unmap_keeps_hue()
+    {
+        for (const QColor &c : {QColor("#8999aa"), QColor("#e0a568"), QColor("#7aa2f7")})
+            for (bool dark : {false, true}) {
+                const QColor o = recolor::map(recolor::unmap(c, bg, fg, dark), bg, fg, dark);
+                const int d = qAbs(o.red() - c.red()) + qAbs(o.green() - c.green()) + qAbs(o.blue() - c.blue());
+                QVERIFY2(d < 30, qPrintable(c.name() + " " + o.name() + (dark ? " dark" : " light")));
+            }
+    }
     void dark_detection()
     {
         QImage a(200, 200, QImage::Format_RGB32);

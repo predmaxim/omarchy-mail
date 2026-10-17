@@ -1,6 +1,7 @@
 #include "Recolor.h"
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace om::recolor {
@@ -32,7 +33,8 @@ QColor unmap(const QColor &target, const QColor &bg, const QColor &fg, bool dark
 {
     const float span = fg.lightnessF() - bg.lightnessF();
     const float t = span == 0 ? 0.5f : std::clamp((target.lightnessF() - bg.lightnessF()) / span, 0.f, 1.f);
-    return QColor::fromHslF(0, 0, darkLetter ? t : 1 - t);
+    // map() also blends a colour into the grey by its saturation: the root gives the target's back
+    return QColor::fromHslF(qMax(0.f, target.hslHueF()), std::sqrt(target.hslSaturationF()), darkLetter ? t : 1 - t);
 }
 
 bool isDarkLetter(const QImage &probe)

@@ -24,6 +24,8 @@ struct RenderJob
     QFont font;
     QColor selection;
     QColor background, foreground, muted, dim; // theme: quotes are painted muted and dim
+    QColor accent;                              // theme: the "Show quoted text" link
+    QString quotesLabel;                        // t("Show quoted text")
     QSet<int> expanded;                         // tall top-level quotes shown in full (0 = the first quote)
 };
 

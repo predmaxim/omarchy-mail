@@ -1,6 +1,5 @@
 #include "Renderer.h"
 
-#include "I18n.h"
 #include "Images.h"
 #include "Recolor.h"
 
@@ -127,24 +126,27 @@ static QString userAgentCss(const RenderJob &job, bool dark)
 }
 
 // Like Geary: a top-level quote taller than 120 px (boxes: of every quote, laid out) gives its place to a
-// "··· Show quoted text (levels)" link, unless the reader opened it already.
+// "··· Show quoted text (levels)" link, unless the reader opened it already. The link is our control in the
+// theme's accent: the letter's CSS for a and div must not hide or recolour it.
 static QByteArray folded(QByteArray html, const QList<Quote> &quotes, const QList<QRect> &boxes,
-                         const QSet<int> &expanded)
+                         const RenderJob &job, bool dark)
 {
+    const QString link = QStringLiteral(
+        "<div style=\"display:block!important;visibility:visible!important\"><a href=\"omarchy-mail:quotes/%1\" "
+        "style=\"display:inline!important;visibility:visible!important;font-size:medium!important;color:%2!important;"
+        "text-decoration:underline!important\">··· %3 (%4)</a></div>");
+    const QString accent = recolor::unmap(job.accent, job.background, job.foreground, dark).name();
     int top = int(std::count_if(quotes.cbegin(), quotes.cend(), [](const Quote &q) { return q.depth == 0; }));
     for (qsizetype i = quotes.size(); i-- > 0;) {   // from the end: the offsets before it stay valid
         if (quotes.at(i).depth != 0)
             continue;
-        if (expanded.contains(--top) || boxes.at(i).height() <= 120)
+        if (job.expanded.contains(--top) || boxes.at(i).height() <= 120)
             continue;
         int levels = 1;
         for (qsizetype j = i + 1; j < quotes.size() && quotes.at(j).depth > 0; ++j)
             levels = qMax(levels, quotes.at(j).depth + 1);
         html.replace(quotes.at(i).from, quotes.at(i).to - quotes.at(i).from,
-                     QStringLiteral("<div><a href=\"omarchy-mail:quotes/%1\">··· %2 (%3)</a></div>")
-                         .arg(top)
-                         .arg(t("Show quoted text").toHtmlEscaped())
-                         .arg(levels)
+                     link.arg(QString::number(top), accent, job.quotesLabel.toHtmlEscaped(), QString::number(levels))
                          .toUtf8());
     }
     return html;
@@ -229,7 +231,7 @@ void Renderer::render(const RenderJob &job)
         r.dark = isDark(holder->doc, job.width);
         // once more without the tall quotes, or with the quotes' greys for a dark letter
         const QList<QRect> boxes = holder->doc.boxes(QStringLiteral("blockquote"));
-        const QByteArray shown = boxes.size() == quotes.size() ? folded(html, quotes, boxes, job.expanded) : html;
+        const QByteArray shown = boxes.size() == quotes.size() ? folded(html, quotes, boxes, job, r.dark) : html;
         std::shared_ptr<Holder> dropped;
         if (shown != html || (r.dark && !quotes.isEmpty()))
             dropped = std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), job, &r.wanted));
