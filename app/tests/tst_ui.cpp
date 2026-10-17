@@ -491,6 +491,44 @@ private Q_SLOTS:
         QTest::keyClick(win, Qt::Key_Escape);
         QCOMPARE(s->app.page(), QString("main"));
     }
+    void rename_ends_when_the_keys_leave_it()
+    {
+        h.d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
+        start();
+        s->app.pressAction(4);
+        QQuickItem *rows = item("accountRows");
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QTRY_COMPARE(rows->property("count").toInt(), 2);
+        QTest::keyClick(win, Qt::Key_Return);   // the sender name of me@gmail.com
+        QQuickItem *rename = itemAt(rows, 0)->findChild<QQuickItem *>("renameField");
+        QCOMPARE(win->activeFocusItem(), rename);
+        type(" X");
+
+        QWindow other;   // another window and back: the edit stays, with the keys
+        other.resize(100, 100);
+        other.show();
+        other.requestActivate();
+        QTRY_VERIFY(!win->isActive());
+        win->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(win));
+        QCOMPARE(win->activeFocusItem(), rename);
+        QVERIFY(rename->isVisible());
+
+        QMetaObject::invokeMethod(item("emailField"), "forceActiveFocus");   // a click on the form: the edit ends
+        QVERIFY(!rename->isVisible());
+        QTest::keyClick(win, Qt::Key_Up);
+        QTest::keyClick(win, Qt::Key_Up);
+        QVERIFY(rows->hasActiveFocus());   // the list's keys, not the hidden field's
+        QVERIFY(!rename->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Return);     // a new edit of the row, nothing saved
+        QCOMPARE(win->activeFocusItem(), rename);
+        QCOMPARE(rename->property("text").toString(), QString("Max"));
+        QTest::keyClick(win, Qt::Key_Escape);
+        QVERIFY(rows->hasActiveFocus());
+        QVERIFY(!rename->hasActiveFocus());
+        QTest::qWait(100);
+        QVERIFY(h.sent("account_update").isEmpty());
+    }
 };
 
 QTEST_MAIN(TstUi)

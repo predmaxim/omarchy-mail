@@ -191,6 +191,8 @@ FocusScope {
                     readonly property var acc: app.accounts[index] || ({})
                     readonly property bool editing: page.renaming !== "" && page.renaming === acc.email
                     readonly property bool hasCursor: (rows.activeFocus && ListView.isCurrentItem) || mouse.containsMouse
+                    // however the edit ends: else the list, a focus scope, would hand the keys back to the hidden field
+                    onEditingChanged: if (!editing) renameField.focus = false
                     function rename() {
                         renameField.text = acc.name
                         page.renaming = acc.email
@@ -198,7 +200,6 @@ FocusScope {
                     }
                     function stopRenaming() {
                         page.renaming = ""
-                        renameField.focus = false   // else the list, a focus scope, hands the keys back to it
                         rows.forceActiveFocus()
                     }
                     width: rows.width
@@ -214,6 +215,7 @@ FocusScope {
                         anchors.fill: parent
                         hoverEnabled: true
                         onClicked: {
+                            page.renaming = ""   // a click on a row ends an edit
                             rows.currentIndex = mailbox.index
                             rows.forceActiveFocus()
                         }
@@ -294,7 +296,8 @@ FocusScope {
                                     }
                                     Keys.onReturnPressed: save()   // accepted here: TextInput would pass Enter on to the list
                                     Keys.onEnterPressed: save()
-                                    onActiveFocusChanged: if (!activeFocus && mailbox.editing) page.renaming = ""   // clicked away
+                                    // the keys went elsewhere in the window: the edit ends; another window: it waits
+                                    onActiveFocusChanged: if (!activeFocus && mailbox.editing && Window.active) page.renaming = ""
                                     Keys.onEscapePressed: mailbox.stopRenaming()
                                     Keys.onUpPressed: {}     // eaten: the list's cursor stays on the row being edited
                                     Keys.onDownPressed: {}
