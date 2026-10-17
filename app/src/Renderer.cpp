@@ -1,8 +1,8 @@
 #include "Renderer.h"
 
+#include "Images.h"
 #include "Recolor.h"
 
-#include <QCryptographicHash>
 #include <QFile>
 #include <QImage>
 #include <QPainter>
@@ -34,9 +34,7 @@ QByteArray loadData(const QUrl &url, const RenderJob &job, QStringList *wanted)
         return meta.endsWith(";base64") ? QByteArray::fromBase64(body) : body;
     }
     if (scheme == QLatin1String("http") || scheme == QLatin1String("https")) {
-        // ponytail: Images::pathFor (task 7) takes this over, same format
-        const QByteArray name = QCryptographicHash::hash(url.toEncoded(), QCryptographicHash::Sha1).toHex();
-        const QByteArray data = readAll(job.imageDir + QLatin1Char('/') + QString::fromLatin1(name));
+        const QByteArray data = readAll(Images::pathFor(job.imageDir, url));
         const QString s = QString::fromUtf8(url.toEncoded());
         if (data.isEmpty() && wanted && !wanted->contains(s))
             wanted->append(s);
