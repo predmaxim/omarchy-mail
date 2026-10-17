@@ -318,6 +318,52 @@ private Q_SLOTS:
         QCOMPARE(list->cursor(), 3);
     }
 
+    void reconnect_reloads_a_failed_letter()
+    {
+        auto down = std::make_shared<bool>(true);
+        d->on("message", [down](const QJsonObject &r) {
+            if (*down)
+                return QJsonObject{{"error", "Mail service is not running"}};
+            return QJsonObject{{"result", QJsonObject{{"summary", QJsonObject{{"id", r.value("message")}}},
+                                                      {"text", "hi"}, {"html", QJsonValue::Null}}}};
+        });
+        boot();
+        QTRY_COMPARE(letter->error(), QString("Mail service is not running"));
+        *down = false;
+        d->stop();
+        QTRY_VERIFY(!c->connected());
+        QVERIFY(d->start());
+        QTRY_COMPARE(sent("message").size(), 2);
+        QTRY_COMPARE(letter->error(), QString());
+        QCOMPARE(letter->id(), 57);
+        QCOMPARE(letter->full().value("text").toString(), QString("hi"));
+    }
+
+    void changed_during_a_first_load_keeps_its_aim()
+    {
+        boot();
+        QTRY_COMPARE(list->cursor(), 3);
+        QJsonArray trash;
+        for (int i = 0; i < 3; ++i) {
+            QJsonObject r = rows.at(i).toObject();
+            r["id"] = 1001 + i;
+            r["seen"] = i != 1;
+            trash << r;
+        }
+        d->on("list", [this, trash](const QJsonObject &r) {
+            if (r.value("role").toString() == "trash")
+                return QJsonObject{{"result", trash}, {"delay", 100}};
+            return QJsonObject{{"result", slice(r)}};
+        });
+        const auto lists = sent("list").size();
+        app->pickFolder(3);   // Trash: its first rows are on their way...
+        d->emitEvent({{"event", "changed"}, {"folders", false}, {"ids", QJsonArray()}});   // ...when a reload follows
+        QTRY_COMPARE(sent("list").size(), lists + 2);
+        QTRY_COMPARE(list->row(0).value("id").toInteger(), 1001);
+        QCOMPARE(list->cursor(), 1);   // Trash's first unread, not the Inbox cursor's place
+        QTRY_COMPARE(letter->id(), 1002);
+    }
+
     void no_accounts_opens_settings()
     {
         accounts = {};

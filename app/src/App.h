@@ -157,10 +157,10 @@ private:
     QJsonObject m_folder;       // the folder viewed (FolderInfo), empty: Inbox
     QHash<QString, QHash<QString, QString>> m_places;   // mailbox -> folder path -> label
     bool m_unreadOnly = false;
-    qint64 m_openId = 0;
     QUrl m_pendingMailto;   // asked before the mailboxes arrived
     bool m_synced = false;      // `sync {}` once per window
-    bool m_opened = false;      // the window's first list has arrived
+    bool m_freshPending = true; // a fresh load (a new view's first rows) hasn't arrived: a reload takes its place
+    qint64 m_freshTarget = 0;   // and its target; the window's first is `--open`
     quint64 m_gen = 0;          // view changes and list/search loads: replies of an older one are dropped
     bool m_paging = false, m_end = false;
     bool m_placing = false;     // rows being replaced: the cursor settles before the letter follows

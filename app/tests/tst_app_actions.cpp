@@ -297,6 +297,70 @@ private Q_SLOTS:
         QCOMPARE(app->page(), QString("settings"));
     }
 
+    void action_bar_under_the_form()   // the list behind the form: its buttons do nothing
+    {
+        bootList();
+        QTRY_VERIFY(!letter->full().isEmpty());
+        app->pressAction(0);
+        QVERIFY(compose->isOpen());
+        compose->setSubject("Draft");
+        for (int col : {0, 1, 2, 3})
+            app->pressAction(col);
+        QVERIFY(compose->isOpen() && !compose->isReply());
+        QCOMPARE(compose->subject(), QString("Draft"));
+        QVERIFY(!app->unreadOnly());
+        QCOMPARE(list->rowCount(), 50);
+        barrier();
+        QVERIFY(acts("delete").isEmpty());
+        app->pressAction(4);   // the gear: the form closes with its draft kept, the mailboxes page opens
+        QVERIFY(!compose->isOpen());
+        QCOMPARE(app->page(), QString("settings"));
+        QVERIFY(QFile::exists(dir->filePath("drafts/new.json")));
+        app->closeSettings();
+        app->composeNew();
+        QCOMPARE(compose->subject(), QString("Draft"));
+    }
+
+    void notification_click_closes_the_form()
+    {
+        bootList();
+        compose->startNew("me@gmail.com");
+        compose->setSubject("Half");
+        d->emitEvent({{"event", "open"}, {"id", 59}});
+        QTRY_COMPARE(letter->id(), 59);
+        QTRY_COMPARE(list->cursor(), 1);
+        QVERIFY(!compose->isOpen());   // the letter is in sight, not under the form
+        QVERIFY(QFile::exists(dir->filePath("drafts/new.json")));
+    }
+
+    void letter_under_the_form_is_not_auto_read()
+    {
+        bootList();
+        QTRY_COMPARE(letter->id(), 57);
+        QVERIFY(press(Qt::Key_C, 54));   // the form covers the letter before its second is up
+        QTest::qWait(1300);
+        barrier();
+        QVERIFY(acts("read").isEmpty());
+    }
+
+    void keys_act_on_the_letter_shown()   // W16: `--open` a letter that isn't among the rows
+    {
+        boot(7);
+        QTRY_COMPARE(list->rowCount(), 50);
+        QTRY_COMPARE(letter->id(), 7);
+        QCOMPARE(list->cursorRow().value("id").toInteger(), 57);
+        QVERIFY(press(Qt::Key_U, 30));
+        QTRY_COMPARE(acts("read"), QList<QJsonObject>({act({7}, "read")}));
+        QVERIFY(press(Qt::Key_F, 41));
+        QTRY_COMPARE(acts("flag"), QList<QJsonObject>({act({7}, "flag")}));
+        QVERIFY(press(Qt::Key_D, 40));
+        QTRY_COMPARE(acts("delete"), QList<QJsonObject>({act({7}, "delete")}));
+        QCOMPARE(list->rowCount(), 50);   // the cursor row untouched
+        QCOMPARE(list->cursorRow().value("id").toInteger(), 57);
+        QVERIFY(!list->cursorRow().value("seen").toBool());
+        QCOMPARE(letter->id(), 57);   // the letter deleted, the pane follows the cursor again
+    }
+
     void esc_chain()
     {
         bootList();

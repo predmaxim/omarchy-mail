@@ -63,7 +63,7 @@ App::App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *
 
 void App::start(qint64 openId)
 {
-    m_openId = openId;
+    m_freshTarget = openId;
     connect(m_client, &Client::connectedChanged, this, &App::connectedChanged);
     connect(m_client, &Client::event, this, &App::onEvent);
     if (m_client->connected()) {
@@ -150,6 +150,8 @@ void App::connectedChanged()
     Q_EMIT changed();
     if (!m_client->connected())
         return;
+    if (!m_letter->error().isEmpty())   // it failed while maild was away
+        m_letter->reload();
     m_client->request({{"cmd", "accounts"}}, ok([this](const QJsonValue &r) {
         m_accounts = r.toArray();
         if (m_accounts.isEmpty())
@@ -304,13 +306,16 @@ QJsonObject App::listRequest(int offset, int limit) const
 
 // fresh: a new view, the cursor goes to `target` or the first unread; otherwise a reload keeping the cursor.
 // A `target` not among the rows still opens on the right, the cursor stays.
-// The window's first list is always fresh, aimed at `--open`.
+// A reload while a fresh load is on its way replaces it, fresh and aimed as it was;
+// the window's first list is one, aimed at `--open`.
 void App::loadList(bool fresh, qint64 target)
 {
-    if (!m_opened) {
+    if (fresh) {
+        m_freshPending = true;
+        m_freshTarget = target;
+    } else if (m_freshPending) {
         fresh = true;
-        if (target == 0)
-            target = m_openId;
+        target = m_freshTarget;
     }
     const quint64 gen = ++m_gen;
     m_paging = false;
@@ -319,7 +324,7 @@ void App::loadList(bool fresh, qint64 target)
     m_client->request(listRequest(0, limit), ok([this, gen, fresh, limit, target](const QJsonValue &r) {
         if (gen != m_gen)
             return;
-        m_opened = true;
+        m_freshPending = false;
         QJsonArray rows = r.toArray();
         m_end = rows.size() < limit;
         if (!fresh && m_unreadOnly)
@@ -440,6 +445,7 @@ void App::toggleUnread()
 
 void App::openMessage(qint64 id)
 {
+    m_compose->close();   // its draft kept: the letter must be in sight
     m_page = QStringLiteral("main");
     selectView(m_accounts.size() == 1 ? email(m_accounts.at(0)) : QString(), id);
 }
@@ -457,6 +463,9 @@ void App::openMailto(const QUrl &url)
 
 void App::openSettings()
 {
+    m_compose->close();   // its draft kept: the form must not show through the page
+    if (m_compose->isOpen())
+        return;   // the draft could not be saved: the form stays, with the error
     m_page = QStringLiteral("settings");
     Q_EMIT changed();
 }
@@ -573,24 +582,32 @@ QString App::composeAccount() const
     return m_account.isEmpty() && !m_accounts.isEmpty() ? email(m_accounts.at(0)) : m_account;
 }
 
-// The ids an action applies to; server search hits have none, they can't be changed.
+// The ids an action applies to: the selection, else the letter the user sees: the cursor row's, or one
+// that isn't among the rows (W16: `--open`, a notification). Server search hits have none, they can't be changed.
 QList<qint64> App::targets()
 {
+    const QJsonObject cur = m_list->cursorRow();
+    const qint64 shown = m_letter->id();
+    if (m_list->selectedCount() == 0 && !cur.contains(QStringLiteral("remote"))
+        && shown != cur.value(QStringLiteral("id")).toInteger())
+        return shown > 0 ? QList<qint64>{shown} : QList<qint64>{};
     const QList<qint64> ids = m_list->targetIds();
     if (ids.isEmpty() && (m_list->selectedCount() > 0 || m_list->cursorRow().contains(QStringLiteral("remote"))))
         setNote(t("Server search results can't be changed"), false);
     return ids;
 }
 
-// Whether a loaded row among `ids` has `field` off.
+// Whether one of `ids` has `field` off: as its row has it, or the shown letter outside the rows.
 bool App::anyWithout(const QList<qint64> &ids, const QString &field) const
 {
+    QList<qint64> left = ids;
     for (int i = 0; i < m_list->rowCount(); ++i) {
         const QJsonObject r = m_list->row(i);
-        if (!r.value(field).toBool() && ids.contains(r.value(QStringLiteral("id")).toInteger()))
+        if (left.removeOne(r.value(QStringLiteral("id")).toInteger()) && !r.value(field).toBool())
             return true;
     }
-    return false;
+    return left.contains(m_letter->id())
+        && !m_letter->full().value(QStringLiteral("summary")).toObject().value(field).toBool();
 }
 
 // The rows show the change at once; when maild refuses it, they are loaded again from maild.
@@ -620,7 +637,7 @@ void App::remove()
 {
     const QScopedValueRollback<bool> user(m_byUser, true);   // a key or the Delete button: the next letter is theirs
     const qint64 id = m_list->cursorRow().value(QStringLiteral("id")).toInteger();
-    if (id < 0 && m_list->selectedCount() == 0) {
+    if (id < 0 && m_list->selectedCount() == 0 && m_letter->id() == id) {
         discard(id);
         return;
     }
@@ -641,6 +658,8 @@ void App::remove()
         act(ids, QStringLiteral("delete"), true);
     }
     m_list->removeIds(ids);
+    if (m_letter->id() != m_list->cursorRow().value(QStringLiteral("id")).toInteger())
+        cursorMoved(true);   // the letter gone wasn't a row: the pane follows the cursor again
 }
 
 void App::discard(qint64 outbox)
@@ -685,6 +704,8 @@ void App::openOriginal() { m_letter->openOriginal(); }
 
 void App::pressAction(int col)
 {
+    if (m_compose->isOpen() && col != 4)
+        return;   // the list is only a backdrop under the form; the gear closes the form
     switch (col) {
     case 0: composeNew(); break;
     case 1: reply(); break;
@@ -759,7 +780,7 @@ void App::autoRead()
 {
     const QJsonObject row = m_list->cursorRow();
     const qint64 id = row.value(QStringLiteral("id")).toInteger();
-    if (id <= 0 || id != m_letter->id() || row.value(QStringLiteral("seen")).toBool()
+    if (m_compose->isOpen() || id <= 0 || id != m_letter->id()   // the form hides the letter || row.value(QStringLiteral("seen")).toBool()
         || row.value(QStringLiteral("role")).toString() == QLatin1String("remote"))   // maild refuses those
         return;
     act({id}, QStringLiteral("read"), false);   // not undoable: Ctrl+Z goes to what the user did
