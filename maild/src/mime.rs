@@ -126,7 +126,7 @@ pub fn preview(text: &str, html: Option<&str>) -> String {
     collapsed.chars().take(PREVIEW_CHARS).collect()
 }
 
-const DROP_WITH_CONTENT: [&str; 5] = ["script", "iframe", "object", "svg", "math"];
+const DROP_WITH_CONTENT: [&str; 12] = ["script", "iframe", "object", "svg", "math", "textarea", "title", "xmp", "noscript", "noembed", "noframes", "plaintext"];
 const DROP_TAG: [&str; 7] = ["embed", "form", "input", "button", "meta", "base", "link"];
 const URL_ATTRS: [&str; 5] = ["href", "src", "action", "background", "xlink:href"];
 
@@ -163,7 +163,7 @@ fn decode_entities(v: &str) -> String {
             let semi = digits[n..].starts_with(';') as usize;
             (ch, 1 + 1 + prefix + n + semi)
         } else {
-            let named = [("colon;", ':'), ("tab;", '\t'), ("newline;", '\n'), ("amp;", '&'), ("lt;", '<'), ("gt;", '>'), ("quot;", '"'), ("apos;", '\''), ("nbsp;", '\u{a0}')];
+            let named = [("colon;", ':'), ("tab;", '\t'), ("Tab;", '\t'), ("newline;", '\n'), ("NewLine;", '\n'), ("amp;", '&'), ("lt;", '<'), ("gt;", '>'), ("quot;", '"'), ("apos;", '\''), ("nbsp;", '\u{a0}')];
             match named.iter().find(|(n, _)| body.starts_with(n)) {
                 Some((n, c)) => (Some(*c), 1 + n.len()),
                 None => (None, 0),
@@ -302,6 +302,14 @@ pub fn sanitize_html(html: &str) -> String {
             i = after_close(&lower, start_tag(html, i, name_len).0, name);
         } else if DROP_TAG.contains(&name) {
             i = start_tag(html, i, name_len).0;
+        } else if name == "style" {
+            // Raw text: a browser ends it only at `</style`, so copy it untokenized and without any `<`.
+            let (start, tag) = start_tag(html, i, name_len);
+            let stop = lower[start..].find("</style").map_or(html.len(), |k| start + k);
+            out.push_str(&tag);
+            out.extend(html[start..stop].chars().filter(|&c| c != '<'));
+            out.push_str("</style>");
+            i = after_close(&lower, stop, "style");
         } else {
             let (end, tag) = start_tag(html, i, name_len);
             out.push_str(&tag);
@@ -448,6 +456,8 @@ mod tests {
             r#"<a href="&#x6A;avascript:alert(1)">x</a>"#,
             r#"<a href="javascript&colon;alert(1)">x</a>"#,
             r#"<a href="jav&#x09;ascript:alert(1)">x</a>"#,
+            r#"<a href="java&Tab;script:alert(1)">x</a>"#,
+            r#"<a href="java&NewLine;script:alert(1)">x</a>"#,
             r#"<a href=&#106avascript:alert(1)>x</a>"#,
         ] {
             let s = sanitize_html(h);
@@ -460,6 +470,21 @@ mod tests {
     fn sanitize_drops_base_link_svg() {
         let s = sanitize_html(r#"<base href="http://e.com/"><link rel=stylesheet href="http://e.com/a.css"><svg onload=x><script>1</script></svg><math><mi>x</mi></math><p>ok</p>"#);
         assert_eq!(s, "<p>ok</p>");
+    }
+
+    #[test]
+    fn sanitize_raw_text_elements() {
+        for h in [
+            r#"<style><p title="</style><img src=x onerror=alert(1)>">"#,
+            r#"<textarea><p title="</textarea><img src=x onerror=alert(1)>">"#,
+            r#"<title><p title="</title><img src=x onerror=alert(1)>">"#,
+            r#"<STYLE>a{}</STYLE ><img src=x onerror=alert(1)>"#,
+        ] {
+            let s = sanitize_html(h).to_lowercase();
+            // Any `<img` left is a real tag after the raw-text element, with its handlers stripped.
+            assert!(!s.contains("onerror") && !s.contains("alert"), "{h} -> {s}");
+        }
+        assert_eq!(sanitize_html("<style>a>b{}</style><p>x"), "<style>a>b{}</style><p>x");
     }
 
     #[test]
