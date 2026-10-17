@@ -94,6 +94,10 @@ The message id parameter is named `message`, not `id`. `id` is the request id.
 - `window: true` marks the subscriber as a window. A click on a new-mail notification then sends
   `open {id}` to the subscribers instead of starting `omarchy-mail --open <id>`. Only the
   window sets it; `maild ctl` subscribes with `false`.
+- A click is the notification server's `ActionInvoked(id, "default")`, so a click on the entry in
+  a notification center that keeps the notification works like a click on the toast, until the
+  server closes it (`NotificationClosed`). maild remembers its newest 1000 notifications; older
+  ones, and those from before a maild or notification server restart, open nothing.
 - Events are sent as they happen, in order, also while a request on this connection is still
   being answered.
 - Subscribing gives no initial state. Call `status`, `folders` and `list` afterwards.
@@ -431,7 +435,7 @@ They go to subscribed connections only, one JSON object per line.
 |---|---|---|
 | `changed` | `folders: bool, ids: [i64]` | Mail changed. `ids` are added or re-fetched messages; the list may be empty (flags changed, messages deleted, an account removed). `folders: true` means unread counts may have changed: reload `folders`. Reload the visible list in both cases. |
 | `status` | `accounts: [{email, status}]` | An account's `Status` changed, an account was removed or renamed (`account_update`). Carries every account; for `queued`, call `status`. |
-| `open` | `id: i64` | A new-mail notification was clicked while a window is subscribed: show message `id` and raise the window. |
+| `open` | `id: i64` | A new-mail notification (its toast or its notification center entry) was clicked while a window is subscribed: show message `id` and raise the window. |
 | `search_remote` | `token: u64, hits: Summary[], error?: string` | Server search hits of one mailbox. `error` only when its search failed. |
 | `action_failed` | `batch: i64, error: string` | A server refused an action of `batch` (see `act`). The database is already back to the previous state. |
 | `send_failed` | `outbox: i64, error: string` | Sending failed permanently. The message stays in the outbox as not sent (`Summary.failed`). |
