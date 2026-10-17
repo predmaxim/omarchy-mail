@@ -16,7 +16,7 @@ fi
 # The window is built and tested before maild is restarted: a failure here leaves the running service alone.
 # Separate lines, not one && chain: under set -e a failure mid-chain does not stop the script.
 echo "The first window build downloads qlitehtml and litehtml from code.qt.io (needs network)."
-cmake -S app -B app/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S app -B app/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo   # optimised, with debug info for coredumps
 cmake --build app/build
 ctest --test-dir app/build --output-on-failure --no-tests=error
 

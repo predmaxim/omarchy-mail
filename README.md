@@ -63,7 +63,13 @@ omarchy-mail --open <id>      # open message <id>
 omarchy-mail mailto:a@b.org?subject=Hi   # new message form, fields filled in
 ```
 
-Mail is in the app menu, registered as the `mailto:` handler; Omarchy binds it to `Super+Shift+M` in its dotfiles. There is one window per system: a second launch hands its arguments to the open window and exits.
+Mail is in the app menu. Its desktop entry declares the `mailto:` scheme; to make it the default handler for `mailto:` links:
+
+```sh
+xdg-mime default omarchy-mail.desktop x-scheme-handler/mailto
+```
+
+A `mailto:` link never goes into an unfinished new message: it gets a letter of its own, which `c` opens until it is sent or discarded. The author's dotfiles bind the window to `Super+Shift+M`. There is one window per system: a second launch hands its arguments to the open window and exits.
 
 One cursor moves through the whole window; the letters work in the Russian layout too (they are matched by key code).
 
@@ -71,7 +77,9 @@ One cursor moves through the whole window; the letters work in the Russian layou
 |---|---|
 | Up / Down | move between messages; the message opens at once |
 | Right / Left | into the message / back to the list; inside a row, between buttons, attachments, links |
-| Enter | press the button; open the attachment or link |
+| Enter | on a message in the list: into the message, as Right; press the button; open the attachment or link |
+| PgUp / PgDn | scroll the message by a page, from the list too |
+| Home / End | in the message text: to its top / its end |
 | `d`, Del | delete (to Trash), cursor to the next one; in Trash and Spam it deletes forever, on the second press only |
 | `r` | reply |
 | `c` | compose |
@@ -80,6 +88,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | `f` | flag / unflag |
 | `o` | open the original in the browser |
 | `y` | copy the message text |
+| Ctrl+C | copy the text selected in the message |
 | `s` | save the attachment to Downloads |
 | Space | preview the attachment in `omarchy-quicklook`; scroll the message |
 | `/` | search; typing goes into the field |
@@ -96,10 +105,19 @@ Selecting several messages works as in a file manager:
 | Ctrl+Space | mark / unmark the message under the cursor |
 | Shift+Up / Down | range from the anchor to the cursor |
 | plain Up / Down | clear the selection |
-| Ctrl+A | all messages of the folder or search results |
+| Ctrl+A | all shown messages: the loaded rows of the folder or of the search results |
 | Ctrl+click, Shift+click | one message, a range |
 
-`d`, `u`, `f` act on all selected messages and Ctrl+Z undoes the whole batch; `r`, `o`, `y` act on the message under the cursor.
+`d`, `u`, `f` act on all selected messages and Ctrl+Z undoes the whole batch; without a selection they act, as `r`, `o`, `y` do, on the open message.
+
+The mailboxes page (the gear) has keys of its own:
+
+| Key | Action |
+|---|---|
+| Up / Down | between the mailboxes, then down into the form that adds one |
+| Enter | on a mailbox: edit the sender name; on a mailbox whose login failed: try again |
+| `d`, Del | remove the mailbox, on the second press only |
+| Esc | back to the mail |
 
 Files of the window:
 
