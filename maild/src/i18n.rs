@@ -11,6 +11,11 @@ fn is_ru_in(get: impl Fn(&str) -> Option<String>) -> bool {
         .is_some_and(|v| v.starts_with("ru"))
 }
 
+/// `en` or `ru`, by the service language.
+pub fn tr(en: &str, ru: &str) -> String {
+    if is_ru() { ru } else { en }.into()
+}
+
 pub fn new_messages(n: usize) -> String {
     new_messages_in(n, is_ru())
 }

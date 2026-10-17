@@ -51,6 +51,7 @@ pub fn preset(p: Provider) -> Option<(Server, Server, bool)> {
 pub struct Paths {
     pub config: PathBuf,
     pub db: PathBuf,
+    #[allow(dead_code)] // task 9
     pub cache: PathBuf,
     pub socket: PathBuf,
 }

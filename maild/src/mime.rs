@@ -103,6 +103,7 @@ pub fn parse(raw: &[u8]) -> Parsed {
 }
 
 /// The `index`-th attachment (same numbering as `Parsed::attachments`) with its decoded bytes.
+#[allow(dead_code)] // task 9
 pub fn attachment(raw: &[u8], index: u32) -> Option<(Attachment, Vec<u8>)> {
     let msg = MessageParser::default().parse(raw)?;
     let p = msg.attachments().nth(index as usize)?;

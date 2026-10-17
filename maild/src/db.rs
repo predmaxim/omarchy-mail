@@ -37,7 +37,9 @@ pub struct Summary {
     pub has_attachments: bool, pub queued: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Also the `list` request: absent fields take the defaults.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct ListQuery { pub account: Option<String>, pub role: Option<Role>, pub folder: Option<i64>, pub unread_only: bool, pub offset: u32, pub limit: u32 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,7 @@ impl Db {
         Self::init(Connection::open(path).map_err(e)?)
     }
 
+    #[cfg(test)]
     pub fn memory() -> Db { Self::init(Connection::open_in_memory().unwrap()).unwrap() }
 
     fn init(c: Connection) -> Result<Db, String> {
@@ -285,6 +288,7 @@ impl Db {
         }
     }
 
+    #[allow(dead_code)] // task 9
     pub fn set_body(&self, id: i64, text: &str, html: Option<&str>, preview: &str) -> Result<(), String> {
         self.c.execute("UPDATE messages SET text = ?2, html = ?3, preview = ?4, has_body = 1 WHERE id = ?1", params![id, text, html, preview]).map(|_| ()).map_err(e)
     }
@@ -315,6 +319,22 @@ impl Db {
         let mut v: Vec<_> = seen.into_values().filter(|(a, _)| a.addr.to_lowercase().contains(&p) || a.name.to_lowercase().contains(&p)).collect();
         v.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.addr.cmp(&y.0.addr)));
         Ok(v.into_iter().take(limit as usize).map(|x| x.0).collect())
+    }
+
+    /// What still has to reach the server: pending actions + queued outbox rows.
+    pub fn queued_count(&self, account: &str) -> Result<u32, String> {
+        self.c.query_row(
+            "SELECT (SELECT COUNT(*) FROM actions WHERE account = ?1 AND state = 'pending') + (SELECT COUNT(*) FROM outbox WHERE account = ?1 AND state = 'queued')",
+            [account], |r| r.get(0)).map_err(e)
+    }
+
+    /// Everything of the account: folders (their messages cascade), actions, outbox.
+    pub fn remove_account(&self, account: &str) -> Result<(), String> {
+        let tx = self.c.unchecked_transaction().map_err(e)?;
+        for t in ["folders", "actions", "outbox"] {
+            tx.execute(&format!("DELETE FROM {t} WHERE account = ?1"), [account]).map_err(e)?;
+        }
+        tx.commit().map_err(e)
     }
 
     /// Unread Inbox mail with `uid > notified_uid`, for notifications.
@@ -447,6 +467,29 @@ mod tests {
         assert_eq!(db.search("beta", 10).unwrap().len(), 1);
         db.set_flags(f, 1, true, true).unwrap();
         assert_eq!(db.search("beta", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn queued_count_and_remove_account() {
+        let db = Db::memory();
+        for (acc, state) in [("a@x", "pending"), ("a@x", "done"), ("a@x", "failed"), ("b@x", "pending")] {
+            db.c.execute("INSERT INTO actions(account, state) VALUES (?1, ?2)", [acc, state]).unwrap();
+        }
+        for (acc, state) in [("a@x", "queued"), ("a@x", "failed")] {
+            db.c.execute("INSERT INTO outbox(account, raw, state) VALUES (?1, x'00', ?2)", [acc, state]).unwrap();
+        }
+        assert_eq!(db.queued_count("a@x").unwrap(), 2);
+        assert_eq!(db.queued_count("nobody").unwrap(), 0);
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let id = db.insert_message(f, 1, true, false, 1, &p("s", 5, "прощальное"), true).unwrap();
+        let other = db.upsert_folder("b@x", "INBOX", Role::Inbox).unwrap();
+        db.remove_account("a@x").unwrap();
+        assert!(db.folders_of("a@x").unwrap().is_empty() && db.message(id).unwrap().is_none());
+        assert!(db.search("прощальн", 10).unwrap().is_empty());
+        assert_eq!(db.queued_count("a@x").unwrap(), 0);
+        let left: i64 = db.c.query_row("SELECT (SELECT COUNT(*) FROM actions) + (SELECT COUNT(*) FROM outbox)", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
+        assert_eq!(db.folders_of("b@x").unwrap()[0].id, other);
     }
 
     #[test]

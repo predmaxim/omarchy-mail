@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[allow(dead_code)] // SearchRemote: task 10, ActionFailed: task 8, SendFailed: task 11
 pub enum Event {
     Changed { folders: bool, ids: Vec<i64> },
     Status { accounts: Vec<AccountState> },

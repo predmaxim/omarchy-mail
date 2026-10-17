@@ -29,6 +29,7 @@ const PERIOD: Duration = Duration::from_secs(15 * 60);
 const NOT_IMPLEMENTED: &str = "not implemented";
 
 /// Worker jobs. `Actions`, `Fetch*`, `Attachment`, `Search`, `Append` are filled in by tasks 8–11.
+#[allow(dead_code)] // constructed by tasks 8–11
 pub enum Job {
     SyncFolder(i64),
     SyncAll,
@@ -90,8 +91,6 @@ impl Shared {
 pub struct Handle {
     pub email: String,
     pub jobs: Sender<Job>,
-    /// The watcher's socket.
-    pub kill: KillSlot,
     retry: Sender<()>,
     shared: Arc<Shared>,
     threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -157,7 +156,7 @@ fn spawn_with(acc: Account, db: PathBuf, hub: Hub, connect: Connector) -> Handle
             }
         }
     });
-    Handle { email: sh.email.clone(), jobs, kill: sh.watch_kill.clone(), retry, shared: sh, threads: Arc::new(Mutex::new(vec![watcher, worker])) }
+    Handle { email: sh.email.clone(), jobs, retry, shared: sh, threads: Arc::new(Mutex::new(vec![watcher, worker])) }
 }
 
 /// SyncFolder(Inbox), or SyncAll while the worker has not listed the folders yet.
