@@ -2,6 +2,7 @@
 //! `listen` + `serve` run the socket, a thread per client.
 
 use crate::account::{self, Handle, Job};
+use crate::actions::{self, Op};
 use crate::config::{self, Account, Paths, Provider, Server};
 use crate::db::{Db, ListQuery};
 use crate::hub::{Event, Hub, lock};
@@ -71,8 +72,8 @@ enum Req {
     Sync { account: Option<String>, folder: Option<i64> },
     Attachment,
     OpenRemote,
-    Act,
-    Undo,
+    Act { ids: Vec<i64>, op: Op },
+    Undo { batch: i64 },
     Send,
 }
 
@@ -141,8 +142,18 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
         Req::Search { q } => Ok(json!({"local": st.db.search(&q, SEARCH_LIMIT)?, "token": TOKEN.fetch_add(1, Relaxed)})),
         Req::Contacts { prefix } => val(st.db.contacts(&prefix, CONTACTS_LIMIT)?),
         Req::Sync { account, folder } => sync(st, account.as_deref(), folder),
-        Req::Attachment | Req::OpenRemote | Req::Act | Req::Undo | Req::Send => Err(NOT_IMPLEMENTED.into()),
+        // A client bug: restore is what `undo` of a delete does.
+        Req::Act { op: Op::Restore, .. } => Err("restore: use undo".into()),
+        Req::Act { ids, op } => queued(st, actions::enqueue(&st.db, &ids, op)?),
+        Req::Undo { batch } => queued(st, actions::undo(&st.db, batch)?),
+        Req::Attachment | Req::OpenRemote | Req::Send => Err(NOT_IMPLEMENTED.into()),
     }
+}
+
+/// A batch of `act` or `undo` was applied: the workers start on it, the window reloads.
+fn queued(st: &State, batch: i64) -> Result<Value, String> {
+    actions::kick(&st.db, &st.hub, batch);
+    Ok(json!({"batch": batch}))
 }
 
 fn no_account() -> String {
@@ -446,9 +457,27 @@ mod tests {
     }
 
     #[test]
+    fn act_and_undo() {
+        let mut st = state("act");
+        let f = st.db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let id = st.db.insert_message(f, 1, false, false, 1, &msg("s", 5), true).unwrap();
+        let events = st.hub.subscribe(false);
+        let r = call(&mut st, json!({"id": 1, "cmd": "act", "ids": [id], "op": "read"}));
+        assert_eq!(r, json!({"id": 1, "ok": true, "result": {"batch": 1}}));
+        assert_eq!(events.try_recv().unwrap(), format!(r#"{{"event":"changed","folders":true,"ids":[{id}]}}"#));
+        assert_eq!(call(&mut st, json!({"id": 2, "cmd": "act", "ids": [id], "op": "read"}))["result"], json!({"batch": 0}), "already read");
+        assert_eq!(call(&mut st, json!({"id": 3, "cmd": "undo", "batch": 1}))["result"], json!({"batch": 2}));
+        assert!(!st.db.message(id).unwrap().unwrap().summary.seen);
+        for bad in [json!({"cmd": "act", "ids": [id], "op": "restore"}), json!({"cmd": "act", "ids": [-1], "op": "read"}),
+                    json!({"cmd": "act", "ids": [id], "op": "delete"}), json!({"cmd": "undo", "batch": 0})] {
+            assert_eq!(call(&mut st, bad.clone())["ok"], false, "{bad}");
+        }
+    }
+
+    #[test]
     fn later_tasks_not_implemented() {
         let mut st = state("stubs");
-        for cmd in ["attachment", "open_remote", "act", "undo", "send"] {
+        for cmd in ["attachment", "open_remote", "send"] {
             let r = call(&mut st, json!({"id": 1, "cmd": cmd, "ids": [1], "op": "read"}));
             assert_eq!(r, json!({"id": 1, "ok": false, "error": "not implemented"}), "{cmd}");
         }

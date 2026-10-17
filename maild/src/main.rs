@@ -1,4 +1,5 @@
 mod account;
+mod actions;
 mod config;
 mod db;
 mod hub;

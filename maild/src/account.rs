@@ -5,7 +5,7 @@ use crate::config::{Account, Paths};
 use crate::db::{Db, Role};
 use crate::hub::{Event, Hub, lock};
 use crate::imap::{self, AUTH_FAILED, Conn, KillSlot};
-use crate::{notify, secret, sync};
+use crate::{actions, notify, secret, sync};
 use serde::Serialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -28,8 +28,8 @@ const STEADY: Duration = Duration::from_secs(60);
 const PERIOD: Duration = Duration::from_secs(15 * 60);
 const NOT_IMPLEMENTED: &str = "not implemented";
 
-/// Worker jobs. `Actions`, `Fetch*`, `Attachment`, `Search`, `Append` are filled in by tasks 8–11.
-#[allow(dead_code)] // constructed by tasks 8–11
+/// Worker jobs. `Fetch*`, `Attachment`, `Search`, `Append` are filled in by tasks 9–11.
+#[allow(dead_code)] // constructed by tasks 9–11
 pub enum Job {
     SyncFolder(i64),
     SyncAll,
@@ -103,9 +103,10 @@ impl Handle {
         imap::kill(&self.shared.work_kill);
     }
 
-    /// "Sync now": queues SyncAll and wakes a watcher that waits out AuthFailed or a backoff.
+    /// "Sync now": queues Actions and SyncAll, wakes a watcher that waits out AuthFailed or a backoff.
     pub fn retry(&self) {
         let _ = self.retry.send(());
+        let _ = self.jobs.send(Job::Actions);
         let _ = self.jobs.send(Job::SyncAll);
     }
 
@@ -216,8 +217,9 @@ fn watch(sh: &Shared, db: &Path, jobs: &Sender<Job>, retries: &Receiver<()>) {
         if !sh.status(Status::Online) {
             return;
         }
-        // The worker's start-up SyncAll covers the first session; after a break anything may have changed.
-        if !first && !send(Job::SyncAll) {
+        // Queued actions first, so that no sync before them can undo their effect locally. The
+        // worker's start-up SyncAll covers the first session; after a break anything may have changed.
+        if !send(Job::Actions) || (!first && !send(Job::SyncAll)) {
             return;
         }
         first = false;
@@ -289,23 +291,29 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                     due = Instant::now() + PERIOD;
                     continue;
                 }
-                Err(RecvTimeoutError::Timeout) => Job::SyncAll,
+                // Actions too: one that failed on the worker's connection waits for no reconnect.
+                Err(RecvTimeoutError::Timeout) => {
+                    next = Some(Job::SyncAll);
+                    Job::Actions
+                }
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             },
         };
         if sh.stopped() {
             return Ok(());
         }
-        let (r, always) = match job {
+        let r = match job {
             Job::SyncAll => {
                 due = Instant::now() + PERIOD;
-                (attempt(sh, &mut conn, |c| sync::sync_account(c, &db, acc)), false)
+                attempt(sh, &mut conn, |c| sync::sync_account(c, &db, acc))
             }
-            // Flag changes and deletions insert nothing, but the window still has to refresh.
-            Job::SyncFolder(id) => (attempt(sh, &mut conn, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
+            Job::SyncFolder(id) => attempt(sh, &mut conn, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
                 Some(f) => sync::sync_folder(c, &db, &f),
                 None => Ok(vec![]),
-            }), true),
+            }),
+            // Nothing queued: no connection. After a rejected login: no new attempts.
+            Job::Actions if auth_failed || matches!(actions::has_pending(&db, &acc.email), Ok(false)) => continue,
+            Job::Actions => attempt(sh, &mut conn, |c| actions::run(c, &db, &acc.email, &sh.hub)).map(|()| vec![]),
             Job::Fetch { reply, .. } => {
                 let _ = reply.send(Err(NOT_IMPLEMENTED.into()));
                 continue;
@@ -318,7 +326,7 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                 let _ = reply.send(Err(NOT_IMPLEMENTED.into()));
                 continue;
             }
-            Job::Actions | Job::Search { .. } | Job::Append { .. } => continue,
+            Job::Search { .. } | Job::Append { .. } => continue,
         };
         auth_failed = matches!(&r, Err(e) if e.starts_with(AUTH_FAILED));
         if r.is_ok() {
@@ -328,8 +336,8 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
             }
         }
         match r {
-            Ok(ids) if always || !ids.is_empty() => sh.hub.emit(Event::Changed { folders: true, ids }),
-            Ok(_) => {}
+            // Also with no new mail: flag changes and deletions (from a phone too) insert nothing.
+            Ok(ids) => sh.hub.emit(Event::Changed { folders: true, ids }),
             Err(e) => eprintln!("{}: {e}", acc.email),
         }
     }
@@ -442,6 +450,37 @@ mod tests {
         assert!(hub.handles().is_empty() && hub.statuses().is_empty());
         std::thread::sleep(BACKOFF[2] * 4);
         assert_eq!(count(&logins), 2, "reconnected after stop");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pending_action_runs_on_connect() {
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-pending", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Db::open(&dir.join("mail.db")).unwrap();
+        let inbox = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        let id = db.insert_message(inbox, 5, false, false, 1, &crate::mime::Parsed::default(), true).unwrap();
+        // queued before the start, e.g. offline before a restart
+        crate::actions::enqueue(&db, &[id], crate::actions::Op::Read).unwrap();
+        let stores = Arc::new(AtomicUsize::new(0));
+        let n = stores.clone();
+        let addr = fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => "* 1 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 5\r\n".into(),
+            // the server does not have the read yet: the start-up sync must not undo it locally
+            "UID FETCH 5:* (UID FLAGS)" => "* 1 FETCH (UID 5 FLAGS ())\r\n".into(),
+            "SELECT \"INBOX\"" | "IDLE" => String::new(),
+            "UID STORE 5 +FLAGS.SILENT (\\Seen)" => { n.fetch_add(1, SeqCst); String::new() }
+            _ => return None,
+        }));
+        let hub = Hub::default();
+        let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = spawn_with(acc(), dir.join("mail.db"), hub.clone(), Arc::new(connect));
+        until("the queued read reached the server", || count(&stores) == 1 && db.queued_count("me@x").unwrap() == 0);
+        assert!(db.message(id).unwrap().unwrap().summary.seen);
+        h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
     }
 

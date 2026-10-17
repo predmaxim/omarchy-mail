@@ -107,6 +107,42 @@ fn err(e: ::imap::Error) -> String {
 
 fn io(e: std::io::Error) -> String { e.to_string() }
 
+/// A failed action command (`select`, `command`, `search`, `capabilities`), for `actions::classify`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Error {
+    /// NO or BAD: the server's text, starting with the response code if the parser did not know it
+    /// (`[NONEXISTENT] …`).
+    Refused(String),
+    /// I/O, a dropped connection, an answer out of protocol (`UNPARSEABLE`): `reconnect` before
+    /// the next command.
+    Broken(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Refused(s) | Error::Broken(s) => f.write_str(s),
+        }
+    }
+}
+
+impl From<Error> for String {
+    fn from(e: Error) -> String { e.to_string() }
+}
+
+fn refused(e: ::imap::Error) -> Error {
+    match e {
+        ::imap::Error::No(n) => Error::Refused(n.information),
+        ::imap::Error::Bad(b) => Error::Refused(b.information),
+        e => Error::Broken(err(e)),
+    }
+}
+
+/// An IMAP quoted string; `None` for text that cannot be one (control or non-ASCII characters).
+pub fn quote(s: &str) -> Option<String> {
+    s.chars().all(|c| c.is_ascii() && !c.is_ascii_control()).then(|| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
 /// SO_KEEPALIVE with TCP_KEEPIDLE 60, TCP_KEEPINTVL 10, TCP_KEEPCNT 3: a dead peer is noticed in ~90 s.
 fn keepalive(s: &TcpStream) -> Result<(), String> {
     let opts = [
@@ -247,9 +283,36 @@ impl Conn {
 
     /// `UID SEARCH`, ascending.
     pub fn uids(&mut self, query: &str) -> Result<Vec<u32>, String> {
-        let mut v: Vec<u32> = self.session.uid_search(query).map_err(err)?.into_iter().collect();
+        Ok(self.search(query)?)
+    }
+
+    /// `UID SEARCH`, ascending, for actions.
+    pub fn search(&mut self, query: &str) -> Result<Vec<u32>, Error> {
+        let mut v: Vec<u32> = self.session.uid_search(query).map_err(refused)?.into_iter().collect();
         v.sort_unstable();
         Ok(v)
+    }
+
+    /// SELECT, read-write: for actions (sync only EXAMINEs).
+    pub fn select(&mut self, path: &str) -> Result<(), Error> {
+        let q = quote(path).ok_or_else(|| Error::Refused(format!("{path}: bad folder name")))?;
+        self.inbox = false;
+        self.command(&format!("SELECT {q}"))
+    }
+
+    /// A command that answers just OK or not (`UID MOVE`, `UID STORE … .SILENT`, `EXPUNGE`, …).
+    /// Untagged lines in the answer are not looked at.
+    pub fn command(&mut self, cmd: &str) -> Result<(), Error> {
+        self.session.run_command_and_check_ok(cmd).map_err(refused)
+    }
+
+    /// Capability atoms, upper case (`MOVE`, `UIDPLUS`, …).
+    pub fn capabilities(&mut self) -> Result<Vec<String>, Error> {
+        let caps = self.session.capabilities().map_err(refused)?;
+        Ok(caps.iter().filter_map(|c| match c {
+            imap_proto::types::Capability::Atom(a) => Some(a.to_ascii_uppercase()),
+            _ => None,
+        }).collect())
     }
 
     pub fn fetch(&mut self, uids: &str, query: &str) -> Result<::imap::types::Fetches, String> {

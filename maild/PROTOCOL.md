@@ -73,8 +73,8 @@ Failure:
 | `sync` | `account?, folder?` | — |
 | `attachment` | `message, index` | `{path}` — *not implemented yet (stage 9)* |
 | `open_remote` | `account, folder_path, uid` | `{id}` — *not implemented yet (stage 10)* |
-| `act` | `ids, op` | `{batch}` — *not implemented yet (stage 8)* |
-| `undo` | `batch` | `{batch}` — *not implemented yet (stage 8)* |
+| `act` | `ids, op` | `{batch}` |
+| `undo` | `batch` | `{batch}` |
 | `send` | a `Draft` | `{outbox}` — *not implemented yet (stage 11)* |
 
 `?` marks an optional parameter: leave it out or send `null`.
@@ -268,11 +268,57 @@ live in the keyring only.
 ```
 
 - Without `folder` this is "sync now": a full sync of the account, or of every account when
-  `account` is missing. It also retries an account in `auth_failed` or waiting to reconnect.
+  `account` is missing. It first sends the queued actions (see `act`). It also retries an
+  account in `auth_failed` or waiting to reconnect.
 - With `folder` (a folder id) it syncs that folder only. `account` is optional here; the folder
   knows its account. Use it when the user opens a folder.
 - The call returns at once. The results come as `changed` events.
 - Errors: an unknown `account` or `folder`.
+
+### `act`
+
+```json
+→ {"id": 17, "cmd": "act", "ids": [101, 102], "op": "delete"}
+← {"id": 17, "ok": true, "result": {"batch": 5}}
+```
+
+- `op` is one of:
+  - `read`, `unread`, `flag`, `unflag`: set or clear "seen" or "flagged".
+  - `delete`: move to the Trash of the message's mailbox. Messages already in Trash are left
+    alone. If a mailbox has no Trash folder, this is an error and nothing changes.
+  - `delete_forever`: allowed only for messages in Trash or Junk. Any other message in `ids` is an
+    error, and nothing changes.
+- `ids` may mix mailboxes; one batch covers them all. Ids that no longer exist are skipped. Ids
+  of `0` or below (outbox rows, server search hits) are an error.
+- The local database changes at once, before the answer; a `changed {folders: true, ids}` event
+  follows. The servers follow from a queue, in order. The queue survives a restart and waits for
+  the network; `status` counts it in `queued`.
+- Messages already in the wanted state are left out of the batch, so `undo` reverts only what this
+  call changed. `batch: 0` means nothing changed; there is nothing to undo then.
+- A moved message keeps its `id`; its `uid` is `null` until the server has moved it. If the
+  server's copy cannot be found in the target folder afterwards, the message leaves the list and
+  comes back with that folder's next sync, under a new `id`.
+- A message that is no longer on the server (deleted from a phone) is skipped silently. If it was
+  being deleted, it also leaves the list.
+- When a server refuses an action for another reason, the message comes back as it was and
+  `action_failed {batch, error}` is sent, once for the batch. A message deleted forever comes back
+  by downloading it again.
+- `restore` is not accepted here: it is what `undo` of a delete does.
+
+### `undo`
+
+```json
+→ {"id": 18, "cmd": "undo", "batch": 5}
+← {"id": 18, "ok": true, "result": {"batch": 6}}
+```
+
+- Reverts a batch with a new one, queued like any other: a deleted message goes back to the folder
+  it came from, read ↔ unread, flag ↔ unflag. The new batch can be undone too: an undone delete is
+  deleted again.
+- Only what is still there is reverted: messages gone since, and actions the server refused (they
+  are reverted already), are skipped. The result may be `batch: 0`.
+- Errors: an unknown batch or one with nothing left to undo, and a `delete_forever` batch: deleting
+  forever cannot be undone.
 
 ### Later stages
 
@@ -286,16 +332,6 @@ These shapes are fixed now; the commands answer `not implemented` until their st
 - `open_remote {account, folder_path, uid}` → `{id}` (stage 10).
   - Downloads a server search hit (`Summary.remote`) into the account's `remote` folder.
   - Returns the local id for `message`.
-- `act {ids: [i64], op}` → `{batch}` (stage 8).
-  - `op` is one of `delete`, `delete_forever`, `read`, `unread`, `flag`, `unflag`.
-  - The local database changes at once (a `changed` event follows); the server follows from a
-    queue.
-  - `delete` moves the message to its mailbox's Trash.
-  - `delete_forever` is allowed only in Trash or Junk.
-  - When the server refuses, the message comes back and `action_failed {batch, error}` is sent.
-- `undo {batch}` → `{batch}` (stage 8).
-  - Reverts a batch with a new batch: delete → restore, read ↔ unread, flag ↔ unflag.
-  - `delete_forever` cannot be undone.
 - `send {account, to: Addr[], subject, text, reply_to: i64|null, attachments: [path]}` →
   `{outbox}` (stage 11).
   - The message is queued: it shows in `list {role: "sent"}` as `queued`, and is sent when
@@ -312,7 +348,7 @@ They go to subscribed connections only, one JSON object per line.
 | `status` | `accounts: [{email, status}]` | An account's `Status` changed, or an account was removed. Carries every account; for `queued`, call `status`. |
 | `open` | `id: i64` | A new-mail notification was clicked while a window is subscribed: show message `id` and raise the window. |
 | `search_remote` | `token: u64, hits: Summary[]` | Server search hits of one mailbox (stage 10). |
-| `action_failed` | `batch: i64, error: string` | The server refused an action. The database is already back to the previous state (stage 8). |
+| `action_failed` | `batch: i64, error: string` | A server refused an action of `batch` (see `act`). The database is already back to the previous state. |
 | `send_failed` | `outbox: i64, error: string` | Sending failed permanently. The message stays in the outbox as not sent (stage 11). |
 
 ```json

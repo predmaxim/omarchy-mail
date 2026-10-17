@@ -63,7 +63,8 @@ fn display_name(path: &str) -> String {
     crate::imap::decode_mutf7(path.rsplit(['/', '|']).next().unwrap_or(path))
 }
 
-pub struct Db { c: Connection }
+/// `c` is open to the crate for modules that keep their own tables (`actions`).
+pub struct Db { pub(crate) c: Connection }
 
 fn e(err: rusqlite::Error) -> String { err.to_string() }
 
@@ -98,8 +99,9 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF subject, from_name, fro
     new.from_name || ' ' || new.from_addr, new.to_json, CASE WHEN new.text <> '' THEN new.text ELSE mail_strip(new.html) END);
 END;
 CREATE TABLE IF NOT EXISTS actions(
-  id INTEGER PRIMARY KEY, batch TEXT, account TEXT, op TEXT, message INTEGER, from_folder INTEGER,
-  uid INTEGER, message_id TEXT, state TEXT, error TEXT);
+  id INTEGER PRIMARY KEY, batch INTEGER, account TEXT, op TEXT, message INTEGER, from_folder INTEGER,
+  to_folder INTEGER, uid INTEGER, message_id TEXT, state TEXT, error TEXT);
+CREATE INDEX IF NOT EXISTS actions_pending ON actions(message) WHERE state = 'pending';
 CREATE TABLE IF NOT EXISTS outbox(
   id INTEGER PRIMARY KEY, account TEXT NOT NULL, raw BLOB, to_json TEXT NOT NULL DEFAULT '[]',
   subject TEXT NOT NULL DEFAULT '', date INTEGER NOT NULL DEFAULT 0, state TEXT, error TEXT);
@@ -193,9 +195,13 @@ impl Db {
             |r| r.get(0)).map_err(e)
     }
 
-    /// Unchanged rows are not rewritten: every sync refreshes the flags of the whole folder.
+    /// Unchanged rows are not rewritten: every sync refreshes the flags of the whole folder. Nor are
+    /// rows with a pending action: the server does not have that change yet.
     pub fn set_flags(&self, folder: i64, uid: u32, seen: bool, flagged: bool) -> Result<(), String> {
-        self.c.execute("UPDATE messages SET seen = ?3, flagged = ?4 WHERE folder = ?1 AND uid = ?2 AND (seen <> ?3 OR flagged <> ?4)", params![folder, uid, seen, flagged]).map(|_| ()).map_err(e)
+        self.c.execute(
+            "UPDATE messages SET seen = ?3, flagged = ?4 WHERE folder = ?1 AND uid = ?2 AND (seen <> ?3 OR flagged <> ?4)
+             AND NOT EXISTS (SELECT 1 FROM actions WHERE message = messages.id AND state = 'pending')",
+            params![folder, uid, seen, flagged]).map(|_| ()).map_err(e)
     }
 
     /// Delete the folder's messages whose UID is not in `present`.
