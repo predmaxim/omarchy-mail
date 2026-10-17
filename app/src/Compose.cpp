@@ -58,6 +58,12 @@ Compose::Compose(QString draftsDir, QObject *parent) : QObject(parent), m_dir(st
     connect(&m_saveTimer, &QTimer::timeout, this, &Compose::save);
 }
 
+Compose::~Compose()
+{
+    if (m_saveTimer.isActive())
+        save();
+}
+
 QVariantList Compose::attachments() const
 {
     QVariantList out;
@@ -92,10 +98,11 @@ void Compose::setNote(const QString &text, bool error)
     Q_EMIT changed();
 }
 
-void Compose::begin(const QString &key, const QString &account)
+// The form moves to draft `key`; the open one is saved first, and stays open with the error if it can't be.
+bool Compose::begin(const QString &key, const QString &account)
 {
-    if (m_open)
-        save();
+    if (m_open && !save())
+        return false;
     m_key = key;
     m_replyId = 0;
     m_account = account;
@@ -109,6 +116,7 @@ void Compose::begin(const QString &key, const QString &account)
     m_suggestions.clear();
     m_confirm = {};
     m_open = true;
+    return true;
 }
 
 void Compose::load()
@@ -129,26 +137,48 @@ void Compose::load()
     }
 }
 
+QJsonObject Compose::json() const
+{
+    QJsonArray atts;
+    for (const Att &a : m_atts)
+        atts.append(QJsonObject{{"path", a.path}, {"pasted", a.pasted}});
+    return {{"account", m_account}, {"to", m_to}, {"subject", m_subject}, {"body", m_body},
+            {"cursor", m_cursor}, {"attachments", atts}};
+}
+
 bool Compose::save()
 {
     m_saveTimer.stop();
     if (!m_open)   // late edits after sent()/discard()/close() must not resurrect a draft
         return true;
     privateDir(m_dir);
-    QJsonArray atts;
-    for (const Att &a : m_atts)
-        atts.append(QJsonObject{{"path", a.path}, {"pasted", a.pasted}});
-    const QJsonObject j{{"account", m_account}, {"to", m_to}, {"subject", m_subject}, {"body", m_body},
-                        {"cursor", m_cursor}, {"attachments", atts}};
     QSaveFile f(draftPath());
     f.setDirectWriteFallback(false);
     if (f.open(QIODevice::WriteOnly)) {
         f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        if (f.write(QJsonDocument(j).toJson(QJsonDocument::Compact)) >= 0 && f.commit())
+        if (f.write(QJsonDocument(json()).toJson(QJsonDocument::Compact)) >= 0 && f.commit())
             return true;
     }
     setNote(t("Could not save draft"), true);
     return false;
+}
+
+// Draft `key` has something in it: a recipient, a subject, text or files (the open one as the form has it).
+bool Compose::hasContent(const QString &key) const
+{
+    QJsonObject j;
+    if (m_open && m_key == key) {
+        j = json();
+    } else {
+        QFile f(draftPath(key));
+        if (!f.open(QIODevice::ReadOnly))
+            return false;
+        j = QJsonDocument::fromJson(f.readAll()).object();
+    }
+    for (const char *field : {"to", "subject", "body"})
+        if (!j.value(QLatin1String(field)).toString().isEmpty())
+            return true;
+    return !j.value("attachments").toArray().isEmpty();
 }
 
 void Compose::removeDraft()
@@ -165,7 +195,8 @@ void Compose::removeDraft()
 
 void Compose::startNew(const QString &account)
 {
-    begin(QStringLiteral("new"), account);
+    if (!begin(hasContent(QStringLiteral("mailto")) ? QStringLiteral("mailto") : QStringLiteral("new"), account))
+        return;
     load();
     Q_EMIT changed();
 }
@@ -173,7 +204,8 @@ void Compose::startNew(const QString &account)
 void Compose::startReply(const QJsonObject &full)
 {
     const QJsonObject s = full.value("summary").toObject();
-    begin(QStringLiteral("reply-%1").arg(s.value("id").toInteger()), s.value("account").toString());
+    if (!begin(QStringLiteral("reply-%1").arg(s.value("id").toInteger()), s.value("account").toString()))
+        return;
     m_replyId = s.value("id").toInteger();
     if (QFileInfo::exists(draftPath())) {
         load();
@@ -189,22 +221,26 @@ void Compose::startReply(const QJsonObject &full)
     Q_EMIT changed();
 }
 
+// W33: the new-mail draft takes the link only while empty; otherwise the link gets a draft of its own, "mailto".
+// While that one has something in it, a link opens it as it is and says so.
 void Compose::startMailto(const QUrl &url, const QString &account)
 {
-    startNew(account);
+    const bool waiting = hasContent(QStringLiteral("mailto"));
+    if (!begin(waiting || hasContent(QStringLiteral("new")) ? QStringLiteral("mailto") : QStringLiteral("new"), account))
+        return;
+    load();
+    if (waiting) {
+        setNote(t("Finish or discard the open letter first"));
+        return;
+    }
     const MailtoDraft d = parseMailto(url.toString());
     QString bad;
-    for (const auto &add : parseAddresses(d.to, &bad)) {
-        bool have = false;
-        for (const auto &p : parseAddresses(m_to, &bad))
-            have = have || p.second.compare(add.second, Qt::CaseInsensitive) == 0;
-        if (!have)
-            m_to = m_to.trimmed().isEmpty() ? add.second : m_to.trimmed() + QStringLiteral(", ") + add.second;
-    }
-    if (m_subject.isEmpty())
-        m_subject = d.subject;
-    if (m_body.isEmpty())
-        m_body = d.body;
+    QStringList to;
+    for (const auto &p : parseAddresses(d.to, &bad))
+        to << p.second;
+    m_to = to.join(QStringLiteral(", "));
+    m_subject = d.subject;
+    m_body = d.body;
     m_saveTimer.start();
     Q_EMIT changed();
 }

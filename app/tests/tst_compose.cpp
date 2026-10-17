@@ -223,21 +223,94 @@ private Q_SLOTS:
         m = parseMailto("mailto:x@y.org?subject=%D1%81%D1%87%D1%91%D1%82");
         QCOMPARE(m.subject, QString("счёт"));
     }
-    void mailto_appends()
+    void mailto_fills_an_empty_new_draft()
     {
-        Compose c(dir.filePath("mailto"));
-        c.startNew("a");
-        c.setTo("a@x.org");
-        c.close();
+        const QString d = dir.filePath("mailto-empty");
+        Compose c(d);
         c.startMailto(QUrl("mailto:b@y.org?subject=Hi&body=text"), "a");
-        QVERIFY(c.to().contains("a@x.org") && c.to().contains("b@y.org"));
+        QVERIFY(c.isOpen());
+        QCOMPARE(c.to(), QString("b@y.org"));
         QCOMPARE(c.subject(), QString("Hi"));
         QCOMPARE(c.body(), QString("text"));
-        c.setSubject("kept");
-        c.startMailto(QUrl("mailto:b@y.org?subject=Other&body=more"), "a");
-        QCOMPARE(c.subject(), QString("kept"));
+        c.close();
+        QVERIFY(QFile::exists(d + "/new.json"));
+        QVERIFY(!QFile::exists(d + "/mailto.json"));
+    }
+    void mailto_never_touches_an_unfinished_draft()   // W33
+    {
+        const QString d = dir.filePath("mailto-own");
+        const auto bytes = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        Compose c(d);
+        c.startNew("a");
+        c.setTo("a@x.org");   // not saved yet: the link's switch saves it
+        c.startMailto(QUrl("mailto:b@y.org?subject=Hi&body=text"), "a");
+        QVERIFY(c.isOpen() && !c.isReply());
+        QCOMPARE(c.to(), QString("b@y.org"));   // only the link's fields
+        QCOMPARE(c.subject(), QString("Hi"));
         QCOMPARE(c.body(), QString("text"));
-        QCOMPARE(c.to().count("b@y.org"), 1);
+        const QByteArray unfinished = bytes(d + "/new.json");
+        QVERIFY(unfinished.contains("a@x.org") && !unfinished.contains("b@y.org"));
+        c.close();
+        QVERIFY(QFile::exists(d + "/mailto.json"));
+        QCOMPARE(bytes(d + "/new.json"), unfinished);
+
+        for (bool open : {false, true}) {   // a second link while that letter waits: it opens unchanged
+            if (open)
+                c.startNew("a");   // `c` opens the link's letter while it waits
+            c.startMailto(QUrl("mailto:c@z.org?subject=Other&body=more"), "a");
+            QCOMPARE(c.to(), QString("b@y.org"));
+            QCOMPARE(c.subject(), QString("Hi"));
+            QCOMPARE(c.body(), QString("text"));
+            QCOMPARE(c.note(), QString("Finish or discard the open letter first"));
+            QVERIFY(!c.noteError());
+        }
+        c.sent(c.draft());   // sent: `c` brings back the unfinished one
+        QVERIFY(!QFile::exists(d + "/mailto.json"));
+        c.startNew("a");
+        QCOMPARE(c.to(), QString("a@x.org"));
+        QCOMPARE(c.note(), QString());
+
+        c.startMailto(QUrl("mailto:e@z.org"), "a");   // discarded: the same
+        QCOMPARE(c.to(), QString("e@z.org"));
+        c.discard();
+        c.discard();
+        QVERIFY(!c.isOpen());
+        c.startNew("a");
+        QCOMPARE(c.to(), QString("a@x.org"));
+        QCOMPARE(bytes(d + "/new.json"), unfinished);
+    }
+    void edits_saved_when_the_form_dies()   // the window closed within the autosave's second
+    {
+        const QString d = dir.filePath("dies");
+        {
+            Compose c(d);
+            c.startNew("a");
+            c.setBody("last second");
+        }
+        Compose c(d);
+        c.startNew("a");
+        QCOMPARE(c.body(), QString("last second"));
+    }
+    void failed_save_keeps_the_draft_when_switching()
+    {
+        const QString d = dir.filePath("failswitch");
+        QVERIFY(QDir().mkpath(d + "/new.json"));   // a directory where the draft file belongs
+        Compose c(d);
+        c.startNew("a");
+        c.setBody("x");
+        c.startReply(full(41));
+        QVERIFY(c.isOpen() && !c.isReply());
+        QCOMPARE(c.body(), QString("x"));
+        QCOMPARE(c.note(), QString("Could not save draft"));
+        QVERIFY(c.noteError());
+        c.setBody("xy");
+        c.startMailto(QUrl("mailto:b@y.org"), "a");
+        QCOMPARE(c.body(), QString("xy"));
+        QCOMPARE(c.to(), QString());
+        QVERIFY(c.noteError());
     }
     void complete_to()
     {

@@ -1,5 +1,5 @@
 #pragma once
-// Compose form model: local drafts (one per new mail / per reply) and pasted screenshots.
+// Compose form model: local drafts (one per new mail / per reply, one for a mailto: link) and pasted screenshots.
 #include "Nav.h"
 #include <QJsonObject>
 #include <QList>
@@ -33,6 +33,7 @@ class Compose : public QObject {
     Q_PROPERTY(bool noteError READ noteError NOTIFY changed)
 public:
     explicit Compose(QString draftsDir = defaultDir(), QObject *parent = nullptr);
+    ~Compose() override;   // edits of the last second are saved: the window may close within it
     static QString defaultDir();
 
     bool isOpen() const { return m_open; }
@@ -52,9 +53,9 @@ public:
     void setBody(const QString &v) { edit(m_body, v); }
     void setSuggestions(const QVariantList &s);
 
-    void startNew(const QString &account);
+    void startNew(const QString &account);   // the mailto: letter while it waits, else the new-mail draft
     void startReply(const QJsonObject &full);
-    void startMailto(const QUrl &url, const QString &account);
+    void startMailto(const QUrl &url, const QString &account);   // never into an unfinished letter (W33)
     Q_INVOKABLE void close();
     Q_INVOKABLE void discard();
     Q_INVOKABLE void addFiles(const QList<QUrl> &urls);
@@ -85,9 +86,11 @@ private:
         bool pasted = false;
     };
     void edit(QString &field, const QString &v);
-    void begin(const QString &key, const QString &account);
+    bool begin(const QString &key, const QString &account);
     void load();
+    QJsonObject json() const;
     bool save();
+    bool hasContent(const QString &key) const;
     void removeDraft();
     QString draftPath() const { return draftPath(m_key); }
     QString draftPath(const QString &key) const { return m_dir + QLatin1Char('/') + key + QStringLiteral(".json"); }
