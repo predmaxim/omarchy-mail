@@ -1,0 +1,13 @@
+[Unit]
+Description=maild, the omarchy-mail sync service
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/maild
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

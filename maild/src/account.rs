@@ -352,7 +352,7 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                 continue;
             }
             // The copy for servers that do not file sent mail themselves; then the folder is synced.
-            // ponytail: not retried — a failed APPEND (offline) loses only the Sent copy, the mail went out.
+            // A failed APPEND (offline) keeps the row; flush_unfiled retries it (the mail itself already went out).
             Job::Append { outbox, role, raw } => {
                 let Some(f) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == role)) else { continue };
                 // A failure keeps the row (state `sent`); the next SyncAll files it.

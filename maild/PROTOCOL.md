@@ -128,7 +128,7 @@ live in the keyring only.
 
 ```json
 → {"id": 4, "cmd": "account_add", "provider": "gmail", "email": "me@gmail.com", "name": "Max",
-   "password": "abcd efgh ijkl mnop"}
+   "password": "<app password>"}
 → {"id": 5, "cmd": "account_add", "provider": "imap", "email": "me@example.org", "name": "Max",
    "password": "…", "login": "me", "imap": {"host": "mail.example.org", "port": 993},
    "smtp": {"host": "mail.example.org", "port": 465}}
