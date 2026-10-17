@@ -49,3 +49,18 @@ om_test(tst_recolor)
 om_test(tst_highlight)
 target_sources(mailcore PRIVATE src/MailList.h src/MailList.cpp)
 om_test(tst_maillist)
+include(FetchContent)
+set(QT_VERSION_MAJOR 6)
+set(QLITEHTML_LIBRARY_TYPE STATIC)
+FetchContent_Declare(qlitehtml
+    GIT_REPOSITORY https://code.qt.io/playground/qlitehtml.git
+    GIT_TAG 180e3ebb22bb8d82a9bfe88bba46da8c28c9f2a2
+    GIT_SUBMODULES src/3rdparty/litehtml
+    PATCH_COMMAND git apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/third_party/qlitehtml.patch
+    UPDATE_DISCONNECTED ON
+    SOURCE_SUBDIR src
+    SYSTEM)
+FetchContent_MakeAvailable(qlitehtml)
+target_link_libraries(mailcore PUBLIC qlitehtml Qt6::Widgets PRIVATE litehtml)
+target_sources(mailcore PRIVATE src/Renderer.h src/Renderer.cpp)
+om_test(tst_renderer)

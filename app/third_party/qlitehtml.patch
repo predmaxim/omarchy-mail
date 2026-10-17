@@ -1,0 +1,110 @@
+diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
+index 6fa2c82..d227c1c 100644
+--- a/src/container_qpainter.cpp
++++ b/src/container_qpainter.cpp
+@@ -307,9 +307,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
+     return QFont::StyleNormal;
+ }
+ 
+-static QColor toQColor(const litehtml::web_color &color)
++QColor DocumentContainerPrivate::toQColor(const litehtml::web_color &color) const
+ {
+-    return {color.red, color.green, color.blue, color.alpha};
++    const QColor c(color.red, color.green, color.blue, color.alpha);
++    return m_colorFilter ? m_colorFilter(c) : c;
+ }
+ 
+ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
+@@ -327,7 +328,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
+     return Qt::SolidLine;
+ }
+ 
+-static QPen borderPen(const litehtml::border &border)
++QPen DocumentContainerPrivate::borderPen(const litehtml::border &border) const
+ {
+     return {toQColor(border.color), qreal(border.width), borderPenStyle(border.style)};
+ }
+@@ -632,7 +633,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
+     QPixmap pixmap;
+     pixmap.loadFromData(data);
+     m_pixmaps.insert(url, pixmap);
+-    loadAnimation(url, data);
++    // no animations: the document may be laid out in a thread without an event loop for QMovie
+ }
+ 
+ void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
+@@ -1589,6 +1590,22 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+     d->m_repaintCallback = callback;
+ }
+ 
++void DocumentContainer::setColorFilter(std::function<QColor(const QColor &)> f)
++{
++    d->m_colorFilter = std::move(f);
++}
++
++QList<DocumentContainer::Link> DocumentContainer::links() const
++{
++    QList<Link> result;
++    if (!d->m_document)
++        return result;
++    for (const litehtml::element::ptr &a : d->m_document->root()->select_all("a[href]"))
++        result.append({d->resolveUrl(QString::fromUtf8(a->get_attr("href")), d->m_baseUrl),
++                       toQRect(a->get_placement())});
++    return result;
++}
++
+ static litehtml::element::ptr elementForY(int y, const litehtml::element::ptr &element)
+ {
+     if (!element)
+diff --git a/src/container_qpainter.h b/src/container_qpainter.h
+index 0a7939e..efc8b21 100644
+--- a/src/container_qpainter.h
++++ b/src/container_qpainter.h
+@@ -6,6 +6,8 @@
+ #include "qlitehtml_global.h"
+ 
+ #include <QByteArray>
++#include <QColor>
++#include <QList>
+ #include <QPaintDevice>
+ #include <QPainter>
+ #include <QPoint>
+@@ -131,6 +133,17 @@ public: // outside API
+ 
+     int withFixedElementPosition(int y, const std::function<void()> &action);
+ 
++    // every colour of the document passes through the filter when drawn
++    void setColorFilter(std::function<QColor(const QColor &)> f);
++
++    struct Link
++    {
++        QUrl url;
++        QRect rect; // document space
++    };
++    // all a[href] in document order
++    QList<Link> links() const;
++
+ private:
+     std::unique_ptr<DocumentContainerPrivate> d;
+ };
+diff --git a/src/container_qpainter_p.h b/src/container_qpainter_p.h
+index b767a32..d04ae11 100644
+--- a/src/container_qpainter_p.h
++++ b/src/container_qpainter_p.h
+@@ -166,6 +166,8 @@ public: // document_container API
+     QString sansSerifFont() const;
+     QString monospaceFont() const;
+     QUrl resolveUrl(const QString &url, const QString &baseUrl) const;
++    QColor toQColor(const litehtml::web_color &color) const;
++    QPen borderPen(const litehtml::border &border) const;
+     void drawSelection(QPainter *painter, const QRect &clip) const;
+     void buildIndex();
+     void updateSelection();
+@@ -193,6 +195,7 @@ public: // document_container API
+     DocumentContainer::PaletteCallback m_paletteCallback;
+     DocumentContainer::ClipboardCallback m_clipboardCallback;
+     DocumentContainer::RepaintCallback m_repaintCallback;
++    std::function<QColor(const QColor &)> m_colorFilter;
+     bool m_blockLinks = false;
+     bool m_linkActivated = false;
+ };
