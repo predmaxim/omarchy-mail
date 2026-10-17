@@ -126,6 +126,20 @@ private Q_SLOTS:
         QVERIFY(isRed(drawn(again).pixel(5, 5)));
     }
 
+    void meta_charset_ignored()
+    {
+        // the letter comes decoded: its own charset must not decode it a second time
+        const QString metas[] = {QStringLiteral("<meta charset=\"windows-1251\">"),
+                                 QStringLiteral("<meta http-equiv=\"Content-Type\" content=\"text/html; charset=koi8-r\">")};
+        for (const QString &meta : metas) {
+            const Rendered r = run(job(QStringLiteral("<!doctype html><html><head>%1</head><body><p>Привет</p></body></html>").arg(meta)));
+            QVERIFY(r.doc);
+            bool found = false;
+            r.doc->findText(QStringLiteral("Привет"), {}, false, nullptr, &found, nullptr, nullptr);
+            QVERIFY2(found, qPrintable(meta));
+        }
+    }
+
     void external_css_ignored()
     {
         const Rendered r = run(job(QStringLiteral(
@@ -162,7 +176,8 @@ private Q_SLOTS:
         const Rendered r = run(job(QString::fromUtf8(readFile(fixture("light.html")))));
         QVERIFY(r.doc);
         QCOMPARE(redPixels(drawn(r)), 0);
-        r.doc->setColorFilter([](const QColor &) { return QColor(Qt::red); });
+        // only the dark text (#222) turns red: white fills, the blue button and grey text stay
+        r.doc->setColorFilter([](const QColor &c) { return c.lightness() < 100 ? QColor(Qt::red) : c; });
         QVERIFY(redPixels(drawn(r)) > 0);
     }
 

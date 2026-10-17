@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..2994627 100644
+index 6fa2c82..a0b9b9b 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -307,9 +307,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
@@ -49,7 +49,17 @@ index 6fa2c82..2994627 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1589,6 +1589,22 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1152,7 +1152,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
+     d->m_pixmaps.clear();
+     d->m_animations.clear();
+     d->clearSelection();
+-    d->m_document = litehtml::document::createFromString(data.constData(),
++    // data is UTF-8: a <meta charset> of the letter must not decode it a second time
++    d->m_document = litehtml::document::createFromString({data.toStdString(), litehtml::encoding::utf_8},
+                                                          d.get(),
+                                                          context->d->masterCss.toUtf8().constData());
+     d->buildIndex();
+@@ -1589,6 +1590,22 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  

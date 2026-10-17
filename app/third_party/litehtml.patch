@@ -1,0 +1,22 @@
+diff --git a/src/string_id.cpp b/src/string_id.cpp
+index d197d244..999968a0 100644
+--- a/src/string_id.cpp
++++ b/src/string_id.cpp
+@@ -1,6 +1,7 @@
+ #include "html.h"
+ #include "string_id.h"
+ #include <cassert>
++#include <deque>
+ 
+ #ifndef LITEHTML_NO_THREADS
+ 	#include <mutex>
+@@ -14,7 +15,8 @@ namespace litehtml
+ {
+ 
+ static std::map<string, string_id> map;
+-static std::vector<string> array;
++// deque: _s() hands out references after unlocking; push_back must not move the strings
++static std::deque<string> array;
+ 
+ static int init()
+ {

@@ -4,6 +4,9 @@ project(omarchy-mail VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo) # optimised, debug info kept for coredumps
+endif()
 
 find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Widgets Qml Quick Network DBus Concurrent Test)
 qt_standard_project_setup(REQUIRES 6.11)
@@ -50,6 +53,7 @@ om_test(tst_highlight)
 target_sources(mailcore PRIVATE src/MailList.h src/MailList.cpp)
 om_test(tst_maillist)
 include(FetchContent)
+# UPDATE_DISCONNECTED keeps the sources patched once: after editing a patch delete build/_deps/qlitehtml-*
 set(QT_VERSION_MAJOR 6)
 set(QLITEHTML_LIBRARY_TYPE STATIC)
 FetchContent_Declare(qlitehtml
@@ -57,6 +61,7 @@ FetchContent_Declare(qlitehtml
     GIT_TAG 180e3ebb22bb8d82a9bfe88bba46da8c28c9f2a2
     GIT_SUBMODULES src/3rdparty/litehtml
     PATCH_COMMAND git apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/third_party/qlitehtml.patch
+        COMMAND git -C src/3rdparty/litehtml apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/third_party/litehtml.patch
     UPDATE_DISCONNECTED ON
     SOURCE_SUBDIR src
     SYSTEM)
