@@ -68,13 +68,14 @@ Item {
             font.pixelSize: theme.fontTitle
         }
         Text {
+            objectName: "letterMeta"
             width: parent.width
             visible: text !== ""
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
             text: [letter.to !== "" ? i18n.t("to: %1").arg(letter.to) : "", letter.date].filter(s => s !== "").join(" · ")
             color: theme.dim
-            font.pixelSize: theme.fontBody
+            font.pixelSize: theme.fontSubtitle
         }
         Text {
             visible: letter.outbox === 1

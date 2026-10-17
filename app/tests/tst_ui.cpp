@@ -589,6 +589,18 @@ private Q_SLOTS:
         QCOMPARE(bar->width(), qreal(s->theme.space(3)));
     }
 
+    void grey_lines_are_subtitle_size()   // the list's preview, place and date, the letter's "to: … · date"
+    {
+        start();
+        letterShown();
+        QQuickItem *row = itemAt(item("mailList"), 0);
+        for (const char *name : {"rowPreview", "rowPlace", "rowDate"}) {
+            auto *text = row->findChild<QQuickItem *>(name);
+            QVERIFY2(text && text->isVisible(), name);
+            QCOMPARE(text->property("font").value<QFont>().pixelSize(), s->theme.fontSubtitle());
+        }
+        QCOMPARE(item("letterMeta")->property("font").value<QFont>().pixelSize(), s->theme.fontSubtitle());
+    }
     void letter_zoom_follows_gnome_and_is_remembered()
     {
         const auto config = ownConfig();

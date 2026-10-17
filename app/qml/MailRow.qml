@@ -84,9 +84,10 @@ Rectangle {
                 }
                 Text {
                     id: date
+                    objectName: "rowDate"
                     text: row.failed ? i18n.t("not sent") : row.queued ? i18n.t("queued") : row.dateText
                     color: row.failed ? theme.urgent : theme.dim
-                    font.pixelSize: theme.fontBody
+                    font.pixelSize: theme.fontSubtitle
                 }
             }
         }
@@ -101,22 +102,24 @@ Rectangle {
             font.pixelSize: theme.fontTitle
         }
         Text {
+            objectName: "rowPreview"
             width: parent.width
             visible: row.previewRich !== ""   // server search hits come without one
             elide: Text.ElideRight
             textFormat: Text.StyledText
             text: row.previewRich
             color: theme.dim
-            font.pixelSize: theme.fontBody
+            font.pixelSize: theme.fontSubtitle
         }
         Text {
+            objectName: "rowPlace"
             width: parent.width
             visible: row.place !== ""
             elide: Text.ElideRight
             textFormat: Text.PlainText
             text: row.place
             color: theme.dim
-            font.pixelSize: theme.fontBody
+            font.pixelSize: theme.fontSubtitle
         }
     }
 
