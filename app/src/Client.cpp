@@ -56,12 +56,15 @@ Client::~Client()
         k->disconnect();
 }
 
+QString Client::runtimeDir()
+{
+    const QString dir = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    return dir.isEmpty() ? QStringLiteral("/run/user/%1").arg(getuid()) : dir;
+}
+
 QString Client::defaultSocketPath()
 {
-    QString dir = qEnvironmentVariable("XDG_RUNTIME_DIR");
-    if (dir.isEmpty())
-        dir = QStringLiteral("/run/user/%1").arg(getuid());
-    return QDir(dir).filePath(QStringLiteral("omarchy-mail.sock"));
+    return QDir(runtimeDir()).filePath(QStringLiteral("omarchy-mail.sock"));
 }
 
 void Client::start()

@@ -24,6 +24,7 @@ struct Session {
     struct Args {
         qint64 openId = 0;
         QList<QUrl> mailto;
+        bool raise = true;   // an empty launch or a valid command; junk must not steal the focus
     };
     static Args parseArgs(const QStringList &args);
     // forwarded: from a later launch, to the window already open (the first launch's --open went to start()).

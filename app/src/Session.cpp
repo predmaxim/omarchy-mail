@@ -40,6 +40,7 @@ void Session::load(QQmlApplicationEngine &engine)
 Session::Args Session::parseArgs(const QStringList &args)
 {
     Args out;
+    bool valid = args.isEmpty();
     for (qsizetype i = 0; i < args.size(); ++i) {
         const QString &a = args.at(i);
         if (a == QLatin1String("--open") || a.startsWith(QLatin1String("--open="))) {
@@ -47,13 +48,14 @@ Session::Args Session::parseArgs(const QStringList &args)
             bool ok = false;
             const qint64 id = v.toLongLong(&ok);
             if (ok)
-                out.openId = id;
+                out.openId = id, valid = true;
             else
                 std::fprintf(stderr, "omarchy-mail: --open wants a letter id, not \"%s\"\n", qPrintable(v));
         } else if (a.startsWith(QLatin1String("mailto:"), Qt::CaseInsensitive)) {
-            out.mailto << QUrl(a);
+            out.mailto << QUrl(a), valid = true;
         }
     }
+    out.raise = valid;
     return out;
 }
 
@@ -63,7 +65,7 @@ void Session::handleArgs(const Args &args, bool forwarded)
         app.openMessage(args.openId);
     for (const QUrl &u : args.mailto)
         app.openMailto(u);
-    if (forwarded)
+    if (forwarded && args.raise)
         Q_EMIT app.raiseRequested();
 }
 

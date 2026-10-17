@@ -19,6 +19,7 @@ public:
 
     explicit Client(QString socketPath = defaultSocketPath(), QObject *parent = nullptr);
     ~Client() override;
+    static QString runtimeDir();   // $XDG_RUNTIME_DIR, else /run/user/<uid>: maild's rule
     static QString defaultSocketPath();
 
     bool connected() const { return m_connected; }
