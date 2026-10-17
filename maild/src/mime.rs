@@ -119,6 +119,12 @@ pub fn decode_part(bytes: &[u8], content_type: &str, encoding: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Name of a part known only by its MIME headers (rebuilt from BODYSTRUCTURE); RFC 2231 and encoded words decoded.
+pub fn part_name(headers: &str) -> Option<String> {
+    let raw = format!("{headers}\r\n");
+    MessageParser::default().parse(raw.as_bytes())?.root_part().attachment_name().map(str::to_string)
+}
+
 /// Up to 200 chars, whitespace collapsed; falls back to the HTML text.
 pub fn preview(text: &str, html: Option<&str>) -> String {
     let src = if text.trim().is_empty() { html.map(strip_tags).unwrap_or_default() } else { text.to_string() };

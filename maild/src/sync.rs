@@ -2,7 +2,7 @@
 
 use crate::config::Account;
 use crate::db::{Db, Folder, Role};
-use crate::imap::{Conn, text_sections};
+use crate::imap::{Conn, UNPARSEABLE, attachments, text_sections};
 use crate::mime::{self, Parsed};
 use ::imap::types::{Fetch, Flag};
 use imap_proto::SectionPath;
@@ -53,7 +53,13 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
 
     let mut ids = vec![];
     for chunk in new.chunks(BATCH) {
-        ids.extend(fetch_new(conn, db, folder.id, chunk)?);
+        let got = match fetch_new(conn, chunk) {
+            Err(e) if e.starts_with(UNPARSEABLE) => one_by_one(conn, folder, chunk)?,
+            r => r?,
+        };
+        for m in got {
+            ids.push(db.insert_message(folder.id, m.uid, m.seen, m.flagged, m.size.into(), &m.parsed, m.has_body)?);
+        }
         last = last.max(chunk[chunk.len() - 1]);
         // Saved per batch so a dropped connection does not restart a long import.
         db.set_folder_marks(folder.id, last, notified)?;
@@ -81,8 +87,30 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
     Ok(ids)
 }
 
+/// The batch answer could not be parsed: fetch its UIDs one by one, skipping those that still fail
+/// (their UIDs are passed over for good, so one odd message cannot stall the folder).
+fn one_by_one(conn: &mut Conn, folder: &Folder, uids: &[u32]) -> Result<Vec<New>, String> {
+    let mut out = vec![];
+    // An unparseable answer leaves the session out of step.
+    let reopen = |conn: &mut Conn| conn.reconnect().and_then(|_| conn.examine(&folder.path)).map(drop);
+    reopen(conn)?;
+    for &uid in uids {
+        match fetch_new(conn, &[uid]) {
+            Ok(v) => out.extend(v),
+            Err(e) if e.starts_with(UNPARSEABLE) => {
+                eprintln!("{} {}: uid {uid} skipped: {e}", folder.account, folder.path);
+                reopen(conn)?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
+}
+
+struct New { uid: u32, seen: bool, flagged: bool, size: u32, parsed: Parsed, has_body: bool }
+
 // ponytail: up to 50 × 2 MiB bodies held in memory per batch; cap the batch by total size if that bites.
-fn fetch_new(conn: &mut Conn, db: &Db, folder: i64, uids: &[u32]) -> Result<Vec<i64>, String> {
+fn fetch_new(conn: &mut Conn, uids: &[u32]) -> Result<Vec<New>, String> {
     let meta = conn.fetch(&uid_set(uids), "(UID FLAGS RFC822.SIZE)")?;
     let info: Vec<(u32, bool, bool, u32)> = meta.iter().filter_map(|f| {
         let uid = f.uid.filter(|u| uids.contains(u))?;
@@ -96,28 +124,31 @@ fn fetch_new(conn: &mut Conn, db: &Db, folder: i64, uids: &[u32]) -> Result<Vec<
     let body_of: HashMap<u32, &[u8]> = bodies.iter().flat_map(|b| b.iter()).filter_map(|f| Some((f.uid?, f.body()?))).collect();
     let head_of: HashMap<u32, &Fetch> = heads.iter().flat_map(|h| h.iter()).filter_map(|f| Some((f.uid?, f))).collect();
 
-    let mut ids = vec![];
-    for &(uid, seen, flagged, size) in &info {
+    let mut out = vec![];
+    for (uid, seen, flagged, size) in info {
         // A UID missing from the answer was expunged meanwhile.
-        let (p, has_body) = if size <= FULL_FETCH_LIMIT {
+        let (parsed, has_body) = if size <= FULL_FETCH_LIMIT {
             let Some(raw) = body_of.get(&uid) else { continue };
             (mime::parse(raw), true)
         } else {
             let Some(head) = head_of.get(&uid) else { continue };
             big_message(conn, uid, head)?
         };
-        ids.push(db.insert_message(folder, uid, seen, flagged, size as u64, &p, has_body)?);
+        out.push(New { uid, seen, flagged, size, parsed, has_body });
     }
-    Ok(ids)
+    Ok(out)
 }
 
-/// Headers plus the first text/plain and text/html parts; `has_body` if any text part came.
+/// Headers, attachment list and the first text/plain and text/html parts; `has_body` if any text part came.
 fn big_message(conn: &mut Conn, uid: u32, head: &Fetch) -> Result<(Parsed, bool), String> {
     let mut p = mime::parse(head.header().unwrap_or_default());
-    let secs = head.bodystructure().map(text_sections).unwrap_or_default();
+    let Some(bs) = head.bodystructure() else { return Ok((p, false)) };
+    let secs = text_sections(bs);
     let plain = secs.iter().find(|s| s.1.starts_with("text/plain"));
     let html = secs.iter().find(|s| s.1.starts_with("text/html"));
-    let query: Vec<String> = [plain, html].into_iter().flatten().map(|s| format!("BODY.PEEK[{}]", s.0)).collect();
+    let body: Vec<&str> = [plain, html].into_iter().flatten().map(|s| s.0.as_str()).collect();
+    p.attachments = attachments(bs, &body);
+    let query: Vec<String> = body.iter().map(|s| format!("BODY.PEEK[{s}]")).collect();
     if query.is_empty() {
         return Ok((p, false));
     }
@@ -163,8 +194,11 @@ pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account) -> Result<Vec<i64>,
         match sync_folder(conn, db, f) {
             Ok(v) => ids.extend(v),
             // One broken folder must not stall the account; a dead connection goes to the caller.
-            Err(e) if conn.noop().is_ok() => eprintln!("{}: {}: {e}", acc.email, f.path),
-            Err(e) => return Err(e),
+            Err(e) => {
+                let alive = if e.starts_with(UNPARSEABLE) { conn.reconnect().is_ok() } else { conn.noop().is_ok() };
+                if !alive { return Err(e); }
+                eprintln!("{}: {}: {e}", acc.email, f.path);
+            }
         }
     }
     Ok(ids)
@@ -185,23 +219,27 @@ mod tests {
         assert!(!needs_reset(0, 8));
     }
 
-    /// One-connection IMAP server: greets, then answers each command with `reply(cmd)` + tagged OK;
-    /// an unexpected command gets BAD.
+    /// Fake IMAP server (any number of connections): greets, then answers each command with
+    /// `reply(cmd)` + tagged OK; an unexpected command gets BAD.
     fn fake(reply: fn(&str) -> Option<String>) -> Conn {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         std::thread::spawn(move || {
-            let (s, _) = l.accept().unwrap();
-            let mut w = s.try_clone().unwrap();
-            w.write_all(b"* OK fake\r\n").unwrap();
-            for line in BufReader::new(s).lines() {
-                let Ok(line) = line else { break };
-                let (tag, cmd) = line.split_once(' ').unwrap();
-                let out = match reply(cmd) {
-                    Some(r) => format!("{r}{tag} OK done\r\n"),
-                    None => format!("{tag} BAD unexpected {cmd}\r\n"),
-                };
-                if w.write_all(out.as_bytes()).is_err() { break }
+            for s in l.incoming() {
+                let Ok(s) = s else { break };
+                std::thread::spawn(move || {
+                    let mut w = s.try_clone().unwrap();
+                    w.write_all(b"* OK fake\r\n").unwrap();
+                    for line in BufReader::new(s).lines() {
+                        let Ok(line) = line else { break };
+                        let (tag, cmd) = line.split_once(' ').unwrap();
+                        let out = match reply(cmd) {
+                            Some(r) => format!("{r}{tag} OK done\r\n"),
+                            None => format!("{tag} BAD unexpected {cmd}\r\n"),
+                        };
+                        if w.write_all(out.as_bytes()).is_err() { break }
+                    }
+                });
             }
         });
         Conn::plain(TcpStream::connect(addr).unwrap(), "me", "pw").unwrap()
@@ -225,9 +263,11 @@ mod tests {
         })
     }
 
-    /// uid 1 got flagged, uid 2 was deleted, uid 3 is a new big message.
+    /// uid 1 got flagged, uid 2 was deleted, uid 3 is a new big message: text + PDF.
     fn after(cmd: &str) -> Option<String> {
-        let bs = "((\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 9 1)(\"text\" \"html\" (\"charset\" \"utf-8\") NIL NIL \"base64\" 40 1) \"alternative\")";
+        let alt = "((\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 9 1)(\"text\" \"html\" (\"charset\" \"utf-8\") NIL NIL \"base64\" 40 1) \"alternative\")";
+        let pdf = "(\"application\" \"pdf\" (\"name\" \"=?UTF-8?B?0KHRh9C10YIucGRm?=\") NIL NIL \"base64\" 4000 NIL (\"attachment\" (\"filename\" \"=?UTF-8?B?0KHRh9C10YIucGRm?=\")) NIL NIL)";
+        let bs = format!("({alt}{pdf} \"mixed\")");
         Some(match cmd {
             c if c.starts_with("LOGIN") => String::new(),
             "EXAMINE \"INBOX\"" => "* 2 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 4] n\r\n".into(),
@@ -235,8 +275,8 @@ mod tests {
             "UID FETCH 3 (UID FLAGS RFC822.SIZE)" => "* 2 FETCH (UID 3 FLAGS () RFC822.SIZE 3000000)\r\n".into(),
             "UID FETCH 3 (UID BODY.PEEK[HEADER] BODYSTRUCTURE)" =>
                 format!("* 2 FETCH (UID 3 BODY[HEADER] {} BODYSTRUCTURE {bs})\r\n", lit("Subject: big\r\nFrom: b@x.org\r\n\r\n")),
-            "UID FETCH 3 (UID BODY.PEEK[1] BODY.PEEK[2])" =>
-                format!("* 2 FETCH (UID 3 BODY[1] {} BODY[2] {})\r\n", lit("big plain"), lit("PGI+YmlnPC9iPjxzY3JpcHQ+eDwvc2NyaXB0Pg==")),
+            "UID FETCH 3 (UID BODY.PEEK[1.1] BODY.PEEK[1.2])" =>
+                format!("* 2 FETCH (UID 3 BODY[1.1] {} BODY[1.2] {})\r\n", lit("big plain"), lit("PGI+YmlnPC9iPjxzY3JpcHQ+eDwvc2NyaXB0Pg==")),
             "UID FETCH 1:* (UID FLAGS)" => "* 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged))\r\n* 2 FETCH (UID 3 FLAGS ())\r\n".into(),
             _ => return None,
         })
@@ -264,6 +304,9 @@ mod tests {
         let big = db.message(ids[0]).unwrap().unwrap();
         assert_eq!((big.uid, big.summary.subject.as_str(), big.text.as_str(), big.has_body), (Some(3), "big", "big plain", true));
         assert_eq!(big.html.as_deref().map(|h| h.contains("<b>big</b>") && !h.contains("script")), Some(true));
+        let a: Vec<_> = big.attachments.iter().map(|a| (a.index, a.name.as_str(), a.mime.as_str(), a.size, a.inline)).collect();
+        assert_eq!(a, [(0, "Счет.pdf", "application/pdf", 4000, false)]);
+        assert!(big.summary.has_attachments);
         let mut subjects: Vec<_> = list().into_iter().map(|m| (m.subject, m.flagged)).collect();
         subjects.sort();
         assert_eq!(subjects, [("big".into(), false), ("one".into(), true)]);
@@ -271,5 +314,37 @@ mod tests {
         assert_eq!((f.last_uid, f.notified_uid), (3, 2));
 
         assert!(sync_folder(&mut fake(after), &db, &f).unwrap().is_empty());
+    }
+
+    /// uid 2 answers with a line the parser rejects, in the batch and alone.
+    fn garbled(cmd: &str) -> Option<String> {
+        let each = |set: &str, f: &dyn Fn(u32) -> String| set.split(',').filter_map(|u| u.parse().ok()).map(f).collect::<String>();
+        if let Some((set, query)) = cmd.strip_prefix("UID FETCH ").and_then(|r| r.split_once(' ')) {
+            return Some(match query {
+                "(UID FLAGS RFC822.SIZE)" => each(set, &|u| format!("* {u} FETCH (UID {u} FLAGS () RFC822.SIZE 60)\r\n")),
+                "(UID BODY.PEEK[])" => each(set, &|u| match u {
+                    2 => "* 2 FETCH (UID 2 BODY[] #garbage#)\r\n".into(),
+                    _ => format!("* {u} FETCH (UID {u} BODY[] {})\r\n", lit(M1)),
+                }),
+                "(UID FLAGS)" => "* 1 FETCH (UID 1 FLAGS ())\r\n* 3 FETCH (UID 3 FLAGS ())\r\n".into(),
+                _ => return None,
+            });
+        }
+        Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "EXAMINE \"INBOX\"" => "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 4] n\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 1 2 3\r\n".into(),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn unparseable_message_is_skipped() {
+        let db = Db::memory();
+        db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        let f = db.folders_of("me@x").unwrap().remove(0);
+        assert_eq!(sync_folder(&mut fake(garbled), &db, &f).unwrap().len(), 2);
+        assert_eq!(db.folders_of("me@x").unwrap()[0].last_uid, 3);
+        assert_eq!(db.list(&ListQuery { folder: Some(f.id), ..Default::default() }).unwrap().len(), 2);
     }
 }

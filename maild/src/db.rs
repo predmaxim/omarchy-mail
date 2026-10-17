@@ -41,7 +41,11 @@ pub struct Summary {
 pub struct ListQuery { pub account: Option<String>, pub role: Option<Role>, pub folder: Option<i64>, pub unread_only: bool, pub offset: u32, pub limit: u32 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FolderInfo { pub account: Option<String>, pub id: Option<i64>, pub path: String, pub role: Role, pub unread: u32 }
+pub struct FolderInfo {
+    pub account: Option<String>, pub id: Option<i64>, pub path: String,
+    /// Readable: last path component, modified UTF-7 decoded; the role name for unified entries.
+    pub name: String, pub role: Role, pub unread: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Full {
@@ -49,6 +53,12 @@ pub struct Full {
     pub attachments: Vec<Attachment>, pub has_body: bool, pub message_id: String, pub in_reply_to: String,
     /// Space-separated message ids without angle brackets.
     pub refs: String, pub folder: i64, pub uid: Option<u32>,
+}
+
+/// Last path component, modified UTF-7 decoded.
+// ponytail: splits on the common delimiters '/' and '|'; '.'-delimited servers show the whole path. Store LIST's delimiter if that matters.
+fn display_name(path: &str) -> String {
+    crate::imap::decode_mutf7(path.rsplit(['/', '|']).next().unwrap_or(path))
 }
 
 pub struct Db { c: Connection }
@@ -240,16 +250,17 @@ impl Db {
         };
         if let Some(a) = account {
             let mut st = self.c.prepare("SELECT id, path, role, (SELECT COUNT(*) FROM messages WHERE folder = folders.id AND seen = 0) FROM folders WHERE account = ?1 AND role <> 'remote' ORDER BY id").map_err(e)?;
-            return st.query_map([a], |r| Ok(FolderInfo {
-                account: Some(a.to_string()), id: Some(r.get(0)?), path: r.get(1)?, role: Role::from_db(&r.get::<_, String>(2)?), unread: r.get(3)?,
-            })).map_err(e)?.collect::<Result<_, _>>().map_err(e);
+            return st.query_map([a], |r| {
+                let path: String = r.get(1)?;
+                Ok(FolderInfo { account: Some(a.to_string()), id: Some(r.get(0)?), name: display_name(&path), path, role: Role::from_db(&r.get::<_, String>(2)?), unread: r.get(3)? })
+            }).map_err(e)?.collect::<Result<_, _>>().map_err(e);
         }
         [Role::Inbox, Role::Flagged, Role::Sent, Role::Trash, Role::Junk].into_iter().map(|role| {
             let cond = match role {
                 Role::Flagged => "m.flagged = 1 AND f.role NOT IN ('trash','junk')".to_string(),
                 r => format!("f.role = '{}'", r.as_str()),
             };
-            Ok(FolderInfo { account: None, id: None, path: role.as_str().into(), role, unread: unread(&cond, None)? })
+            Ok(FolderInfo { account: None, id: None, path: role.as_str().into(), name: role.as_str().into(), role, unread: unread(&cond, None)? })
         }).collect()
     }
 
@@ -461,5 +472,14 @@ mod tests {
         db.reset_folder(f, 7).unwrap();
         let fo = &db.folders_of("a@x").unwrap()[0];
         assert_eq!((fo.uidvalidity, fo.last_uid, fo.notified_uid), (7, 0, 1));
+    }
+
+    #[test]
+    fn folder_names_decoded() {
+        let db = Db::memory();
+        db.upsert_folder("a@x", "[Gmail]/&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-", Role::Sent).unwrap();
+        let f = &db.folder_list(Some("a@x")).unwrap()[0];
+        assert_eq!((f.name.as_str(), f.path.as_str()), ("Отправленные", "[Gmail]/&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-"));
+        assert_eq!(db.folder_list(None).unwrap()[0].name, "inbox");
     }
 }
