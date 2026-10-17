@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-#[allow(dead_code)] // SearchRemote: task 10, SendFailed: task 11
+#[allow(dead_code)] // SendFailed: task 11
 pub enum Event {
     Changed { folders: bool, ids: Vec<i64> },
     Status { accounts: Vec<AccountState> },
     Open { id: i64 },
-    SearchRemote { token: u64, hits: Vec<Summary> },
+    /// `error`: the account's search failed (`hits` is empty then).
+    SearchRemote { token: u64, hits: Vec<Summary>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     ActionFailed { batch: i64, error: String },
     SendFailed { outbox: i64, error: String },
 }

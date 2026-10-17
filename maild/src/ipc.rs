@@ -75,7 +75,7 @@ enum Req {
     Contacts { prefix: String },
     Sync { account: Option<String>, folder: Option<i64> },
     Attachment { message: i64, index: u32 },
-    OpenRemote,
+    OpenRemote { account: String, folder_path: String, uid: u32 },
     Act { ids: Vec<i64>, op: Op },
     Undo { batch: i64 },
     Send,
@@ -144,14 +144,26 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
         Req::List(q) => val(st.db.list(&q)?),
         Req::Message { message } => message_full(st, message),
         Req::Attachment { message, index } => attachment(st, message, index),
-        Req::Search { q } => Ok(json!({"local": st.db.search(&q, SEARCH_LIMIT)?, "token": TOKEN.fetch_add(1, Relaxed)})),
+        Req::Search { q } => {
+            let local = st.db.search(&q, SEARCH_LIMIT)?;
+            let token = TOKEN.fetch_add(1, Relaxed);
+            // Each mailbox answers with its own `search_remote` event.
+            for h in st.hub.handles() {
+                let _ = h.jobs.send(Job::Search { query: q.clone(), token });
+            }
+            Ok(json!({"local": local, "token": token}))
+        }
         Req::Contacts { prefix } => val(st.db.contacts(&prefix, CONTACTS_LIMIT)?),
         Req::Sync { account, folder } => sync(st, account.as_deref(), folder),
         // A client bug: restore is what `undo` of a delete does.
         Req::Act { op: Op::Restore, .. } => Err("restore: use undo".into()),
         Req::Act { ids, op } => queued(st, actions::enqueue(&st.db, &ids, op)?),
         Req::Undo { batch } => queued(st, actions::undo(&st.db, batch)?),
-        Req::OpenRemote | Req::Send => Err(NOT_IMPLEMENTED.into()),
+        Req::OpenRemote { account, folder_path, uid } => {
+            let id = ask(st, &account, |reply| Job::FetchRemote { folder_path, uid, reply })?;
+            Ok(json!({"id": id}))
+        }
+        Req::Send => Err(NOT_IMPLEMENTED.into()),
     }
 }
 
@@ -608,10 +620,15 @@ mod tests {
     #[test]
     fn later_tasks_not_implemented() {
         let mut st = state("stubs");
-        for cmd in ["open_remote", "send"] {
-            let r = call(&mut st, json!({"id": 1, "cmd": cmd, "ids": [1], "op": "read"}));
-            assert_eq!(r, json!({"id": 1, "ok": false, "error": "not implemented"}), "{cmd}");
-        }
+        let r = call(&mut st, json!({"id": 1, "cmd": "send"}));
+        assert_eq!(r, json!({"id": 1, "ok": false, "error": "not implemented"}));
+    }
+
+    #[test]
+    fn open_remote_unknown_account() {
+        let mut st = state("open-remote");
+        let r = call(&mut st, json!({"id": 1, "cmd": "open_remote", "account": "no@x", "folder_path": "INBOX", "uid": 3}));
+        assert_eq!(r["ok"], false);
     }
 
     #[test]

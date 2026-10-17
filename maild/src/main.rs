@@ -9,6 +9,7 @@ mod imap;
 mod ipc;
 mod mime;
 mod notify;
+mod search;
 mod secret;
 mod sync;
 mod wake;

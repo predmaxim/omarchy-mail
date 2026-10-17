@@ -35,7 +35,13 @@ pub struct Summary {
     pub id: i64, pub account: String, pub role: Role, pub folder_path: String, pub date: i64,
     pub from: Addr, pub subject: String, pub preview: String, pub seen: bool, pub flagged: bool,
     pub has_attachments: bool, pub queued: bool,
+    /// Server search hits only (`id` 0): what `open_remote` takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<Remote>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Remote { pub account: String, pub folder_path: String, pub uid: u32 }
 
 /// Also the `list` request: absent fields take the defaults.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -116,7 +122,7 @@ fn summary(r: &Row) -> rusqlite::Result<Summary> {
     Ok(Summary {
         id: r.get(0)?, account: r.get(1)?, role: Role::from_db(&r.get::<_, String>(2)?), folder_path: r.get(3)?, date: r.get(4)?,
         from: Addr { name: r.get(5)?, addr: r.get(6)? }, subject: r.get(7)?, preview: r.get(8)?,
-        seen: r.get(9)?, flagged: r.get(10)?, has_attachments: att.iter().any(|a| !a.inline), queued: false,
+        seen: r.get(9)?, flagged: r.get(10)?, has_attachments: att.iter().any(|a| !a.inline), queued: false, remote: None,
     })
 }
 
@@ -225,7 +231,7 @@ impl Db {
             (Some(Role::Flagged), _) => conds.push("m.flagged = 1 AND f.role NOT IN ('trash','junk')".into()),
             (Some(r), _) => { conds.push("f.role = ?".into()); args.push(r.as_str().to_string().into()); }
             (None, Some(f)) => { conds.push("f.id = ?".into()); args.push(f.into()); }
-            _ => {}
+            _ => conds.push("f.role <> 'remote'".into()),
         }
         if q.unread_only { conds.push("m.seen = 0".into()); }
         let wh = if conds.is_empty() { String::new() } else { format!("WHERE {}", conds.join(" AND ")) };
@@ -251,7 +257,7 @@ impl Db {
             Ok(Summary {
                 id: -r.get::<_, i64>(0)?, account: acc.clone(), role: Role::Sent, folder_path: String::new(), date: r.get(2)?,
                 from: Addr { name: String::new(), addr: acc }, subject: r.get(3)?, preview: String::new(),
-                seen: true, flagged: false, has_attachments: false, queued: true,
+                seen: true, flagged: false, has_attachments: false, queued: true, remote: None,
             })
         }).map_err(e)?.collect::<Result<_, _>>().map_err(e)
     }

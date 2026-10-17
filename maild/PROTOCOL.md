@@ -72,7 +72,7 @@ Failure:
 | `contacts` | `prefix` | `Addr[]` |
 | `sync` | `account?, folder?` | — |
 | `attachment` | `message, index` | `{path}` |
-| `open_remote` | `account, folder_path, uid` | `{id}` — *not implemented yet (stage 10)* |
+| `open_remote` | `account, folder_path, uid` | `{id}` |
 | `act` | `ids, op` | `{batch}` |
 | `undo` | `batch` | `{batch}` |
 | `send` | a `Draft` | `{outbox}` — *not implemented yet (stage 11)* |
@@ -263,9 +263,13 @@ live in the keyring only.
   - Matching ignores case, and works for Cyrillic.
   - An empty `q` gives `[]`.
 - `token` grows with every `search`, on any connection.
-- From stage 10 on, each mailbox also searches its server for mail before 2026-01-01. Each
-  mailbox sends its hits as a `search_remote {token, hits}` event. Drop events whose `token` is
-  not the latest one you got.
+- Each mailbox also searches its server for mail before 2026-01-01 (subject, sender or text).
+  Gmail: the "All Mail" folder; others: every folder but Junk. Up to 30 newest hits per mailbox.
+  Each mailbox sends its hits as a `search_remote {token, hits}` event, also with no hits. Drop
+  events whose `token` is not the latest one you got.
+- If a mailbox's search failed, its event has `hits: []` and `error: string`.
+- Hits are `Summary` with `id: 0`, `role: "remote"` and `remote: {account, folder_path, uid}`;
+  pass `remote` to `open_remote`.
 
 ### `contacts`
 
@@ -344,11 +348,12 @@ live in the keyring only.
 
 ### Later stages
 
-These shapes are fixed now; the commands answer `not implemented` until their stage.
+These shapes are fixed now; `send` answers `not implemented` until its stage.
 
-- `open_remote {account, folder_path, uid}` → `{id}` (stage 10).
-  - Downloads a server search hit (`Summary.remote`) into the account's `remote` folder.
-  - Returns the local id for `message`.
+- `open_remote {account, folder_path, uid}` → `{id}`.
+  - Downloads a server search hit (`Summary.remote`) into the account's `remote` folders.
+  - Returns the local id for `message`; opening the same hit again returns the same id.
+  - Waits for the server up to 30 s.
 - `send {account, to: Addr[], subject, text, reply_to: i64|null, attachments: [path]}` →
   `{outbox}` (stage 11).
   - The message is queued: it shows in `list {role: "sent"}` as `queued`, and is sent when
@@ -364,7 +369,7 @@ They go to subscribed connections only, one JSON object per line.
 | `changed` | `folders: bool, ids: [i64]` | Mail changed. `ids` are added or re-fetched messages; the list may be empty (flags changed, messages deleted, an account removed). `folders: true` means unread counts may have changed: reload `folders`. Reload the visible list in both cases. |
 | `status` | `accounts: [{email, status}]` | An account's `Status` changed, or an account was removed. Carries every account; for `queued`, call `status`. |
 | `open` | `id: i64` | A new-mail notification was clicked while a window is subscribed: show message `id` and raise the window. |
-| `search_remote` | `token: u64, hits: Summary[]` | Server search hits of one mailbox (stage 10). |
+| `search_remote` | `token: u64, hits: Summary[], error?: string` | Server search hits of one mailbox. `error` only when its search failed. |
 | `action_failed` | `batch: i64, error: string` | A server refused an action of `batch` (see `act`). The database is already back to the previous state. |
 | `send_failed` | `outbox: i64, error: string` | Sending failed permanently. The message stays in the outbox as not sent (stage 11). |
 
@@ -373,6 +378,7 @@ They go to subscribed connections only, one JSON object per line.
 {"event": "status", "accounts": [{"email": "me@gmail.com", "status": "online"}, {"email": "me@yandex.ru", "status": "auth_failed"}]}
 {"event": "open", "id": 101}
 {"event": "search_remote", "token": 7, "hits": [<Summary>]}
+{"event": "search_remote", "token": 7, "hits": [], "error": "…"}
 {"event": "action_failed", "batch": 5, "error": "…"}
 {"event": "send_failed", "outbox": 2, "error": "…"}
 ```
@@ -420,7 +426,7 @@ They go to subscribed connections only, one JSON object per line.
 - `has_attachments` is true when there is an attachment that is not inline.
 - `queued: true` marks an outbox message: `id` is negative, `folder_path` is empty and `from` is
   the account.
-- From stage 10, server search hits have `id: 0`, `role: "remote"` and an extra
+- Server search hits have `id: 0`, `role: "remote"` and an extra
   `remote: {account, folder_path, uid}` for `open_remote`. The field is missing on local
   messages.
 

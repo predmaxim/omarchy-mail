@@ -5,7 +5,7 @@ use crate::config::{Account, Paths};
 use crate::db::{Db, Role};
 use crate::hub::{Event, Hub, lock};
 use crate::imap::{self, AUTH_FAILED, Conn, KillSlot};
-use crate::{actions, fetch, notify, secret, sync};
+use crate::{actions, fetch, notify, search, secret, sync};
 use serde::Serialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -26,10 +26,9 @@ const BACKOFF: [Duration; 3] = if cfg!(test) {
 const STEADY: Duration = Duration::from_secs(60);
 /// The worker runs SyncAll at least this often.
 const PERIOD: Duration = Duration::from_secs(15 * 60);
-const NOT_IMPLEMENTED: &str = "not implemented";
 
-/// Worker jobs. `FetchRemote`, `Search`, `Append` are filled in by tasks 10–11.
-#[allow(dead_code)] // constructed by tasks 10–11
+/// Worker jobs. `Append` is filled in by task 11.
+#[allow(dead_code)] // constructed by task 11
 pub enum Job {
     SyncFolder(i64),
     SyncAll,
@@ -324,15 +323,33 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                 let _ = reply.send(r.map(drop));
                 continue;
             }
-            Job::FetchRemote { reply, .. } => {
-                let _ = reply.send(Err(NOT_IMPLEMENTED.into()));
+            Job::FetchRemote { folder_path, uid, reply } => {
+                let _ = reply.send(attempt(sh, &mut conn, |c| search::open(c, &db, &acc.email, &folder_path, uid)));
                 continue;
             }
             Job::Attachment { message, index, reply } => {
                 let _ = reply.send(attempt(sh, &mut conn, |c| fetch::fetch_attachment(c, &db, &sh.cache, message, index)));
                 continue;
             }
-            Job::Search { .. } | Job::Append { .. } => continue,
+            Job::Search { mut query, mut token } => {
+                // A newer search of the window makes the queued older ones pointless.
+                while next.is_none() {
+                    match queue.try_recv() {
+                        Ok(Job::Search { query: q, token: t }) => (query, token) = (q, t),
+                        Ok(other) => next = Some(other),
+                        Err(_) => break,
+                    }
+                }
+                let r = attempt(sh, &mut conn, |c| search::search(c, acc, &query));
+                // Also without hits or on failure: the window stops its spinner on the event.
+                let (hits, error) = match r {
+                    Ok(h) => (h, None),
+                    Err(e) => (vec![], Some(e)),
+                };
+                sh.hub.emit(Event::SearchRemote { token, hits, error });
+                continue;
+            }
+            Job::Append { .. } => continue,
         };
         auth_failed = matches!(&r, Err(e) if e.starts_with(AUTH_FAILED));
         if r.is_ok() {
@@ -408,6 +425,34 @@ mod tests {
         let end = Instant::now() + Duration::from_secs(2);
         while !events.recv_timeout(end.saturating_duration_since(Instant::now())).unwrap().starts_with(r#"{"event":"changed""#) {}
         assert_eq!(hub.statuses()[0].status, Status::Online);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_job_emits_event_per_token() {
+        let addr = fake_server(|cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => "* 0 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH\r\n".into(),
+            "UID SEARCH BEFORE 1-Jan-2026 OR OR SUBJECT \"x\" FROM \"x\" TEXT \"x\"" => "* SEARCH 3\r\n".into(),
+            "UID FETCH 3 (UID FLAGS INTERNALDATE BODY.PEEK[HEADER])" => {
+                "* 1 FETCH (UID 3 FLAGS () BODY[HEADER] {16}\r\nSubject: old\r\n\r\n)\r\n".into()
+            }
+            "IDLE" => String::new(),
+            _ => return None,
+        }));
+        let hub = Hub::default();
+        let events = hub.subscribe(false);
+        let (h, dir) = start(addr, "search", &hub);
+        h.jobs.send(Job::Search { query: "x".into(), token: 7 }).unwrap();
+        let end = Instant::now() + Duration::from_secs(2);
+        let ev = loop {
+            let e = events.recv_timeout(end.saturating_duration_since(Instant::now())).unwrap();
+            if e.starts_with(r#"{"event":"search_remote""#) { break e }
+        };
+        assert!(ev.contains(r#""token":7"#) && ev.contains(r#""subject":"old""#) && ev.contains(r#""uid":3"#), "{ev}");
+        h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
     }
 
