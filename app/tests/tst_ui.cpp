@@ -91,6 +91,8 @@ private Q_SLOTS:
         h.serve();
         h.d->on("message", [](const QJsonObject &r) { return QJsonObject{{"result", letter(r.value("message").toInteger())}}; });
         dir = new QTemporaryDir(scratch());
+        // a zoom some test left in the shared home would be every later window's
+        QFile::remove(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/omarchy-mail/window.json");
         s = new Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img"));
         engine = new QQmlApplicationEngine;
         s->load(*engine);
@@ -649,6 +651,11 @@ private Q_SLOTS:
         QTRY_VERIFY(item("composeTo")->hasActiveFocus());
         QTest::keyClick(win, Qt::Key_Equal, Qt::ControlModifier);   // the form shows no letter
         QCOMPARE(s->letter.zoom(), 1.0);
+        // saved while this test's config is set: the Session dies after it, in cleanup()
+        QTRY_VERIFY([this] {
+            QFile f(dir->filePath("config/omarchy-mail/window.json"));
+            return f.open(QIODevice::ReadOnly) && !QJsonDocument::fromJson(f.readAll()).object().contains("letterZoom");
+        }());
     }
 
     // OM_SHOT_ZOOM=<prefix>: made-up letters, <prefix>-100.png and <prefix>-136.png; <prefix>-fit.png: a 600 px

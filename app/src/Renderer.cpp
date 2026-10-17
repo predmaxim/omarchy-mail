@@ -114,13 +114,14 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *picture, QList<
 }
 
 // Our user-agent sheet after litehtml's, like Geary's (a letter's own CSS wins): roomier lines, <pre> that
-// wraps, quotes with a bar on the left only. The bar and the quote's text are the greys the colour filter
+// wraps, quotes with a bar on the left only, a picture of no set height no wider than its block (it shrinks itself,
+// not the letter by the fit; with a height= litehtml would keep that height and squash it). The bar and the quote's text are the greys the colour filter
 // turns into the theme's muted and dim, and the filter runs the other way on a dark letter.
 static QString userAgentCss(const RenderJob &job, bool dark)
 {
     const auto grey = [&](const QColor &c) { return recolor::unmap(c, job.background, job.foreground, dark).name(); };
     return QStringLiteral("body{margin:12px;line-height:1.7}h1,h2,h3,h4,h5,h6{line-height:1.2}table{font-size:inherit}"
-                          "pre{white-space:pre-wrap}"
+                          "pre{white-space:pre-wrap}img:not([height]){max-width:100%}"
                           "blockquote{margin:.3em 0 .3em 16px;padding:0 0 0 8px;border-left:3px solid %1;color:%2}")
         .arg(grey(job.muted), grey(job.dim));
 }
@@ -243,6 +244,8 @@ void Renderer::render(const RenderJob &job)
         if (shown != html || (r.dark && !quotes.isEmpty()) || fit.width != job.width)
             dropped = std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), fit, &r.wanted));
         r.width = fit.width;
+        if (fit.width != job.width)   // as wide as it came out: width:100% plus padding overflows again
+            r.width = qMax(fit.width, qMin(holder->doc.documentWidth(), maxFit));
         r.size = QSize(holder->doc.documentWidth(), holder->doc.documentHeight());
         r.links = holder->doc.links();
         r.doc = std::shared_ptr<DocumentContainer>(holder, &holder->doc);

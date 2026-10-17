@@ -7,6 +7,7 @@
 #include "LetterView.h"
 #include "Renderer.h"
 #include "Theme.h"
+#include <QBuffer>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QQuickWindow>
@@ -39,15 +40,17 @@ class TstLetterView : public QObject {
     QQuickWindow *win = nullptr;
     LetterView *view = nullptr;
 
-    // Shows `html` as letter 42 and waits for the first layout.
-    void open(const QString &html)
+    // Shows `html` (or, with `text`, a plain-text letter) as letter 42 and waits for the first layout.
+    void open(const QString &html, const QString &text = {})
     {
-        d->on("message", [html](const QJsonObject &req) {
+        d->on("message", [html, text](const QJsonObject &req) {
             QJsonObject f = QJsonDocument::fromJson(readFile(fixture("message.json"))).object();
             QJsonObject s = f.value("summary").toObject();
             s.insert("id", req.value("message").toInteger());
             f.insert("summary", s);
-            f.insert("html", html);
+            f.insert("html", text.isEmpty() ? QJsonValue(html) : QJsonValue());
+            if (!text.isEmpty())
+                f.insert("text", text);
             return QJsonObject{{"result", f}};
         });
         QSignalSpy docs(letter, &Letter::documentChanged);
@@ -74,6 +77,22 @@ class TstLetterView : public QObject {
                 n += qAbs(p.red() - c.red()) + qAbs(p.green() - c.green()) + qAbs(p.blue() - c.blue()) < 60;
             }
         return n;
+    }
+    // A 600 px pane at the reader's zoom 2: 300 CSS px to lay out in.
+    void narrowPane()
+    {
+        view->setSize(QSizeF(600 + 2 * theme->space(18), 600));
+        letter->setZoom(2.0);
+    }
+    static QString png(int w, int h)
+    {
+        QImage img(w, h, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        QByteArray bytes;
+        QBuffer buf(&bytes);
+        buf.open(QIODevice::WriteOnly);
+        img.save(&buf, "PNG");
+        return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(bytes.toBase64());
     }
     void wheel(int angle, Qt::KeyboardModifiers mods)
     {
@@ -264,6 +283,56 @@ private Q_SLOTS:
         QVERIFY(letter->document()->documentWidth() > 1200);
         QCOMPARE(letter->documentZoom(), 2.0);   // cut on the right, as before, rather than shrunk to dust
     }
+    void long_words_wrap_rather_than_shrink_the_letter()   // a 90-character URL or word breaks into pieces
+    {
+        narrowPane();
+        const QString url = QStringLiteral("https://mail.example.org/track/click?user=") + QString(48, QLatin1Char('x'));
+        const QString word = QStringLiteral("abcdefghij").repeated(9);
+        QCOMPARE(url.size(), 90);
+        const QList<QPair<QString, QString>> letters = {
+            {QStringLiteral("<p>Read: %1</p>").arg(url), {}},
+            {QStringLiteral("<p>%1</p>").arg(word), {}},
+            {{}, QStringLiteral("Read: %1\n%2").arg(url, word)},   // renderSource's <pre>
+        };
+        for (const auto &[html, text] : letters) {
+            letter->clear();
+            open(html, text);
+            QVERIFY2(letter->document()->documentWidth() <= 300, qPrintable(html + text));
+            QCOMPARE(letter->documentZoom(), 2.0);
+        }
+    }
+    void relative_overflow_fits_after_the_second_pass()   // width:100% plus padding and border, laid out again
+    {
+        narrowPane();
+        open(QStringLiteral("<div style=\"width:100%;padding:0 40px;border:4px solid #888\">As wide as its block, "
+                            "and its padding and border on top.</div>"));
+        const qreal z = letter->documentZoom();
+        QVERIFY2(z < 2.0, qPrintable(QString::number(z)));
+        QVERIFY2(letter->document()->documentWidth() * z <= 600,
+                 qPrintable(QString::number(letter->document()->documentWidth() * z)));
+    }
+    void unsized_wide_image_fits_itself()   // W42: it shrinks, not the letter
+    {
+        narrowPane();
+        open(QStringLiteral("<p>Look:</p><img src=\"%1\">").arg(png(1000, 50)));
+        QCOMPARE(letter->documentZoom(), 2.0);
+        QRect img = letter->document()->boxes("img").value(0);
+        QVERIFY2(img.width() > 200 && img.right() <= 300, qPrintable(QString::number(img.width())));
+        QVERIFY2(qAbs(img.height() - img.width() / 20) <= 1, qPrintable(QString::number(img.height())));
+
+        letter->clear();   // sized by its attributes: the aspect is theirs, the letter fits instead
+        open(QStringLiteral("<img src=\"%1\" width=\"1000\" height=\"50\">").arg(png(1000, 50)));
+        img = letter->document()->boxes("img").value(0);
+        QCOMPARE(img.size(), QSize(1000, 50));
+        QVERIFY(letter->documentZoom() < 1.0);
+
+        letter->clear();   // in a table cell of no set width
+        open(QStringLiteral("<table><tr><td><img src=\"%1\"></td><td>text</td></tr></table>").arg(png(1000, 50)));
+        img = letter->document()->boxes("img").value(0);
+        QVERIFY2(img.width() > 100 && img.height() > 0, qPrintable(QString::number(img.width())));
+        QVERIFY2(letter->document()->documentWidth() * letter->documentZoom() <= 600,
+                 qPrintable(QString::number(letter->document()->documentWidth())));
+    }
     void zoom_keeps_the_place_in_the_letter()
     {
         open(QStringLiteral("<div style=\"height:3000px\">x</div>"));
@@ -303,6 +372,8 @@ private Q_SLOTS:
         wheel(-120, Qt::NoModifier);   // a plain wheel scrolls
         QVERIFY(view->scrollY() > 0);
         QCOMPARE(letter->zoom(), 1.0);
+        // saved while this test's config is set: the Letter dies after it, in cleanup()
+        QTRY_VERIFY(QFile::exists(config.filePath("omarchy-mail/window.json")));
     }
     void rerender_keeps_scroll()
     {
