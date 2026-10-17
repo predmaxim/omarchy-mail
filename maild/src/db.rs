@@ -79,7 +79,7 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, subject, from_text, to_text, body) VALUES ('delete', old.id, old.subject,
     old.from_name || ' ' || old.from_addr, old.to_json, CASE WHEN old.text <> '' THEN old.text ELSE mail_strip(old.html) END);
 END;
-CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF subject, from_name, from_addr, to_json, text, html ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, subject, from_text, to_text, body) VALUES ('delete', old.id, old.subject,
     old.from_name || ' ' || old.from_addr, old.to_json, CASE WHEN old.text <> '' THEN old.text ELSE mail_strip(old.html) END);
   INSERT INTO messages_fts(rowid, subject, from_text, to_text, body) VALUES (new.id, new.subject,
@@ -197,11 +197,13 @@ impl Db {
         }
         if q.unread_only { conds.push("m.seen = 0".into()); }
         let wh = if conds.is_empty() { String::new() } else { format!("WHERE {}", conds.join(" AND ")) };
-        let mut out = vec![];
-        if q.role == Some(Role::Sent) && q.offset == 0 && !q.unread_only { out = self.queued(q.account.as_deref())?; }
-        let limit = if q.limit == 0 { u32::MAX } else { q.limit } as i64;
-        args.push((limit - out.len() as i64).max(0).into());
-        args.push((q.offset as i64).into());
+        // Queued outbox rows form a virtual prefix of the Sent list: rows [0, n) are outbox.
+        let queued = if q.role == Some(Role::Sent) && !q.unread_only { self.queued(q.account.as_deref())? } else { vec![] };
+        let n = queued.len() as i64;
+        let (offset, limit) = (q.offset as i64, if q.limit == 0 { u32::MAX } else { q.limit } as i64);
+        let mut out: Vec<Summary> = queued.into_iter().skip(offset.min(n) as usize).take(limit as usize).collect();
+        args.push((limit - out.len() as i64).into());
+        args.push((offset - n).max(0).into());
         let sql = format!("SELECT {SUMMARY_COLS} {SUMMARY_FROM} {wh} ORDER BY m.date DESC, m.id DESC LIMIT ? OFFSET ?");
         let mut st = self.c.prepare(&sql).map_err(e)?;
         let rows = st.query_map(params_from_iter(args), summary).map_err(e)?;
@@ -397,6 +399,31 @@ mod tests {
         assert_eq!(l.len(), 2);
         assert!(l[0].queued && l[0].id < 0 && l[0].subject == "queued one");
         assert!(!l[1].queued);
+    }
+
+    #[test]
+    fn outbox_pagination() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "Sent", Role::Sent).unwrap();
+        for i in 1..=2 { db.c.execute("INSERT INTO outbox(account, raw, subject, date) VALUES ('a@x', x'00', ?1, 99)", [format!("q{i}")]).unwrap(); }
+        for i in 1..=5 { db.insert_message(f, i, true, false, 1, &p(&format!("m{i}"), 100 - i as i64, "t"), true).unwrap(); }
+        let page = |o| db.list(&ListQuery { role: Some(Role::Sent), offset: o, limit: 3, ..Default::default() }).unwrap()
+            .into_iter().map(|s| s.subject).collect::<Vec<_>>();
+        assert_eq!(page(0), ["q2", "q1", "m1"]);
+        assert_eq!(page(3), ["m2", "m3", "m4"]);
+        assert_eq!(page(6), ["m5"]);
+    }
+
+    #[test]
+    fn fts_follows_updates() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let id = db.insert_message(f, 1, false, false, 1, &p("s", 5, "alpha"), true).unwrap();
+        db.set_body(id, "beta", None, "beta").unwrap();
+        assert!(db.search("alpha", 10).unwrap().is_empty());
+        assert_eq!(db.search("beta", 10).unwrap().len(), 1);
+        db.set_flags(f, 1, true, true).unwrap();
+        assert_eq!(db.search("beta", 10).unwrap().len(), 1);
     }
 
     #[test]
