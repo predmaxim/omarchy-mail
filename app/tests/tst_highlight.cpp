@@ -36,6 +36,11 @@ private Q_SLOTS:
         const QString s = "<!-- amp --><title>amp</title><script>var amp;</script>";
         QCOMPARE(highlight::html(s, {"amp"}, mark), s);
     }
+    void html_word_right_after_a_tag()
+    {
+        QCOMPARE(highlight::html(QStringLiteral("<td>Счёт</td><td>Ozon</td>"), {"ozon"}, mark),
+                 "<td>Счёт</td><td>" + open + "Ozon</span></td>");
+    }
     void html_case_insensitive()
     {
         QCOMPARE(highlight::html(QStringLiteral("ДОГОВОР"), {"догов"}, mark), open + "ДОГОВ</span>ОР");

@@ -72,6 +72,7 @@ QString html(const QString &h, const QStringList &ws, const QColor &mark)
             }
             out += QStringView(h).mid(i, end - i);
             i = end;
+            prev = QLatin1Char(' ');   // a tag ends a word: `</td><td>Ozon`
             continue;
         }
         if (c == QLatin1Char('&')) {

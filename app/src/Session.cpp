@@ -31,7 +31,8 @@ void Session::load(QQmlApplicationEngine &engine)
     // theme.space() is a call, so QML can't see it depend on the base size: a new base size sets `theme` again,
     // and every binding that reads it is evaluated anew (the font tokens are properties and follow by themselves)
     QObject::connect(&theme, &Theme::changed, &engine, [this, c, base = theme.baseSize()]() mutable {
-        if (std::exchange(base, theme.baseSize()) != base)
+        const int old = std::exchange(base, theme.baseSize());
+        if (old != base)
             c->setContextProperty(QStringLiteral("theme"), &theme);
     });
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
