@@ -2,6 +2,8 @@
 #include "Launch.h"
 #include <QGuiApplication>
 #include <QProcessEnvironment>
+#include <QtQml>
+#include "LetterView.h"
 
 static QProcessEnvironment launchEnv;   // for child processes (setProcessEnvironment)
 
@@ -11,6 +13,7 @@ int main(int argc, char *argv[])
     qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
     om::launch::setEnvironment(launchEnv);
     QGuiApplication app(argc, argv);
+    qmlRegisterType<om::LetterView>("OmMail", 1, 0, "LetterView");
     QGuiApplication::setDesktopFileName(QStringLiteral("omarchy-mail"));
     QString openId;
     const QStringList args = app.arguments();

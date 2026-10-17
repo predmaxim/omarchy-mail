@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..a0b9b9b 100644
+index 6fa2c82..e9530c6 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -307,9 +307,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
@@ -59,7 +59,7 @@ index 6fa2c82..a0b9b9b 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
      d->buildIndex();
-@@ -1589,6 +1590,22 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,6 +1590,28 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -73,9 +73,15 @@ index 6fa2c82..a0b9b9b 100644
 +    QList<Link> result;
 +    if (!d->m_document)
 +        return result;
++    // an inline <a> has no box of its own: its rect is the union of its text and children
++    const std::function<QRect(const litehtml::element::ptr &)> placement = [&](const litehtml::element::ptr &e) {
++        QRect r = toQRect(e->get_placement());
++        for (const litehtml::element::ptr &child : e->children())
++            r = r.united(placement(child));
++        return r;
++    };
 +    for (const litehtml::element::ptr &a : d->m_document->root()->select_all("a[href]"))
-+        result.append({d->resolveUrl(QString::fromUtf8(a->get_attr("href")), d->m_baseUrl),
-+                       toQRect(a->get_placement())});
++        result.append({d->resolveUrl(QString::fromUtf8(a->get_attr("href")), d->m_baseUrl), placement(a)});
 +    return result;
 +}
 +
