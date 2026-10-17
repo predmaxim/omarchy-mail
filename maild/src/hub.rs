@@ -41,15 +41,18 @@ impl Hub {
         lock(&self.subs).retain(|(tx, _)| tx.send(line.clone()).is_ok());
     }
 
+    /// Receivers must ignore empty strings: `has_window` sends them to find dead subscribers.
     pub fn subscribe(&self, window: bool) -> Receiver<String> {
         let (tx, rx) = channel();
         lock(&self.subs).push((tx, window));
         rx
     }
 
-    /// Counts a window that went away since the last `emit`.
+    /// Prunes dead subscribers first (an empty probe string), so a closed window is not counted.
     pub fn has_window(&self) -> bool {
-        lock(&self.subs).iter().any(|(_, w)| *w)
+        let mut subs = lock(&self.subs);
+        subs.retain(|(tx, _)| tx.send(String::new()).is_ok());
+        subs.iter().any(|(_, w)| *w)
     }
 
     pub fn add_handle(&self, h: Handle) {
@@ -100,12 +103,24 @@ mod tests {
         let hub = Hub::default();
         let rx = hub.subscribe(true);
         assert!(hub.has_window());
+        assert_eq!(rx.recv().unwrap(), ""); // the probe
         hub.emit(Event::Open { id: 1 });
         assert_eq!(rx.recv().unwrap(), r#"{"event":"open","id":1}"#);
         drop(rx);
         hub.emit(Event::Open { id: 2 });
         assert_eq!(lock(&hub.subs).len(), 0);
         assert!(!hub.has_window());
+    }
+
+    #[test]
+    fn has_window_prunes_without_emit() {
+        let hub = Hub::default();
+        let rx = hub.subscribe(true);
+        assert!(hub.has_window());
+        assert_eq!(rx.try_recv().unwrap(), "");
+        drop(rx);
+        assert!(!hub.has_window());
+        assert_eq!(lock(&hub.subs).len(), 0);
     }
 
     #[test]

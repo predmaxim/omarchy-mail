@@ -5,7 +5,7 @@ use crate::config::{Account, Paths};
 use crate::db::{Db, Role};
 use crate::hub::{Event, Hub, lock};
 use crate::imap::{self, AUTH_FAILED, Conn, KillSlot};
-use crate::{secret, sync};
+use crate::{notify, secret, sync};
 use serde::Serialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -322,6 +322,12 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
             Job::Actions | Job::Search { .. } | Job::Append { .. } => continue,
         };
         auth_failed = matches!(&r, Err(e) if e.starts_with(AUTH_FAILED));
+        if r.is_ok() {
+            // Folders are re-read: the sync has just moved `notified_uid` and `last_uid`.
+            if let Some(inbox) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == Role::Inbox)) {
+                notify::announce(&db, &sh.hub, &inbox);
+            }
+        }
         match r {
             Ok(ids) if always || !ids.is_empty() => sh.hub.emit(Event::Changed { folders: true, ids }),
             Ok(_) => {}

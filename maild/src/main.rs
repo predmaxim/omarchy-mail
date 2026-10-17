@@ -7,6 +7,7 @@ mod hub;
 mod i18n;
 mod imap;
 mod mime;
+mod notify;
 mod secret;
 mod sync;
 mod wake;
