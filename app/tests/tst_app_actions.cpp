@@ -2,7 +2,9 @@
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QFileInfo>
 #include <QImage>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTimer>
 
@@ -618,6 +620,51 @@ private Q_SLOTS:
         QCOMPARE(list->cursor(), 0);
         QCOMPARE(nav->row(), int(Row::List));
         QCOMPARE(left.size(), 2);
+    }
+
+    void letter_zoom_keys()
+    {
+        QTemporaryDir config(scratch());   // not the shared test home
+        const QByteArray old = qgetenv("XDG_CONFIG_HOME");
+        const auto restore = qScopeGuard([old] { qputenv("XDG_CONFIG_HOME", old); });
+        qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
+        const QString file = config.filePath("omarchy-mail/window.json");
+        const auto saved = [file] {
+            QFile f(file);
+            return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+        };
+        const Qt::KeyboardModifiers ctrl = Qt::ControlModifier;
+        bootList();
+        QCOMPARE(letter->zoom(), 1.0);   // the harness reads no GNOME factor
+        QVERIFY(press(Qt::Key_Equal, 21, ctrl));
+        QCOMPARE(letter->zoom(), 1.1);
+        QCOMPARE(app->note(), QString("Letter zoom 110%"));
+        QCOMPARE(saved().value("letterZoom").toDouble(), 1.1);
+        QCOMPARE(QFileInfo(file).permissions() & 0x7777,
+                 QFile::Permissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser | QFile::WriteUser));
+        QCOMPARE(QFileInfo(config.filePath("omarchy-mail")).permissions() & 0x0077, QFile::Permissions());
+        QVERIFY(press(Qt::Key_Minus, 20, ctrl, "search"));   // from the search field too
+        QCOMPARE(letter->zoom(), 1.0);
+        QVERIFY(press(Qt::Key_Minus, 82, ctrl | Qt::KeypadModifier));
+        QCOMPARE(app->note(), QString("Letter zoom 91%"));
+        for (int i = 0; i < 30; ++i)
+            press(Qt::Key_Plus, 21, ctrl | Qt::ShiftModifier, {}, i > 0);   // held: it keeps zooming
+        QCOMPARE(letter->zoom(), 3.0);
+        QCOMPARE(app->note(), QString("Letter zoom 300%"));
+        QVERIFY(press(Qt::Key_0, 19, ctrl));
+        QCOMPARE(letter->zoom(), 1.0);   // back to the default, which follows GNOME again
+        QVERIFY(QFileInfo::exists(file));
+        QVERIFY(!saved().contains("letterZoom"));
+        QCOMPARE(app->note(), QString("Letter zoom 100%"));
+
+        QVERIFY(press(Qt::Key_C, 54));   // the form: no letter on the screen
+        QVERIFY(compose->isOpen());
+        QVERIFY(!press(Qt::Key_Equal, 21, ctrl, "compose"));
+        QVERIFY(!press(Qt::Key_Equal, 21, ctrl));
+        QVERIFY(press(Qt::Key_Escape, 9, Qt::NoModifier, "compose"));
+        app->openSettings();   // the mailboxes page
+        QVERIFY(!press(Qt::Key_Equal, 21, ctrl));
+        QCOMPARE(letter->zoom(), 1.0);
     }
 
     void act_error_brings_rows_back()

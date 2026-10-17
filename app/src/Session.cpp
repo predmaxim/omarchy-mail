@@ -1,4 +1,5 @@
 #include "Session.h"
+#include "Launch.h"
 #include "LetterView.h"
 #include <QFont>
 #include <QGuiApplication>
@@ -13,6 +14,7 @@ Session::Session(const QString &socketPath, const QString &draftsDir, const QStr
     : client(socketPath), images(imageDir), letter(&client, &images, &renderer, &theme), compose(draftsDir),
       app(&client, &list, &letter, &compose, &nav, &theme)
 {
+    letter.loadZoom(launch::textScale());   // GNOME's factor: the size Geary and GTK show text at
 }
 
 void Session::load(QQmlApplicationEngine &engine)

@@ -93,6 +93,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | Space | preview the attachment in `omarchy-quicklook`; scroll the message |
 | `/` | search; typing goes into the field |
 | Ctrl+Z | undo the last action |
+| Ctrl + / Ctrl − / Ctrl 0 | letter zoom: larger / smaller / back to GNOME's text size (Ctrl+wheel too); the list keeps Omarchy's size; remembered in `~/.config/omarchy-mail/window.json` |
 | Esc | one step back: clear the selection, leave search / form / settings, then close the window |
 | Ctrl+Enter, Ctrl+V, Ctrl+O | in the form: send, paste a screenshot, attach a file |
 | Ctrl+D | in the form: discard the draft; press twice |

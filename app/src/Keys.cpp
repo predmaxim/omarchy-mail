@@ -42,6 +42,14 @@ KeyPress mapKey(int key, quint32 sc, Qt::KeyboardModifiers mods)
             return {KeyAction::Send, true, shift};
         if (key == Qt::Key_Space)
             return {KeyAction::Mark, true, shift};
+        // the letter's zoom: = or + (Shift, the keypad), -, 0; on a layout without these signs, their keys
+        const quint32 at = key < 0x80 ? 0 : sc;
+        if (key == Qt::Key_Equal || key == Qt::Key_Plus || at == 21)
+            return {KeyAction::ZoomIn, true, shift};
+        if (key == Qt::Key_Minus || at == 20)
+            return {KeyAction::ZoomOut, true, shift};
+        if (key == Qt::Key_0 || at == 19)
+            return {KeyAction::ZoomReset, true, shift};
     }
     switch (key) {
     case Qt::Key_Up: return k(KeyAction::Up);

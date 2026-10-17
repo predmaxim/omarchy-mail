@@ -1,6 +1,6 @@
 #pragma once
-// The open letter, painted from the litehtml document with the theme's colours; scrolling,
-// selection, link cursor and keyboard link navigation.
+// The open letter, painted from the litehtml document with the theme's colours and scaled by its zoom;
+// scrolling, selection, link cursor and keyboard link navigation. scrollY and contentHeight are view px.
 #include "Letter.h"
 #include "Theme.h"
 #include <QQuickPaintedItem>
@@ -58,6 +58,7 @@ protected:
 
 private:
     int margin() const;
+    QTransform transform(int *top) const;   // the document's client coordinates -> the view; top: its scroll
     void documentChanged(bool sameLetter);
     void applyFilter();
     void mouse(const QPointF &pos, int kind, Qt::MouseButton button);
@@ -67,6 +68,8 @@ private:
     qreal m_scrollY = 0;
     int m_contentHeight = 0;
     int m_currentLink = -1;
+    qreal m_zoom = 1;      // the document's
+    int m_wheelZoom = 0;   // Ctrl+wheel: the part of a notch not zoomed yet
 };
 
 } // namespace om

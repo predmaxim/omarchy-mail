@@ -21,6 +21,7 @@ class TstUi : public QObject {
     Session *s = nullptr;
     QQmlApplicationEngine *engine = nullptr;
     QQuickWindow *win = nullptr;
+    QTemporaryDir *bin = nullptr;   // gsettings: GNOME's text-scaling-factor is $OM_TEST_TEXT_SCALE, else 1
 
     QQuickItem *item(const char *name) const
     {
@@ -64,7 +65,26 @@ class TstUi : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(item("letterView")->property("contentHeight").toInt() > 0, 10000);
     }
 
+    // XDG_CONFIG_HOME in the test's own dir until the scope ends: window.json and shell.toml stay out of the shared home.
+    [[nodiscard]] auto ownConfig()
+    {
+        const QByteArray config = qgetenv("XDG_CONFIG_HOME");
+        qputenv("XDG_CONFIG_HOME", dir->filePath("config").toUtf8());
+        return qScopeGuard([config] { qputenv("XDG_CONFIG_HOME", config); });
+    }
+
 private Q_SLOTS:
+    void initTestCase()
+    {
+        bin = new QTemporaryDir(scratch());
+        QFile f(bin->filePath("gsettings"));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("#!/bin/sh\necho \"${OM_TEST_TEXT_SCALE:-1}\"\n");
+        f.close();
+        f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        qputenv("PATH", bin->path().toUtf8() + ':' + qgetenv("PATH"));
+    }
+    void cleanupTestCase() { delete bin; }
     void init()
     {
         QTest::failOnWarning();
@@ -567,6 +587,86 @@ private Q_SLOTS:
         s->theme.reload();
         QVERIFY(s->theme.space(3) > before);
         QCOMPARE(bar->width(), qreal(s->theme.space(3)));
+    }
+
+    void letter_zoom_follows_gnome_and_is_remembered()
+    {
+        const auto config = ownConfig();
+        const QByteArray path = qgetenv("PATH");
+        const auto restore = qScopeGuard([path] {
+            qputenv("PATH", path);
+            qunsetenv("OM_TEST_TEXT_SCALE");
+        });
+        const auto zoom = [this] { return Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img")).letter.zoom(); };
+        qputenv("OM_TEST_TEXT_SCALE", "1.5");
+        QCOMPARE(zoom(), 1.5);   // GNOME's text-scaling-factor
+        qputenv("OM_TEST_TEXT_SCALE", "nonsense");
+        QCOMPARE(zoom(), 1.0);
+        qputenv("PATH", dir->filePath("nowhere").toUtf8());   // no gsettings at all
+        QCOMPARE(zoom(), 1.0);
+        qputenv("PATH", path);
+        qputenv("OM_TEST_TEXT_SCALE", "1.5");
+        Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img")).letter.zoomBy(1);
+        QCOMPARE(zoom(), 1.65);   // the reader's own, over GNOME's
+        Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img")).letter.zoomBy(0);
+        QCOMPARE(zoom(), 1.5);   // follows GNOME again
+    }
+    void ctrl_plus_minus_zero_zoom_the_letter_only()
+    {
+        const auto config = ownConfig();
+        start();
+        letterShown();
+        QQuickItem *view = item("letterView"), *row = itemAt(item("mailList"), 0);
+        const int height = view->property("contentHeight").toInt();
+        const qreal rowHeight = row->height();
+        QSignalSpy docs(&s->letter, &Letter::documentChanged);
+        QTest::keyClick(win, Qt::Key_Equal, Qt::ControlModifier);
+        QCOMPARE(s->letter.zoom(), 1.1);
+        QTRY_VERIFY_WITH_TIMEOUT(view->property("contentHeight").toInt() > height, 10000);
+        QCOMPARE(row->height(), rowHeight);   // the list keeps Omarchy's size
+        QTest::keyClick(win, Qt::Key_Slash);
+        QVERIFY(item("searchField")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Minus, Qt::ControlModifier);   // from the search field too
+        QCOMPARE(s->letter.zoom(), 1.0);
+        QCOMPARE(item("searchField")->property("text").toString(), QString());
+        QTest::keyClick(win, Qt::Key_Escape);
+        QTest::keyClick(win, Qt::Key_Equal, Qt::ControlModifier);
+        QTest::keyClick(win, Qt::Key_0, Qt::ControlModifier);
+        QCOMPARE(s->letter.zoom(), 1.0);
+        QTest::keyClick(win, Qt::Key_C);
+        QTRY_VERIFY(item("composeTo")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Equal, Qt::ControlModifier);   // the form shows no letter
+        QCOMPARE(s->letter.zoom(), 1.0);
+    }
+
+    void letter_zoom_shots()   // OM_SHOT_ZOOM=<prefix>: <prefix>-100.png and <prefix>-136.png, a made-up letter
+    {
+        const QString shot = qEnvironmentVariable("OM_SHOT_ZOOM");
+        if (shot.isEmpty())
+            QSKIP("OM_SHOT_ZOOM not set");
+        h.d->on("message", [](const QJsonObject &r) {
+            QJsonObject f = letter(r.value("message").toInteger());
+            f.insert("html", QStringLiteral(
+                "<h2>October report</h2><p>Hello! The summary for <b>October</b> is below, the details are in "
+                "<a href=\"https://example.org/report\">the full report</a>.</p>"
+                "<table width=\"600\" align=\"center\" cellpadding=\"8\" style=\"border:1px solid #888\"><tr>"
+                "<td style=\"font-size:8pt\">Payslip line, 8pt: salary 12 345,00 ₽, tax 1 605,00 ₽</td>"
+                "<td width=\"40\"><img src=\"cid:logo@x\" width=\"40\" height=\"40\"></td></tr></table>"
+                "<p style=\"font-size:14px\">A paragraph set in 14px, as newsletters do.</p>"
+                "<blockquote>A short quote, two lines<br>of the earlier letter</blockquote>"));
+            return QJsonObject{{"result", f}};
+        });
+        start();
+        letterShown();
+        const auto save = [this](const QString &path) {
+            QTest::qWait(200);   // the attachments' and the letter's last paint
+            QVERIFY(win->grabWindow().save(path));
+        };
+        save(shot + "-100.png");
+        QSignalSpy docs(&s->letter, &Letter::documentChanged);
+        s->letter.setZoom(1.3636);   // GNOME's text-scaling-factor on the author's machine
+        QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 1, 10000);
+        save(shot + "-136.png");
     }
 
     // ---- the mailboxes page ----

@@ -7,13 +7,18 @@
 #include "Launch.h"
 #include "Theme.h"
 #include <QClipboard>
+#include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTextDocumentFragment>
 #include <QtConcurrentRun>
+#include <cmath>
 
 namespace om {
 
@@ -239,6 +244,58 @@ void Letter::setWidth(int px)
         layout();
 }
 
+// $XDG_CONFIG_HOME/omarchy-mail/window.json: the window's own settings.
+static QString windowFile()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/omarchy-mail/window.json");
+}
+
+static QJsonObject readWindowFile()
+{
+    QFile f(windowFile());
+    return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+}
+
+void Letter::setZoom(qreal z)
+{
+    z = qBound(0.5, z, 3.0);
+    if (qFuzzyCompare(z, m_zoom))
+        return;
+    m_zoom = z;
+    if (m_doc)
+        m_widthTimer.start();
+    else
+        layout();
+}
+
+void Letter::loadZoom(qreal gnome)
+{
+    m_gnomeZoom = gnome;
+    const double saved = readWindowFile().value(QStringLiteral("letterZoom")).toDouble();
+    setZoom(saved > 0 ? saved : gnome);
+}
+
+void Letter::zoomBy(int steps)
+{
+    setZoom(steps ? m_zoom * std::pow(1.1, steps) : m_gnomeZoom);
+    QJsonObject o = readWindowFile();
+    if (steps)
+        o.insert(QStringLiteral("letterZoom"), m_zoom);
+    else
+        o.remove(QStringLiteral("letterZoom"));
+    const QString path = windowFile(), dir = QFileInfo(path).path();
+    QDir().mkpath(dir);
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    QSaveFile f(path);
+    f.setDirectWriteFallback(false);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        f.write(QJsonDocument(o).toJson());
+        f.commit();   // a zoom that isn't saved is still the zoom of this window
+    }
+    Q_EMIT note(t("Letter zoom %1%").arg(qRound(m_zoom * 100)), false);
+}
+
 void Letter::setWords(const QStringList &words)
 {
     if (words == m_words)
@@ -258,7 +315,9 @@ void Letter::layout()
     for (auto it = files.begin(); it != files.end(); ++it)
         job.inlinePaths.insert(it.key(), it.value().toString());
     job.imageDir = m_images->dir();
-    job.width = m_width;   // viewportHeight stays 0: a viewport would cut html,body{height:100%;overflow:hidden}
+    job.width = qMax(1, int(m_width / m_zoom));   // CSS px, for @media too; viewportHeight stays 0: a viewport
+                                                  // would cut html,body{height:100%;overflow:hidden}
+    m_jobZoom = m_zoom;
     job.font = QFont(QStringLiteral("sans-serif"));
     job.font.setPixelSize(m_theme->fontBody());
     job.selection = m_theme->selection();
@@ -278,6 +337,7 @@ void Letter::rendered(const Rendered &r)
         return;
     const bool same = bool(m_doc);
     m_doc = r.doc;
+    m_docZoom = m_jobZoom;   // only the latest job arrives
     m_dark = r.dark;
     m_blank = r.blank;
     m_links.clear();

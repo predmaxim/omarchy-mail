@@ -23,6 +23,13 @@ bool App::key(int key, quint32 nativeScanCode, int modifiers, bool autoRepeat, c
     const KeyPress k = mapKey(key, nativeScanCode, Qt::KeyboardModifiers::fromInt(modifiers));
     if (k.action == KeyAction::None)
         return false;
+    if (k.action == KeyAction::ZoomIn || k.action == KeyAction::ZoomOut || k.action == KeyAction::ZoomReset) {
+        // the window root and the search field; not the form or the mailboxes page, where no letter is shown
+        if (focus == QLatin1String("compose") || m_page != QLatin1String("main") || m_compose->isOpen())
+            return false;
+        m_letter->zoomBy(k.action == KeyAction::ZoomIn ? 1 : k.action == KeyAction::ZoomOut ? -1 : 0);
+        return true;
+    }
     if (focus == QLatin1String("compose"))
         return composeKey(k, autoRepeat);
     if (focus == QLatin1String("search"))

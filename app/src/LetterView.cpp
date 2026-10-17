@@ -9,6 +9,8 @@
 #include <QPainter>
 #include <QPointer>
 #include <QQuickWindow>
+#include <cmath>
+#include <utility>
 
 namespace om {
 
@@ -77,7 +79,8 @@ void LetterView::documentChanged(bool sameLetter)
         });
         applyFilter();
     }
-    const int h = doc ? doc->documentHeight() : 0;
+    const qreal zoomed = std::exchange(m_zoom, m_letter ? m_letter->documentZoom() : 1);
+    const int was = m_contentHeight, h = doc ? int(std::ceil(doc->documentHeight() * m_zoom)) : 0;
     if (h != m_contentHeight) {
         m_contentHeight = h;
         Q_EMIT contentHeightChanged();
@@ -89,6 +92,8 @@ void LetterView::documentChanged(bool sameLetter)
         }
         m_scrollY = 0;
         Q_EMIT scrollYChanged();
+    } else if (zoomed != m_zoom && was > 0) {
+        setScrollY(m_scrollY * h / was);   // a new zoom: the same place in the letter
     } else {
         setScrollY(m_scrollY);   // the document may have become shorter
     }
@@ -107,13 +112,13 @@ void LetterView::setScrollY(qreal y)
 
 void LetterView::scrollLines(int n)
 {
-    setScrollY(m_scrollY + n * 3 * (m_theme ? m_theme->fontBody() : 16));
+    setScrollY(m_scrollY + n * 3 * (m_theme ? m_theme->fontBody() : 16) * m_zoom);
 }
 
 void LetterView::scrollPages(int n)
 {
-    const int body = m_theme ? m_theme->fontBody() : 16;
-    setScrollY(m_scrollY + n * (height() - 2 * body));
+    const qreal line = (m_theme ? m_theme->fontBody() : 16) * m_zoom;
+    setScrollY(m_scrollY + n * (height() - 2 * line));
 }
 
 void LetterView::setCurrentLink(int i)
@@ -123,11 +128,11 @@ void LetterView::setCurrentLink(int i)
         i = -1;
     if (i >= 0) {
         const QRect r = links.at(i).rect;
-        const int m = margin();
-        if (r.top() - m < m_scrollY)
-            setScrollY(r.top() - m);
-        else if (r.bottom() + m > m_scrollY + height())
-            setScrollY(r.bottom() + m - height());
+        const qreal m = margin(), top = r.top() * m_zoom, bottom = r.bottom() * m_zoom;
+        if (top - m < m_scrollY)
+            setScrollY(top - m);
+        else if (bottom + m > m_scrollY + height())
+            setScrollY(bottom + m - height());
     }
     if (i == m_currentLink)
         return;
@@ -155,19 +160,28 @@ void LetterView::openCurrentLink()
         m_letter->activateLink(links.at(m_currentLink).url);
 }
 
+// Scaled by the zoom after the margin; the document scrolls itself by whole CSS px, the rest is a whole
+// view pixel shift.
+QTransform LetterView::transform(int *top) const
+{
+    *top = int(m_scrollY / m_zoom);
+    return QTransform::fromTranslate(margin(), qRound(*top * m_zoom - m_scrollY)).scale(m_zoom, m_zoom);
+}
+
 void LetterView::paint(QPainter *p)
 {
     p->fillRect(QRectF(0, 0, width(), height()), m_theme ? m_theme->background() : QColor(Qt::black));
     const auto doc = m_letter ? m_letter->document() : nullptr;
     if (!doc || !doc->hasDocument())
         return;
-    const int m = margin(), y = int(m_scrollY);
+    int top = 0;
+    const QTransform t = transform(&top);
     p->save();
-    p->translate(m, 0);
+    p->setTransform(t, true);
     p->setRenderHint(QPainter::SmoothPixmapTransform, true);
     p->setRenderHint(QPainter::Antialiasing, true);
-    doc->setScrollPosition(QPoint(0, y));
-    doc->draw(p, QRect(0, 0, int(width()) - m, int(height())));
+    doc->setScrollPosition(QPoint(0, top));
+    doc->draw(p, QRect(0, 0, int(std::ceil((width() - margin()) / m_zoom)), int(std::ceil(height() / m_zoom)) + 1));
     p->restore();
 
     const auto links = m_letter->links();
@@ -175,7 +189,8 @@ void LetterView::paint(QPainter *p)
         p->setRenderHint(QPainter::Antialiasing, true);
         p->setPen(QPen(m_theme->accent(), 2));
         p->setBrush(Qt::NoBrush);
-        p->drawRoundedRect(QRectF(links.at(m_currentLink).rect.translated(m, -y)), m_theme->space(4), m_theme->space(4));
+        p->drawRoundedRect(t.mapRect(QRectF(links.at(m_currentLink).rect.translated(0, -top))), m_theme->space(4),
+                           m_theme->space(4));
     }
 }
 
@@ -185,9 +200,10 @@ void LetterView::mouse(const QPointF &pos, int kind, Qt::MouseButton button)
     const auto doc = m_letter ? m_letter->document() : nullptr;
     if (!doc || !doc->hasDocument())
         return;
-    const QPoint view(int(pos.x()) - margin(), int(pos.y()));
-    const QPoint docPos = view + QPoint(0, int(m_scrollY));
-    doc->setScrollPosition(QPoint(0, int(m_scrollY)));
+    int top = 0;
+    const QPoint view = transform(&top).inverted().map(pos).toPoint();   // the document's client coordinates
+    const QPoint docPos = view + QPoint(0, top);
+    doc->setScrollPosition(QPoint(0, top));
     if (kind == 0)
         doc->mousePressEvent(docPos, view, button);
     else if (kind == 1)
@@ -208,8 +224,15 @@ void LetterView::hoverMoveEvent(QHoverEvent *e) { mouse(e->position(), 1, Qt::No
 
 void LetterView::wheelEvent(QWheelEvent *e)
 {
+    if (e->modifiers() & Qt::ControlModifier) {   // zoom, a step a notch (a touchpad sends parts of one)
+        m_wheelZoom += e->angleDelta().y();
+        for (; m_letter && qAbs(m_wheelZoom) >= 120; m_wheelZoom -= m_wheelZoom > 0 ? 120 : -120)
+            m_letter->zoomBy(m_wheelZoom > 0 ? 1 : -1);
+        return;
+    }
     const QPoint px = e->pixelDelta();
-    setScrollY(m_scrollY - (px.isNull() ? e->angleDelta().y() / 120.0 * 3 * (m_theme ? m_theme->fontBody() : 16) : px.y()));
+    const qreal line = (m_theme ? m_theme->fontBody() : 16) * m_zoom;
+    setScrollY(m_scrollY - (px.isNull() ? e->angleDelta().y() / 120.0 * 3 * line : px.y()));
 }
 
 void LetterView::geometryChange(const QRectF &now, const QRectF &old)

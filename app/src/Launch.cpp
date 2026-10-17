@@ -56,6 +56,24 @@ void preview(const QString &path)
     });
 }
 
+qreal textScale()
+{
+    QProcess p;
+    p.setProcessEnvironment(g_env);
+    p.start(QStringLiteral("gsettings"),
+            {QStringLiteral("get"), QStringLiteral("org.gnome.desktop.interface"), QStringLiteral("text-scaling-factor")});
+    if (!p.waitForFinished(500) || p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        if (p.state() != QProcess::NotRunning) {
+            p.kill();
+            p.waitForFinished(500);
+        }
+        return 1;
+    }
+    bool ok = false;
+    const double v = p.readAllStandardOutput().trimmed().toDouble(&ok);
+    return ok && v > 0 ? qBound(0.5, v, 3.0) : 1.0;
+}
+
 QString saveCopy(const QString &src, const QString &dir)
 {
     const QString name = QFileInfo(src).fileName();

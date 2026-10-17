@@ -81,6 +81,21 @@ private Q_SLOTS:
         QCOMPARE(act(Qt::Key_D, 0, Qt::AltModifier), KeyAction::None);
         QCOMPARE(act(Qt::Key_C, 0, Qt::MetaModifier), KeyAction::None);
     }
+    void zoom_keys()
+    {
+        const Qt::KeyboardModifiers c = Qt::ControlModifier, keypad = c | Qt::KeypadModifier;
+        QCOMPARE(act(Qt::Key_Equal, 21, c), KeyAction::ZoomIn);
+        QCOMPARE(act(Qt::Key_Plus, 21, c | Qt::ShiftModifier), KeyAction::ZoomIn);
+        QCOMPARE(act(Qt::Key_Plus, 86, keypad), KeyAction::ZoomIn);
+        QCOMPARE(act(Qt::Key_Minus, 20, c), KeyAction::ZoomOut);
+        QCOMPARE(act(Qt::Key_Minus, 82, keypad), KeyAction::ZoomOut);
+        QCOMPARE(act(Qt::Key_0, 19, c), KeyAction::ZoomReset);
+        QCOMPARE(act(Qt::Key_0, 90, keypad), KeyAction::ZoomReset);
+        QCOMPARE(act(Qt::Key_Agrave, 19, c), KeyAction::ZoomReset);   // a layout without the sign there: by its key
+        QCOMPARE(act(Qt::Key_Equal, 21), KeyAction::None);
+        QCOMPARE(act(Qt::Key_Minus, 20), KeyAction::None);
+        QCOMPARE(act(Qt::Key_0, 19), KeyAction::None);
+    }
     void delete_key()
     {
         QCOMPARE(act(Qt::Key_Delete), KeyAction::Remove);

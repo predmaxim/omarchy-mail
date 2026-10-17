@@ -7,8 +7,10 @@
 #include "LetterView.h"
 #include "Renderer.h"
 #include "Theme.h"
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QQuickWindow>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -51,6 +53,32 @@ class TstLetterView : public QObject {
         letter->show({{"id", 42}});
         QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 1, 10000);
         QVERIFY(view->contentHeight() > 0);
+    }
+    // Lays the open letter out again at `z` and waits for it.
+    void zoomTo(qreal z)
+    {
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->setZoom(z);
+        QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 1, 10000);
+        QCOMPARE(docs.last().at(0).toBool(), true);
+        QCOMPARE(letter->documentZoom(), z);
+    }
+    // Pixels in `r` within a small distance of `c`.
+    static int near(const QImage &img, const QRect &r, const QColor &c)
+    {
+        int n = 0;
+        for (int y = qMax(0, r.top()); y <= qMin(img.height() - 1, r.bottom()); ++y)
+            for (int x = qMax(0, r.left()); x <= qMin(img.width() - 1, r.right()); ++x) {
+                const QColor p = img.pixelColor(x, y);
+                n += qAbs(p.red() - c.red()) + qAbs(p.green() - c.green()) + qAbs(p.blue() - c.blue()) < 60;
+            }
+        return n;
+    }
+    void wheel(int angle, Qt::KeyboardModifiers mods)
+    {
+        const QPointF at(400, 300);
+        QWheelEvent e(at, win->mapToGlobal(at), QPoint(), QPoint(0, angle), Qt::NoButton, mods, Qt::NoScrollPhase, false);
+        QGuiApplication::sendEvent(win, &e);
     }
 
 private Q_SLOTS:
@@ -157,6 +185,83 @@ private Q_SLOTS:
         QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
         QVERIFY(view->contentHeight() > folded);
         QCOMPARE(view->scrollY(), y);
+    }
+    void zoom_doubles_the_letter()
+    {
+        open(QStringLiteral("<div style=\"height:1000px\">x</div>"));
+        const int h = view->contentHeight();
+        zoomTo(2.0);
+        QVERIFY2(qAbs(view->contentHeight() - 2 * h) <= 2, qPrintable(QStringLiteral("%1 -> %2").arg(h).arg(view->contentHeight())));
+        zoomTo(1.0);
+        QCOMPARE(view->contentHeight(), h);
+    }
+    void zoom_lays_out_at_css_px()   // the layout width, as @media sees it, is the view's width / zoom
+    {
+        open(QStringLiteral("<style>.w{height:100px}@media (max-width:500px){.w{height:2000px}}</style><div class=w>x</div>"));
+        QVERIFY(view->contentHeight() < 500);   // 800 - 2 margins: wider than 500
+        zoomTo(2.0);
+        QVERIFY2(view->contentHeight() > 4000, qPrintable(QString::number(view->contentHeight())));
+    }
+    void zoomed_link_is_clicked_and_ringed_where_painted()
+    {
+        QTemporaryDir dir(scratch());
+        const QString stub = writeStub(dir.path());
+        launch::setProgramForTests(stub);
+        open(QStringLiteral("<div style=\"height:1000px\">x</div><p><a href=\"https://x.org/go\">link text</a></p>"));
+        zoomTo(2.0);
+        view->setCurrentLink(0);   // scrolled into view: the link is at ~2000 px now
+        const QRect r = letter->links().at(0).rect;
+        const qreal y = view->scrollY();
+        QVERIFY(r.top() * 2 >= y);
+        QVERIFY(r.bottom() * 2 <= y + 600);
+        const int m = theme->space(18);
+        const QPoint mid(m + r.center().x() * 2, int(r.center().y() * 2 - y));
+        const QRect edge(mid.x() - 2, int(r.top() * 2 - y) - 3, 5, 6);   // the ring's top: ×2 from the document box
+        QTRY_VERIFY_WITH_TIMEOUT(near(win->grabWindow(), edge, theme->accent()) > 0, 3000);
+        view->setCurrentLink(-1);
+        QTRY_COMPARE_WITH_TIMEOUT(near(win->grabWindow(), edge, theme->accent()), 0, 3000);
+        QTest::mouseClick(win, Qt::LeftButton, {}, mid);
+        QTRY_COMPARE(stubCalls(stub), (QList<QStringList>{{"--", "xdg-open", "https://x.org/go"}}));
+    }
+    void zoom_keeps_the_place_in_the_letter()
+    {
+        open(QStringLiteral("<div style=\"height:3000px\">x</div>"));
+        view->setScrollY(1000);
+        const qreal at = view->scrollY() / view->contentHeight();
+        zoomTo(2.0);
+        QVERIFY2(qAbs(view->scrollY() / view->contentHeight() - at) < 0.01, qPrintable(QString::number(view->scrollY())));
+    }
+    void zoomed_scroll_steps()
+    {
+        open(QStringLiteral("<div style=\"height:5000px\">x</div>"));
+        view->scrollLines(1);
+        const qreal line = view->scrollY();
+        view->toTop();
+        zoomTo(2.0);
+        view->scrollLines(1);
+        QCOMPARE(view->scrollY(), 2 * line);
+    }
+    void ctrl_wheel_zooms()
+    {
+        QTemporaryDir config(scratch());   // the zoom is saved: not into the shared test home
+        const QByteArray old = qgetenv("XDG_CONFIG_HOME");
+        const auto restore = qScopeGuard([old] { qputenv("XDG_CONFIG_HOME", old); });
+        qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
+        open(QStringLiteral("<div style=\"height:3000px\">x</div>"));
+        QSignalSpy notes(letter, &Letter::note);
+        wheel(120, Qt::ControlModifier);
+        QCOMPARE(letter->zoom(), 1.1);
+        QCOMPARE(view->scrollY(), qreal(0));   // zoomed, not scrolled
+        QCOMPARE(notes.last().at(0).toString(), QString("Letter zoom 110%"));
+        wheel(60, Qt::ControlModifier);   // a touchpad's half notch: not yet
+        QCOMPARE(letter->zoom(), 1.1);
+        wheel(60, Qt::ControlModifier);
+        QCOMPARE(letter->zoom(), 1.1 * 1.1);
+        wheel(-240, Qt::ControlModifier);
+        QCOMPARE(letter->zoom(), 1.0);
+        wheel(-120, Qt::NoModifier);   // a plain wheel scrolls
+        QVERIFY(view->scrollY() > 0);
+        QCOMPARE(letter->zoom(), 1.0);
     }
     void rerender_keeps_scroll()
     {

@@ -56,6 +56,12 @@ public:
     void setWords(const QStringList &words);
 
     QJsonObject full() const { return m_full; }
+    // Browser-like zoom: laid out at the width / zoom CSS px, painted × zoom (LetterView); 50–300 %.
+    qreal zoom() const { return m_zoom; }
+    qreal documentZoom() const { return m_docZoom; }   // the zoom document() was laid out at
+    void setZoom(qreal z);
+    void loadZoom(qreal gnome);   // once: the saved zoom, else GNOME's text-scaling-factor
+    void zoomBy(int steps);       // ×1.1 a step, saved, shown in the note; 0: GNOME's again, not saved
     std::shared_ptr<DocumentContainer> document() const { return m_doc; }
     bool dark() const { return m_dark; }
     QList<DocumentContainer::Link> links() const { return m_links; }
@@ -97,6 +103,7 @@ private:
     QSet<int> m_busy;
     QStringList m_words;
     int m_width = 0;
+    qreal m_zoom = 1, m_gnomeZoom = 1, m_jobZoom = 1, m_docZoom = 1;
     std::shared_ptr<DocumentContainer> m_doc;
     bool m_dark = false, m_blank = false;
     QList<DocumentContainer::Link> m_links;
