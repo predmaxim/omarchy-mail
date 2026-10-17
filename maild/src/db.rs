@@ -118,6 +118,10 @@ fn summary(r: &Row) -> rusqlite::Result<Summary> {
 impl Db {
     pub fn open(path: &Path) -> Result<Db, String> {
         if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).map_err(|x| x.to_string())?; }
+        // Connections switching a fresh file to WAL at the same moment get "database is locked"
+        // at once, busy_timeout or not. Only maild opens this file, so one opener at a time suffices.
+        static OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::init(Connection::open(path).map_err(e)?)
     }
 
@@ -481,5 +485,17 @@ mod tests {
         let f = &db.folder_list(Some("a@x")).unwrap()[0];
         assert_eq!((f.name.as_str(), f.path.as_str()), ("Отправленные", "[Gmail]/&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-"));
         assert_eq!(db.folder_list(None).unwrap()[0].name, "inbox");
+    }
+
+    #[test]
+    fn concurrent_open_of_fresh_file() {
+        for round in 0..10 {
+            let dir = std::env::temp_dir().join(format!("maild-test-{}-open{round}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let p = dir.join("mail.db");
+            let opens: Vec<_> = (0..4).map(|_| { let p = p.clone(); std::thread::spawn(move || Db::open(&p).err()) }).collect();
+            for t in opens { assert_eq!(t.join().unwrap(), None); }
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }

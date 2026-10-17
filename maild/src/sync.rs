@@ -222,8 +222,7 @@ mod tests {
     use super::*;
     use crate::config::{Provider, Server};
     use crate::db::ListQuery;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -233,30 +232,8 @@ mod tests {
         assert!(!needs_reset(0, 8));
     }
 
-    /// Fake IMAP server (any number of connections): greets, then answers each command with
-    /// `reply(cmd)` + tagged OK; an unexpected command gets BAD.
     fn fake(reply: fn(&str) -> Option<String>) -> Conn {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
-        std::thread::spawn(move || {
-            for s in l.incoming() {
-                let Ok(s) = s else { break };
-                std::thread::spawn(move || {
-                    let mut w = s.try_clone().unwrap();
-                    w.write_all(b"* OK fake\r\n").unwrap();
-                    for line in BufReader::new(s).lines() {
-                        let Ok(line) = line else { break };
-                        let (tag, cmd) = line.split_once(' ').unwrap();
-                        let out = match reply(cmd) {
-                            Some(r) => format!("{r}{tag} OK done\r\n"),
-                            None => format!("{tag} BAD unexpected {cmd}\r\n"),
-                        };
-                        if w.write_all(out.as_bytes()).is_err() { break }
-                    }
-                });
-            }
-        });
-        Conn::plain(TcpStream::connect(addr).unwrap(), "me", "pw").unwrap()
+        Conn::plain(TcpStream::connect(crate::imap::fake_server(reply)).unwrap(), "me", "pw").unwrap()
     }
 
     fn lit(s: &str) -> String { format!("{{{}}}\r\n{s}", s.len()) }

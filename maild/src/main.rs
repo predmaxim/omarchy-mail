@@ -1,12 +1,15 @@
 #![allow(dead_code)] // consumed by later tasks
 
+mod account;
 mod config;
 mod db;
+mod hub;
 mod i18n;
 mod imap;
 mod mime;
 mod secret;
 mod sync;
+mod wake;
 
 fn usage() -> ! {
     eprintln!("usage: maild [ctl [json] | add-account <provider> <email> [name]]");

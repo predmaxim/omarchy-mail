@@ -3,10 +3,14 @@
 use crate::config::Account;
 use crate::db::Role;
 use crate::mime::{self, Attachment};
+use ::imap::extensions::idle::{SetReadTimeout, WaitOutcome};
+use ::imap::types::UnsolicitedResponse;
 use imap_proto::{BodyParams, BodyStructure, ContentEncoding, NameAttribute};
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 pub enum Stream {
@@ -42,6 +46,27 @@ impl Write for Stream {
     }
 }
 
+impl SetReadTimeout for Stream {
+    fn set_read_timeout(&mut self, t: Option<Duration>) -> ::imap::Result<()> {
+        match self {
+            Stream::Tls(s) => s.get_ref().set_read_timeout(t),
+            #[cfg(test)]
+            Stream::Plain(s) => TcpStream::set_read_timeout(s, t),
+        }
+        .map_err(::imap::Error::Io)
+    }
+}
+
+/// A clone of a connection's socket: `kill` from another thread breaks a blocked read at once.
+/// `Conn` keeps it current across `reconnect` and empties it when dropped.
+pub type KillSlot = Arc<Mutex<Option<TcpStream>>>;
+
+pub fn kill(slot: &KillSlot) {
+    if let Some(s) = &*slot.lock().unwrap_or_else(PoisonError::into_inner) {
+        let _ = s.shutdown(Shutdown::Both);
+    }
+}
+
 #[derive(Clone)]
 enum Dial {
     Tls(String, u16),
@@ -55,17 +80,22 @@ pub struct Conn {
     dial: Dial,
     login: String,
     password: String,
+    slot: Option<KillSlot>,
+    /// INBOX is the selected mailbox (`idle_inbox`).
+    inbox: bool,
 }
 
 /// Per resolved address.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Socket read/write timeout for the TLS handshake, LOGIN and ordinary commands.
-/// IDLE (task 5) must set its own longer read timeout while idling and restore this one after.
+/// Socket read/write timeout for the TLS handshake, LOGIN and ordinary commands (not while idling).
 const IO_TIMEOUT: Duration = if cfg!(test) { Duration::from_millis(500) } else { Duration::from_secs(60) };
 
 /// Error prefix: the server's answer could not be parsed. The read stopped mid-response, so the
 /// session is out of step: `reconnect` before the next command.
 pub const UNPARSEABLE: &str = "unparseable server response";
+/// Error prefix: the server refused LOGIN (wrong password, account needs attention); retrying
+/// on its own will not help.
+pub const AUTH_FAILED: &str = "login rejected";
 
 fn err(e: ::imap::Error) -> String {
     match e {
@@ -119,10 +149,20 @@ impl Conn {
         Self::start(stream, Dial::Plain(addr), login, password)
     }
 
-    /// A fresh session to the same server with the same login.
+    /// A fresh session to the same server with the same login; the kill slot moves to it.
     pub fn reconnect(&mut self) -> Result<(), String> {
-        *self = Self::open(self.dial.clone(), &self.login, &self.password)?;
+        let mut new = Self::open(self.dial.clone(), &self.login, &self.password)?;
+        if let Some(slot) = self.slot.take() {
+            new.set_kill_slot(slot);
+        }
+        *self = new;
         Ok(())
+    }
+
+    /// From now on `slot` holds this connection's socket (see `KillSlot`).
+    pub fn set_kill_slot(&mut self, slot: KillSlot) {
+        *slot.lock().unwrap_or_else(PoisonError::into_inner) = self.tcp.try_clone().ok();
+        self.slot = Some(slot);
     }
 
     fn open(dial: Dial, login: &str, password: &str) -> Result<Conn, String> {
@@ -149,13 +189,12 @@ impl Conn {
         };
         let mut client = ::imap::Client::new(stream);
         client.read_greeting().map_err(err)?;
-        let session = client.login(login, password).map_err(|(e, _)| err(e))?;
-        Ok(Conn { session, tcp: killer, dial, login: login.into(), password: password.into() })
-    }
-
-    /// A handle to the socket: `shutdown` from another thread breaks a blocked read.
-    pub fn killer(&self) -> Result<TcpStream, String> {
-        self.tcp.try_clone().map_err(|e| e.to_string())
+        let session = client.login(login, password).map_err(|(e, _)| match e {
+            // An unknown response code stays in the text; UNAVAILABLE is temporary (RFC 5530).
+            ::imap::Error::No(no) if !no.information.starts_with("[UNAVAILABLE]") => format!("{AUTH_FAILED}: {no}"),
+            e => err(e),
+        })?;
+        Ok(Conn { session, tcp: killer, dial, login: login.into(), password: password.into(), slot: None, inbox: false })
     }
 
     /// Syncable folders with their roles, and the Gmail `\All` path (for server-side search).
@@ -174,7 +213,34 @@ impl Conn {
     pub fn examine(&mut self, path: &str) -> Result<::imap::types::Mailbox, String> {
         // Unilateral EXISTS/EXPUNGE pile up for the life of the session; nothing reads them here.
         self.session.take_all_unsolicited().for_each(drop);
+        self.inbox = false;
         self.session.examine(path).map_err(|e| format!("{} (EXAMINE {path})", err(e)))
+    }
+
+    /// EXAMINE INBOX (once per session), then IDLE until an update arrives (`true`) or `timeout`
+    /// passes (`false`, time to renew). `* OK` keepalive lines are not updates.
+    // ponytail: the imap crate drops updates the server sends in its answer to DONE (a round trip
+    // per renewal); the next update or the worker's 15-minute SyncAll picks them up.
+    pub fn idle_inbox(&mut self, timeout: Duration) -> Result<bool, String> {
+        if !self.inbox {
+            self.examine("INBOX")?;
+            self.inbox = true;
+        }
+        self.session.take_all_unsolicited().for_each(drop);
+        let mut idle = self.session.idle();
+        idle.timeout(timeout).keepalive(false);
+        // The crate panics on some out-of-protocol answers (`unreachable!`, `debug_assert!`).
+        let r = catch_unwind(AssertUnwindSafe(|| idle.wait_while(|u| matches!(u, UnsolicitedResponse::Ok { .. }))));
+        // The crate leaves the socket with no read timeout at all; DONE (sent on drop) needs one.
+        let restored = self.tcp.set_read_timeout(Some(IO_TIMEOUT));
+        drop(idle);
+        restored.map_err(io)?;
+        match r {
+            Ok(Ok(WaitOutcome::MailboxChanged)) => Ok(true),
+            Ok(Ok(WaitOutcome::TimedOut)) => Ok(false),
+            Ok(Err(e)) => Err(err(e)),
+            Err(_) => Err(format!("{UNPARSEABLE}: IDLE")),
+        }
     }
 
     /// `UID SEARCH`, ascending.
@@ -190,6 +256,15 @@ impl Conn {
 
     pub fn noop(&mut self) -> Result<(), String> {
         self.session.noop().map_err(err)
+    }
+}
+
+impl Drop for Conn {
+    /// The slot's clone would keep the socket open.
+    fn drop(&mut self) {
+        if let Some(slot) = &self.slot {
+            *slot.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
     }
 }
 
@@ -342,6 +417,47 @@ fn try_mutf7(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// Fake IMAP server for tests, any number of connections: greets, then answers each command with
+/// `reply(cmd)` + tagged OK (a reply starting with `NO ` is the tagged answer itself); `None` gets BAD.
+/// `IDLE` gets `+ idling` followed by `reply("IDLE")` (untagged updates); `DONE` gets the IDLE's tagged OK.
+#[cfg(test)]
+pub fn fake_server(reply: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> std::net::SocketAddr {
+    use std::io::{BufRead, BufReader};
+    let reply = std::sync::Arc::new(reply);
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(s) = s else { break };
+            let reply = reply.clone();
+            std::thread::spawn(move || {
+                let mut w = s.try_clone().unwrap();
+                let _ = w.write_all(b"* OK fake\r\n");
+                let mut idle = String::new();
+                for line in BufReader::new(s).lines() {
+                    let Ok(line) = line else { break };
+                    let out = if line == "DONE" {
+                        format!("{idle} OK idle done\r\n")
+                    } else {
+                        let (tag, cmd) = line.split_once(' ').unwrap_or((&line, ""));
+                        match reply(cmd) {
+                            Some(r) if cmd == "IDLE" => {
+                                idle = tag.into();
+                                format!("+ idling\r\n{r}")
+                            }
+                            Some(r) if r.starts_with("NO ") => format!("{tag} {r}\r\n"),
+                            Some(r) => format!("{r}{tag} OK done\r\n"),
+                            None => format!("{tag} BAD unexpected {cmd}\r\n"),
+                        }
+                    };
+                    if w.write_all(out.as_bytes()).is_err() { break }
+                }
+            });
+        }
+    });
+    addr
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,5 +544,53 @@ mod tests {
         let t = std::time::Instant::now();
         assert!(Conn::plain(TcpStream::connect(l.local_addr().unwrap()).unwrap(), "me", "pw").is_err());
         assert!(t.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    fn conn(addr: std::net::SocketAddr) -> Result<Conn, String> {
+        Conn::plain(TcpStream::connect(addr).unwrap(), "me", "pw")
+    }
+
+    #[test]
+    fn idle_inbox_update_then_renewal() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let (examines, idles) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (e, i) = (examines.clone(), idles.clone());
+        let mut c = conn(fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "EXAMINE \"INBOX\"" => { e.fetch_add(1, SeqCst); "* 1 EXISTS\r\n".into() }
+            // a keepalive line first: it must not count as an update
+            "IDLE" if i.fetch_add(1, SeqCst) == 0 => "* OK still here\r\n* 2 EXISTS\r\n".into(),
+            "IDLE" | "NOOP" => String::new(),
+            _ => return None,
+        }))).unwrap();
+        assert_eq!(c.idle_inbox(Duration::from_secs(5)), Ok(true));
+        let t = std::time::Instant::now();
+        assert_eq!(c.idle_inbox(Duration::from_millis(200)), Ok(false));
+        assert!(t.elapsed() >= Duration::from_millis(200));
+        assert_eq!(c.tcp.read_timeout().unwrap(), Some(IO_TIMEOUT));
+        c.noop().unwrap(); // DONE was answered: the session is in step
+        assert_eq!((examines.load(SeqCst), idles.load(SeqCst)), (1, 2));
+    }
+
+    #[test]
+    fn login_rejection_is_auth_failed() {
+        let no = |answer: &'static str| fake_server(move |cmd| cmd.starts_with("LOGIN").then(|| answer.to_string()));
+        let e = conn(no("NO [AUTHENTICATIONFAILED] Invalid credentials")).err().unwrap();
+        assert!(e.starts_with(AUTH_FAILED), "{e}");
+        // temporary (RFC 5530): retried like a network error
+        let e = conn(no("NO [UNAVAILABLE] try later")).err().unwrap();
+        assert!(!e.starts_with(AUTH_FAILED), "{e}");
+    }
+
+    #[test]
+    fn kill_slot_follows_reconnect() {
+        let mut c = conn(fake_server(|cmd| (cmd.starts_with("LOGIN") || cmd == "NOOP").then(String::new))).unwrap();
+        let slot = KillSlot::default();
+        c.set_kill_slot(slot.clone());
+        c.reconnect().unwrap();
+        kill(&slot);
+        assert!(c.noop().is_err());
+        drop(c);
+        assert!(slot.lock().unwrap().is_none());
     }
 }
