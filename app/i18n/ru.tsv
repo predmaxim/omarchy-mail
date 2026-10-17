@@ -54,3 +54,21 @@ Send again	Отправить ещё раз
 Discard	Выбросить
 No mail here	Писем нет
 to: %1	кому: %1
+Mailboxes	Ящики
+Add a mailbox	Добавить ящик
+Other IMAP	Другой IMAP
+Email	Почта
+Sender name	Имя отправителя
+App password	Пароль приложения
+Login	Логин
+IMAP server	Сервер IMAP
+IMAP port	Порт IMAP
+SMTP server	Сервер SMTP
+SMTP port	Порт SMTP
+Add	Добавить
+Checking the login…	Проверяем вход…
+Fill in the server and port	Укажите сервер и порт
+Create an app password: %1	Создайте пароль приложения: %1
+Press d again to remove %1 (mail on the server stays)	Нажмите d ещё раз — убрать %1 (письма на сервере останутся)
+Enter the email address	Укажите адрес почты
+Enter the app password	Укажите пароль приложения

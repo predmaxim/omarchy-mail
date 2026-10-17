@@ -11,6 +11,9 @@ Window {
     title: i18n.t("Mail")
     color: theme.background
 
+    readonly property string page: app.page   // the mailboxes page takes the keys, the main one gives them to root
+    onPageChanged: page === "settings" ? settings.focusFirst() : root.forceActiveFocus()
+
     Connections {
         target: app
         function onRaiseRequested() {
@@ -59,6 +62,7 @@ Window {
 
         Item {
             id: column
+            visible: win.page === "main"
             readonly property int pad: theme.space(8)
             readonly property int inset: pad + theme.space(12)   // the text edge of the rows, pickers and search
             anchors.top: bar.bottom
@@ -196,6 +200,7 @@ Window {
 
         Rectangle {
             id: divider
+            visible: win.page === "main"
             anchors.left: column.right
             anchors.top: bar.bottom
             anchors.bottom: parent.bottom
@@ -205,10 +210,20 @@ Window {
 
         LetterPane {
             id: pane
+            visible: win.page === "main"
             anchors.left: divider.right
             anchors.right: parent.right
             anchors.top: bar.bottom
             anchors.bottom: parent.bottom
+        }
+
+        SettingsPage {
+            id: settings
+            objectName: "settingsPage"
+            visible: win.page === "settings"
+            anchors.top: bar.bottom
+            anchors.bottom: parent.bottom
+            width: parent.width
         }
     }
 }

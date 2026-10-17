@@ -22,8 +22,7 @@ QString email(const QJsonValue &account) { return account.toObject().value(QStri
 
 // Reply handler: `onResult` on success while the App lives; an error becomes the note
 // (unless the service is gone: the status line says so).
-template <typename F>
-std::function<void(const QJsonValue &, const QString &)> App::ok(F onResult)
+std::function<void(const QJsonValue &, const QString &)> App::ok(std::function<void(const QJsonValue &)> onResult)
 {
     return [self = QPointer<App>(this), onResult = std::move(onResult)](const QJsonValue &result, const QString &err) {
         if (!self)
@@ -678,7 +677,7 @@ void App::pressAction(int col)
     case 1: reply(); break;
     case 2: remove(); break;
     case 3: toggleUnread(); break;
-    case 4: openSettings(); break;
+    case 4: m_page == QLatin1String("main") ? openSettings() : closeSettings(); break;   // the gear, the back arrow
     }
 }
 

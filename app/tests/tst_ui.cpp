@@ -44,6 +44,11 @@ class TstUi : public QObject {
         f.insert("inline", QJsonObject{{"logo@x", QStringLiteral(OM_SOURCE_DIR "/tests/fixtures/logo.png")}});
         return f;
     }
+    void type(const char *text)   // QTest::keyClicks is for widgets
+    {
+        for (; *text; ++text)
+            QTest::keyClick(win, *text);
+    }
     // The first page is in.
     void start()
     {
@@ -223,6 +228,122 @@ private Q_SLOTS:
         s->theme.reload();
         QVERIFY(s->theme.space(3) > before);
         QCOMPARE(bar->width(), qreal(s->theme.space(3)));
+    }
+
+    // ---- the mailboxes page ----
+
+    void gear_opens_settings_esc_returns()
+    {
+        h.d->on("status", [](const QJsonObject &) {   // for the shot: a refused login and an offline mailbox
+            return QJsonObject{{"result", QJsonObject{{"accounts", QJsonArray{
+                QJsonObject{{"email", "me@gmail.com"}, {"status", QJsonObject{{"offline", "no route"}}}, {"queued", 0}},
+                QJsonObject{{"email", "me@yandex.ru"}, {"status", "auth_failed"}, {"queued", 0}}}}}}};
+        });
+        start();
+        QVERIFY(!item("settingsPage")->isVisible());
+        s->app.pressAction(4);   // the gear
+        QTRY_VERIFY(item("settingsPage")->isVisible());
+        for (const char *hidden : {"mailList", "searchField", "letterView", "folderPicker"})
+            QVERIFY2(!item(hidden)->isVisible(), hidden);
+        QTRY_COMPARE(item("accountRows")->property("count").toInt(), 2);
+        QTRY_VERIFY(item("accountRows")->hasActiveFocus());
+        if (const QString shot = qEnvironmentVariable("OM_SHOT_SETTINGS"); !shot.isEmpty())
+            QVERIFY(win->grabWindow().save(shot));
+        QTest::keyClick(win, Qt::Key_Escape);
+        QCOMPARE(s->app.page(), QString("main"));
+        QVERIFY(item("mailList")->isVisible());
+        QVERIFY(!item("settingsPage")->isVisible());
+        QTest::keyClick(win, Qt::Key_D);   // the window has the keys again
+        QTRY_COMPARE(h.sent("act").size(), 1);
+    }
+    void no_accounts_shows_settings()
+    {
+        h.accounts = {};
+        s->start(0);
+        QTRY_VERIFY(item("settingsPage")->isVisible());
+        QVERIFY(!item("mailList")->isVisible());
+        QCOMPARE(item("accountRows")->property("count").toInt(), 0);
+        QTRY_VERIFY(item("providerRow")->hasActiveFocus());   // the first mailbox: the form has the keys
+    }
+    void settings_keys_rows_and_form()
+    {
+        h.d->on("status", [](const QJsonObject &) {
+            return QJsonObject{{"result", QJsonObject{{"accounts", QJsonArray{
+                QJsonObject{{"email", "me@gmail.com"}, {"status", "online"}, {"queued", 0}},
+                QJsonObject{{"email", "me@yandex.ru"}, {"status", "auth_failed"}, {"queued", 0}}}}}}};
+        });
+        for (const char *cmd : {"account_remove", "account_update"})
+            h.d->on(cmd, [](const QJsonObject &) { return QJsonObject{}; });
+        h.d->on("account_add", [](const QJsonObject &) { return QJsonObject{{"error", "AUTHENTICATIONFAILED"}}; });
+        start();
+        s->app.pressAction(4);
+        QQuickItem *rows = item("accountRows");
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QTRY_VERIFY(s->app.accounts().value(1).toMap().value("authFailed").toBool());
+        const int cursor = s->list.cursor();
+
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(rows->property("currentIndex").toInt(), 1);
+        QCOMPARE(s->list.cursor(), cursor);   // the page's own cursor, not the mail list's
+        QTest::keyClick(win, Qt::Key_Return);   // a refused login: try again
+        QTRY_COMPARE(body(h.sent("sync").last()), QJsonObject({{"cmd", "sync"}, {"account", "me@yandex.ru"}}));
+
+        QTest::keyClick(win, Qt::Key_Up);
+        QTest::keyClick(win, Qt::Key_Return);   // the sender name
+        QQuickItem *rename = itemAt(rows, 0)->findChild<QQuickItem *>("renameField");
+        QVERIFY(rename && rename->hasActiveFocus());
+        QCOMPARE(rename->property("text").toString(), QString("Max"));
+        QTest::keyClick(win, Qt::Key_End);
+        type(" P");
+        QTest::keyClick(win, Qt::Key_Escape);   // cancelled, still on the page
+        QCOMPARE(win->activeFocusItem(), rows);
+        QCOMPARE(s->app.page(), QString("settings"));
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_End);
+        type(" P");
+        QTest::keyClick(win, Qt::Key_Return);
+        QTRY_COMPARE(h.sent("account_update").size(), 1);
+        QCOMPARE(body(h.sent("account_update").at(0)),
+                 QJsonObject({{"cmd", "account_update"}, {"email", "me@gmail.com"}, {"name", "Max P"}}));
+        QCOMPARE(win->activeFocusItem(), rows);
+
+        QTest::keyClick(win, Qt::Key_D);
+        QTest::keyClick(win, Qt::Key_D);
+        QTRY_COMPARE(h.sent("account_remove").size(), 1);
+        QCOMPARE(h.sent("account_remove").at(0).value("email").toString(), QString("me@gmail.com"));
+        QVERIFY(h.sent("act").isEmpty());
+
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Down);   // past the last mailbox: the providers
+        QVERIFY(item("providerRow")->hasActiveFocus());
+        QVERIFY(!item("imapHostField")->isVisible());
+        QTest::keyClick(win, Qt::Key_Right);
+        QTest::keyClick(win, Qt::Key_Right);   // Other IMAP
+        QVERIFY(item("imapHostField")->isVisible());
+        QTest::keyClick(win, Qt::Key_Left);
+        QTest::keyClick(win, Qt::Key_Left);   // Gmail
+        QVERIFY(!item("imapHostField")->isVisible());
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("emailField")->hasActiveFocus());
+        type("new@gmail.com");
+        QTest::keyClick(win, Qt::Key_Return);   // the next field
+        QVERIFY(item("nameField")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("passwordField")->hasActiveFocus());
+        type("secret");
+        QTest::keyClick(win, Qt::Key_Return);   // the last field: Add
+        QTRY_COMPARE(h.sent("account_add").size(), 1);
+        QCOMPARE(body(h.sent("account_add").at(0)), QJsonObject({{"cmd", "account_add"}, {"provider", "gmail"},
+                                                                {"email", "new@gmail.com"}, {"name", ""}, {"password", "secret"}}));
+        QCOMPARE(item("passwordField")->property("text").toString(), QString());   // cleared after every attempt
+        QTRY_COMPARE(item("addError")->property("text").toString(), QString("AUTHENTICATIONFAILED"));
+        QCOMPARE(item("emailField")->property("text").toString(), QString("new@gmail.com"));
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("helpLink")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("addButton")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Escape);
+        QCOMPARE(s->app.page(), QString("main"));
     }
 };
 

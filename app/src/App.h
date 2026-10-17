@@ -1,6 +1,7 @@
 #pragma once
 // Window controller: mailboxes, folders, the mail list, search and maild events;
-// actions on the mail, their undo, auto-read and the window's keys.
+// actions on the mail, their undo, auto-read and the window's keys (AppKeys.cpp);
+// the mailboxes page: add, remove, retry, rename (AppAccounts.cpp).
 #include "Nav.h"
 #include <QHash>
 #include <QJsonArray>
@@ -37,6 +38,8 @@ class App : public QObject {
     Q_PROPERTY(bool noteError READ noteError NOTIFY changed)
     Q_PROPERTY(bool trashView READ trashView NOTIFY changed)
     Q_PROPERTY(bool letterAtTop READ letterAtTop WRITE setLetterAtTop)   // QML keeps it = letterView.atTop
+    Q_PROPERTY(bool adding READ adding NOTIFY changed)
+    Q_PROPERTY(QString addError READ addError NOTIFY changed)
 public:
     App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *nav, Theme *theme,
         QObject *parent = nullptr);
@@ -60,6 +63,8 @@ public:
     bool trashView() const;                            // a Trash or Junk folder
     bool letterAtTop() const { return m_letterAtTop; }
     void setLetterAtTop(bool v) { m_letterAtTop = v; }
+    bool adding() const { return m_adding; }           // account_add's trial login is on its way
+    QString addError() const { return m_addError; }
 
     Q_INVOKABLE void pickAccount(int index);           // as accountIndex: -1 all mailboxes
     Q_INVOKABLE void pickFolder(int index);
@@ -86,6 +91,12 @@ public:
     Q_INVOKABLE void send();
     Q_INVOKABLE void clickRow(int index, int modifiers);
 
+    // form: provider (gmail / yandex / imap), email, name, password; imap also login, imapHost, imapPort, smtpHost, smtpPort
+    Q_INVOKABLE void addAccount(const QVariantMap &form);
+    Q_INVOKABLE void removeAccount(const QString &email);   // the second call within 3 s removes
+    Q_INVOKABLE void retryAccount(const QString &email);
+    Q_INVOKABLE void renameAccount(const QString &email, const QString &name);
+
 Q_SIGNALS:
     void changed();
     void raiseRequested();
@@ -95,6 +106,7 @@ Q_SIGNALS:
     void openPicker(const QString &which); // "account" / "folder"
     void scroll(int cmd, int dir);         // int(Cmd::ScrollLines / ScrollPages / ScrollTop / ScrollEnd) -> LetterView
     void pickFiles();                      // Ctrl+O in the form -> FileDialog
+    void accountAdded();                   // the page clears its form
 
 private:
     void connectedChanged();
@@ -115,8 +127,7 @@ private:
     void endSearch();
     void remoteHits(const QJsonObject &payload);
     void updateFound();
-    template <typename F>
-    std::function<void(const QJsonValue &, const QString &)> ok(F onResult);
+    std::function<void(const QJsonValue &, const QString &)> ok(std::function<void(const QJsonValue &)> onResult);
 
     QString composeAccount() const;   // the viewed mailbox, else the first
     QList<qint64> targets();
@@ -168,6 +179,9 @@ private:
     bool m_sending = false;
     bool m_byUser = false;      // the cursor moves by a key, a click or a new view's placement: auto-read may start
     bool m_letterAtTop = true;
+
+    bool m_adding = false;
+    QString m_addError;
 };
 
 } // namespace om
