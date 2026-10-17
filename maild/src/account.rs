@@ -325,12 +325,23 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
                 if acc.append_sent && !auth_failed && let Some(f) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == Role::Sent)) {
                     let _ = smtp::flush_unfiled(&db, &acc.email, |raw| attempt(sh, &mut conn, |c| c.append(&f.path, raw).map_err(String::from)));
                 }
-                attempt(sh, &mut conn, |c| sync::sync_account(c, &db, acc))
+                // Each folder's new mail is shown as it lands: a first import takes long.
+                attempt(sh, &mut conn, |c| sync::sync_account(c, &db, acc, |ids| sh.hub.emit(Event::Changed { folders: true, ids }))).map(|()| vec![])
             }
-            Job::SyncFolder(id) => attempt(sh, &mut conn, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
-                Some(f) => sync::sync_folder(c, &db, &f),
-                None => Ok(vec![]),
-            }),
+            Job::SyncFolder(id) => {
+                // IDLE updates pile up during a long sync: one sync covers the copies queued behind it.
+                while next.is_none() {
+                    match queue.try_recv() {
+                        Ok(Job::SyncFolder(i)) if i == id => {}
+                        Ok(other) => next = Some(other),
+                        Err(_) => break,
+                    }
+                }
+                attempt(sh, &mut conn, |c| match db.folders_of(&acc.email)?.into_iter().find(|f| f.id == id) {
+                    Some(f) => sync::sync_folder(c, &db, &f),
+                    None => Ok(vec![]),
+                })
+            }
             // Nothing queued: no connection. After a rejected login: no new attempts.
             Job::Actions if auth_failed || matches!(actions::has_pending(&db, &acc.email), Ok(false)) => continue,
             Job::Actions => attempt(sh, &mut conn, |c| actions::run(c, &db, &acc.email, &sh.hub)).map(|()| vec![]),
@@ -390,6 +401,7 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
         }
         match r {
             // Also with no new mail: flag changes and deletions (from a phone too) insert nothing.
+            // After a SyncAll `ids` is empty: each folder has shown its own.
             Ok(ids) => sh.hub.emit(Event::Changed { folders: true, ids }),
             Err(e) => eprintln!("{}: {e}", acc.email),
         }
@@ -487,6 +499,73 @@ mod tests {
         h.jobs.send(Job::SyncAll).unwrap();
         until("one more job", || count(&lists) >= 2);
         assert_eq!(hub.statuses()[0].status, Status::Online);
+        h.stop_and_join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sync_all_shows_each_folder() {
+        const M: &str = "Subject: s\r\nFrom: a@x.org\r\n\r\nhi\r\n";
+        let addr = fake_server(|cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n* LIST () \"/\" \"Work\"\r\n".into(),
+            "EXAMINE \"INBOX\"" | "EXAMINE \"Work\"" => "* 1 EXISTS\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 1\r\n".into(),
+            "UID FETCH 1 (UID FLAGS RFC822.SIZE)" => "* 1 FETCH (UID 1 FLAGS () RFC822.SIZE 40)\r\n".into(),
+            "UID FETCH 1 (UID BODY.PEEK[])" => format!("* 1 FETCH (UID 1 BODY[] {{{}}}\r\n{M})\r\n", M.len()),
+            "UID FETCH 1:* (UID FLAGS)" => "* 1 FETCH (UID 1 FLAGS ())\r\n".into(),
+            "IDLE" => String::new(),
+            _ => return None,
+        }));
+        let hub = Hub::default();
+        let events = hub.subscribe(false);
+        let (h, dir) = start(addr, "each", &hub);
+        let end = Instant::now() + Duration::from_secs(2);
+        let mut sizes = vec![];
+        while sizes.iter().sum::<usize>() < 2 {
+            let e: serde_json::Value = serde_json::from_str(&events.recv_timeout(end.saturating_duration_since(Instant::now())).unwrap()).unwrap();
+            if e["event"] == "changed" && e["ids"].as_array().is_some_and(|v| !v.is_empty()) {
+                sizes.push(e["ids"].as_array().unwrap().len());
+            }
+        }
+        assert_eq!(sizes, [1, 1], "one event per folder");
+        h.stop_and_join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn queued_folder_syncs_coalesce() {
+        use std::sync::atomic::AtomicBool;
+        let (lists, idles, works) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let go = Arc::new(AtomicBool::new(false));
+        let (l, i, w, g) = (lists.clone(), idles.clone(), works.clone(), go.clone());
+        let addr = fake_server(move |cmd| Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => {
+                l.fetch_add(1, SeqCst);
+                while !g.load(SeqCst) { std::thread::sleep(Duration::from_millis(1)); }
+                "* LIST () \"/\" \"INBOX\"\r\n* LIST () \"/\" \"Work\"\r\n".into()
+            }
+            "EXAMINE \"INBOX\"" => "* 0 EXISTS\r\n".into(),
+            "EXAMINE \"Work\"" => { w.fetch_add(1, SeqCst); "* 0 EXISTS\r\n".into() }
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH\r\n".into(),
+            "IDLE" => { i.fetch_add(1, SeqCst); String::new() }
+            _ => return None,
+        }));
+        let dir = std::env::temp_dir().join(format!("maild-test-{}-coalesce", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let work = Db::open(&dir.join("mail.db")).unwrap().upsert_folder("me@x", "Work", Role::Other).unwrap();
+        let connect = move || Conn::plain(TcpStream::connect(addr).map_err(|e| e.to_string())?, "me", "pw");
+        let h = spawn_with(acc(), dir.join("mail.db"), dir.join("cache"), Hub::default(), Arc::new(connect));
+        // the watcher has queued its Actions; the worker is busy with the start-up SyncAll
+        until("busy worker", || count(&lists) == 1 && count(&idles) >= 1);
+        for _ in 0..3 {
+            h.jobs.send(Job::SyncFolder(work)).unwrap();
+        }
+        go.store(true, SeqCst);
+        until("SyncAll and the folder sync", || count(&works) >= 2);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(count(&works), 2, "the queued copies ran");
         h.stop_and_join();
         let _ = std::fs::remove_dir_all(dir);
     }

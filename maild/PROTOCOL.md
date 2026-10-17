@@ -300,7 +300,8 @@ live in the keyring only.
   account in `auth_failed` or waiting to reconnect.
 - With `folder` (a folder id) it syncs that folder only. `account` is optional here; the folder
   knows its account. Use it when the user opens a folder.
-- The call returns at once. The results come as `changed` events.
+- The call returns at once. The results come as `changed` events: a full sync sends one for each
+  folder that got new mail as soon as that folder is done, then one with `ids: []`.
 - Errors: an unknown `account` or `folder`.
 
 ### `act`

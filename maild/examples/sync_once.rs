@@ -21,7 +21,8 @@ fn run(email: &str) -> Result<(), String> {
     let acc = config::load(&config::paths().config)?.into_iter().find(|a| a.email == email).ok_or(format!("{email}: not in accounts.toml"))?;
     let db = db::Db::open(std::path::Path::new("/tmp/maild-test.db"))?;
     let mut conn = imap::Conn::connect(&acc, &secret::lookup(email)?)?;
-    let new = sync::sync_account(&mut conn, &db, &acc)?;
+    let mut new = vec![];
+    sync::sync_account(&mut conn, &db, &acc, |ids| new.extend(ids))?;
     let folders = db.folders_of(email)?;
     let mut by_role: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &folders {

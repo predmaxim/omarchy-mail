@@ -184,8 +184,9 @@ fn big_message(conn: &mut Conn, uid: u32, head: &Fetch) -> Result<(Parsed, bool)
     Ok((p, has_body))
 }
 
-/// Refreshes the folder list, then syncs Inbox first and the rest after it.
-pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account) -> Result<Vec<i64>, String> {
+/// Refreshes the folder list, then syncs Inbox first and the rest after it. `shown` gets the ids of
+/// each folder's new messages as soon as that folder is done (nothing for a folder without any).
+pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account, mut shown: impl FnMut(Vec<i64>)) -> Result<(), String> {
     let (found, _all) = conn.discover()?;
     if found.is_empty() {
         // Never wipe the local store on an odd LIST answer.
@@ -202,10 +203,10 @@ pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account) -> Result<Vec<i64>,
         if found.iter().any(|(p, _)| *p == f.path) { folders.push(f) } else { db.remove_folder(f.id)? }
     }
     folders.sort_by_key(|f| f.role != Role::Inbox);
-    let mut ids = vec![];
     for f in &folders {
         match sync_folder(conn, db, f) {
-            Ok(v) => ids.extend(v),
+            Ok(v) if !v.is_empty() => shown(v),
+            Ok(_) => {}
             // One broken folder must not stall the account; a dead connection goes to the caller.
             Err(e) => {
                 let alive = if e.starts_with(UNPARSEABLE) { conn.reconnect().is_ok() } else { conn.noop().is_ok() };
@@ -214,7 +215,7 @@ pub fn sync_account(conn: &mut Conn, db: &Db, acc: &Account) -> Result<Vec<i64>,
             }
         }
     }
-    Ok(ids)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -281,7 +282,9 @@ mod tests {
         let s = Server { host: "h".into(), port: 1 };
         let acc = Account { email: "me@x".into(), name: "N".into(), provider: Provider::Gmail, login: "me".into(), imap: s.clone(), smtp: s, append_sent: false };
 
-        assert_eq!(sync_account(&mut fake(before), &db, &acc).unwrap().len(), 2);
+        let mut ids = vec![];
+        sync_account(&mut fake(before), &db, &acc, |v| ids.extend(v)).unwrap();
+        assert_eq!(ids.len(), 2);
         let inbox = || db.folders_of("me@x").unwrap().into_iter().find(|f| f.role == Role::Inbox).unwrap();
         let paths: Vec<_> = db.folders_of("me@x").unwrap().into_iter().map(|f| f.path).collect();
         assert_eq!(paths, ["[Gmail]/Remote", "INBOX"]);
@@ -361,7 +364,9 @@ mod tests {
         let db = Db::memory();
         let s = Server { host: "h".into(), port: 1 };
         let acc = Account { email: "me@x".into(), name: "N".into(), provider: Provider::Imap, login: "me".into(), imap: s.clone(), smtp: s, append_sent: false };
-        assert_eq!(sync_account(&mut fake(bad_examine), &db, &acc).unwrap().len(), 1);
+        let mut ids = vec![];
+        sync_account(&mut fake(bad_examine), &db, &acc, |v| ids.extend(v)).unwrap();
+        assert_eq!(ids.len(), 1);
         let work = db.folders_of("me@x").unwrap().into_iter().find(|f| f.path == "Work").unwrap();
         assert_eq!(work.last_uid, 1);
     }
