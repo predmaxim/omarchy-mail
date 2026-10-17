@@ -13,6 +13,8 @@ pub const SINCE: &str = "1-Jan-2026";
 /// Bigger messages get headers + text parts only; the rest is fetched on demand.
 pub const FULL_FETCH_LIMIT: u32 = 2 * 1024 * 1024;
 const BATCH: usize = 50;
+/// Unparseable messages one `sync_folder` call may pass over; each one costs a fresh login.
+const MAX_SKIPS: usize = 5;
 
 /// UIDVALIDITY changed: the stored UIDs mean nothing any more.
 pub fn needs_reset(stored: u32, server: u32) -> bool {
@@ -42,7 +44,7 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
         conn.uids(&format!("SINCE {SINCE}"))?
     } else {
         // `n:*` always matches the highest UID, even when it is below n.
-        conn.uids(&format!("UID {}:*", last + 1))?.into_iter().filter(|&u| u > last).collect()
+        conn.uids(&format!("UID {}:*", last.saturating_add(1)))?.into_iter().filter(|&u| u > last).collect()
     };
     // The initial import is silent: everything present now counts as notified.
     let notified = if first {
@@ -52,26 +54,25 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
     };
 
     let mut ids = vec![];
+    let mut skips = 0;
     for chunk in new.chunks(BATCH) {
-        let got = match fetch_new(conn, chunk) {
-            Err(e) if e.starts_with(UNPARSEABLE) => one_by_one(conn, folder, chunk)?,
-            r => r?,
+        let r = match fetch_new(conn, chunk) {
+            Ok(got) => store(db, folder.id, got, &mut ids).map(|_| last = last.max(chunk[chunk.len() - 1])),
+            Err(e) if e.starts_with(UNPARSEABLE) => one_by_one(conn, db, folder, chunk, &mut ids, &mut last, &mut skips),
+            Err(e) => Err(e),
         };
-        for m in got {
-            ids.push(db.insert_message(folder.id, m.uid, m.seen, m.flagged, m.size.into(), &m.parsed, m.has_body)?);
-        }
-        last = last.max(chunk[chunk.len() - 1]);
-        // Saved per batch so a dropped connection does not restart a long import.
+        // Saved per batch, and before giving up, so a dropped connection does not restart a long import.
         db.set_folder_marks(folder.id, last, notified)?;
+        r?;
     }
     if first {
         last = last.max(notified);
     }
 
-    // Flags and deletions, only over the UID range we hold locally.
+    // Flags and deletions, only over the UID range we hold locally. Presence comes from this answer
+    // alone (not EXISTS, which a server may omit).
     match db.min_uid(folder.id)? {
         None => {}
-        Some(_) if mb.exists == 0 => db.remove_missing(folder.id, &[])?,
         Some(min) => {
             let mut present = vec![];
             for f in conn.fetch(&format!("{min}:*"), "(UID FLAGS)")?.iter() {
@@ -87,24 +88,36 @@ pub fn sync_folder(conn: &mut Conn, db: &Db, folder: &Folder) -> Result<Vec<i64>
     Ok(ids)
 }
 
-/// The batch answer could not be parsed: fetch its UIDs one by one, skipping those that still fail
-/// (their UIDs are passed over for good, so one odd message cannot stall the folder).
-fn one_by_one(conn: &mut Conn, folder: &Folder, uids: &[u32]) -> Result<Vec<New>, String> {
-    let mut out = vec![];
+fn store(db: &Db, folder: i64, got: Vec<New>, ids: &mut Vec<i64>) -> Result<(), String> {
+    for m in got {
+        ids.push(db.insert_message(folder, m.uid, m.seen, m.flagged, m.size.into(), &m.parsed, m.has_body)?);
+    }
+    Ok(())
+}
+
+/// The batch answer could not be parsed: fetch its UIDs one by one on a fresh session, passing over
+/// those that still fail (for good, so one odd message cannot stall the folder). Past `MAX_SKIPS`
+/// per sync it gives up with `last` at the last UID handled, so a broken server cannot cause a login storm.
+fn one_by_one(conn: &mut Conn, db: &Db, folder: &Folder, uids: &[u32], ids: &mut Vec<i64>, last: &mut u32, skips: &mut usize) -> Result<(), String> {
     // An unparseable answer leaves the session out of step.
     let reopen = |conn: &mut Conn| conn.reconnect().and_then(|_| conn.examine(&folder.path)).map(drop);
     reopen(conn)?;
     for &uid in uids {
         match fetch_new(conn, &[uid]) {
-            Ok(v) => out.extend(v),
+            Ok(got) => store(db, folder.id, got, ids)?,
             Err(e) if e.starts_with(UNPARSEABLE) => {
+                *skips += 1;
+                if *skips > MAX_SKIPS {
+                    return Err(format!("{e} (gave up after {MAX_SKIPS} skipped messages)"));
+                }
                 eprintln!("{} {}: uid {uid} skipped: {e}", folder.account, folder.path);
                 reopen(conn)?;
             }
             Err(e) => return Err(e),
         }
+        *last = (*last).max(uid);
     }
-    Ok(out)
+    Ok(())
 }
 
 struct New { uid: u32, seen: bool, flagged: bool, size: u32, parsed: Parsed, has_body: bool }
@@ -211,6 +224,7 @@ mod tests {
     use crate::db::ListQuery;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn uidvalidity_change_resets_folder() {
@@ -346,5 +360,83 @@ mod tests {
         assert_eq!(sync_folder(&mut fake(garbled), &db, &f).unwrap().len(), 2);
         assert_eq!(db.folders_of("me@x").unwrap()[0].last_uid, 3);
         assert_eq!(db.list(&ListQuery { folder: Some(f.id), ..Default::default() }).unwrap().len(), 2);
+    }
+
+    const GARBAGE: &str = "* 1 FETCH (UID 1 BODY[] #garbage#)\r\n";
+
+    /// INBOX answers EXAMINE with a line the parser rejects; Work is fine.
+    fn bad_examine(cmd: &str) -> Option<String> {
+        Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "LIST \"\" *" => "* LIST () \"/\" \"INBOX\"\r\n* LIST () \"/\" \"Work\"\r\n".into(),
+            "EXAMINE \"INBOX\"" => GARBAGE.into(),
+            "EXAMINE \"Work\"" => "* 1 EXISTS\r\n* OK [UIDVALIDITY 3] v\r\n* OK [UIDNEXT 2] n\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 1\r\n".into(),
+            "UID FETCH 1 (UID FLAGS RFC822.SIZE)" => "* 1 FETCH (UID 1 FLAGS () RFC822.SIZE 60)\r\n".into(),
+            "UID FETCH 1 (UID BODY.PEEK[])" => format!("* 1 FETCH (UID 1 BODY[] {})\r\n", lit(M1)),
+            "UID FETCH 1:* (UID FLAGS)" => "* 1 FETCH (UID 1 FLAGS ())\r\n".into(),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn unparseable_examine_skips_to_next_folder() {
+        let db = Db::memory();
+        let s = Server { host: "h".into(), port: 1 };
+        let acc = Account { email: "me@x".into(), name: "N".into(), provider: Provider::Imap, login: "me".into(), imap: s.clone(), smtp: s, append_sent: false };
+        assert_eq!(sync_account(&mut fake(bad_examine), &db, &acc).unwrap().len(), 1);
+        let work = db.folders_of("me@x").unwrap().into_iter().find(|f| f.path == "Work").unwrap();
+        assert_eq!(work.last_uid, 1);
+    }
+
+    static LOGINS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Every FETCH answer is unparseable.
+    fn all_garbage(cmd: &str) -> Option<String> {
+        Some(match cmd {
+            c if c.starts_with("LOGIN") => {
+                LOGINS.fetch_add(1, Ordering::SeqCst);
+                String::new()
+            }
+            "EXAMINE \"INBOX\"" => "* 10 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 11] n\r\n".into(),
+            "UID SEARCH SINCE 1-Jan-2026" => "* SEARCH 1 2 3 4 5 6 7 8 9 10\r\n".into(),
+            c if c.starts_with("UID FETCH") => GARBAGE.into(),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn skips_are_capped() {
+        let db = Db::memory();
+        db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        let f = db.folders_of("me@x").unwrap().remove(0);
+        let e = sync_folder(&mut fake(all_garbage), &db, &f).unwrap_err();
+        assert!(e.starts_with(UNPARSEABLE), "{e}");
+        // the first login plus one reconnect per skip and one after the last skip
+        assert_eq!(LOGINS.load(Ordering::SeqCst), 1 + MAX_SKIPS + 1);
+        assert_eq!(db.folders_of("me@x").unwrap()[0].last_uid, MAX_SKIPS as u32);
+    }
+
+    /// EXAMINE without EXISTS; both local messages are still on the server.
+    fn no_exists(cmd: &str) -> Option<String> {
+        Some(match cmd {
+            c if c.starts_with("LOGIN") => String::new(),
+            "EXAMINE \"INBOX\"" => "* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 3] n\r\n".into(),
+            "UID SEARCH UID 3:*" => "* SEARCH 2\r\n".into(),
+            "UID FETCH 1:* (UID FLAGS)" => "* 1 FETCH (UID 1 FLAGS ())\r\n* 2 FETCH (UID 2 FLAGS ())\r\n".into(),
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn missing_exists_keeps_messages() {
+        let db = Db::memory();
+        let id = db.upsert_folder("me@x", "INBOX", Role::Inbox).unwrap();
+        db.reset_folder(id, 7).unwrap();
+        for uid in 1..=2 { db.insert_message(id, uid, false, false, 1, &mime::parse(M1.as_bytes()), true).unwrap(); }
+        db.set_folder_marks(id, 2, 2).unwrap();
+        let f = db.folders_of("me@x").unwrap().remove(0);
+        assert!(sync_folder(&mut fake(no_exists), &db, &f).unwrap().is_empty());
+        assert_eq!(db.list(&ListQuery { folder: Some(id), ..Default::default() }).unwrap().len(), 2);
     }
 }

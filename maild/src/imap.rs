@@ -174,7 +174,7 @@ impl Conn {
     pub fn examine(&mut self, path: &str) -> Result<::imap::types::Mailbox, String> {
         // Unilateral EXISTS/EXPUNGE pile up for the life of the session; nothing reads them here.
         self.session.take_all_unsolicited().for_each(drop);
-        self.session.examine(path).map_err(|e| format!("EXAMINE {path}: {e}"))
+        self.session.examine(path).map_err(|e| format!("{} (EXAMINE {path})", err(e)))
     }
 
     /// `UID SEARCH`, ascending.
