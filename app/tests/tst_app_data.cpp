@@ -15,6 +15,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <memory>
 
 using namespace om;
 using namespace om::test;
@@ -80,6 +81,14 @@ class TstAppData : public QObject {
             n += !r.contains("account");
         return n;
     }
+    QJsonArray slice(const QJsonObject &listReq) const
+    {
+        QJsonArray out;
+        const int limit = listReq.value("limit").toInt();
+        for (int i = listReq.value("offset").toInt(); i < rows.size() && out.size() < limit; ++i)
+            out << rows.at(i);
+        return out;
+    }
     QString place(int row) const { return list->data(list->index(row), MailList::PlaceRole).toString(); }
     QStringList folderLabels() const
     {
@@ -124,13 +133,7 @@ private Q_SLOTS:
             const QString a = r.value("account").toString();
             return QJsonObject{{"result", folders.value(a.isEmpty() ? QStringLiteral("unified") : a)}};
         });
-        d->on("list", [this](const QJsonObject &r) {
-            QJsonArray out;
-            const int limit = r.value("limit").toInt();
-            for (int i = r.value("offset").toInt(); i < rows.size() && out.size() < limit; ++i)
-                out << rows.at(i);
-            return QJsonObject{{"result", out}};
-        });
+        d->on("list", [this](const QJsonObject &r) { return QJsonObject{{"result", slice(r)}}; });
         d->on("message", [](const QJsonObject &r) {
             return QJsonObject{{"result", QJsonObject{{"summary", QJsonObject{{"id", r.value("message")}}},
                                                       {"text", "hi"}, {"html", QJsonValue::Null}}}};
@@ -463,6 +466,121 @@ private Q_SLOTS:
         QCOMPARE(app->page(), QString("main"));
         app->openSettings();
         QCOMPARE(app->page(), QString("settings"));
+    }
+
+    void remote_hits_before_search_reply()
+    {
+        boot();
+        QTRY_COMPARE(list->rowCount(), 50);
+        d->on("search", [this](const QJsonObject &) {
+            // maild's mailbox workers may report before the `search` reply is written
+            d->emitEvent({{"event", "search_remote"}, {"token", 6}, {"hits", QJsonArray{hit("Old search", 1)}}});
+            d->emitEvent({{"event", "search_remote"}, {"token", 7}, {"hits", QJsonArray{hit("Ozon receipt", 2)}}});
+            d->emitEvent({{"event", "search_remote"}, {"token", 7}, {"hits", QJsonArray()}, {"error", "offline"}});
+            return QJsonObject{{"result", QJsonObject{{"local", QJsonArray{rows.at(0)}}, {"token", 7}}}};
+        });
+        app->setQuery("ozon");
+        QTRY_COMPARE(list->rowCount(), 2);
+        QCOMPARE(list->row(1).value("subject").toString(), QString("Ozon receipt"));
+        QVERIFY(!app->remotePending());
+        QCOMPARE(app->foundText(), QString("Found 2 · in all mailboxes and folders"));
+    }
+
+    void accounts_error_is_visible()
+    {
+        d->on("accounts", [](const QJsonObject &) { return QJsonObject{{"error", "accounts.toml: expected a table"}}; });
+        boot();
+        QTRY_COMPARE(app->note(), QString("accounts.toml: expected a table"));
+        QVERIFY(app->noteError());
+        QVERIFY(c->connected());
+        QCOMPARE(app->statusText(), QString());   // connected: not "Mail service is not running"
+        QVERIFY(!app->statusError());
+    }
+
+    void startup_folders_failure_syncs_after_reconnect()
+    {
+        auto fail = std::make_shared<bool>(true);
+        d->on("folders", [this, fail](const QJsonObject &r) {
+            if (std::exchange(*fail, false))
+                return QJsonObject{{"error", "database is locked"}};
+            const QString a = r.value("account").toString();
+            return QJsonObject{{"result", folders.value(a.isEmpty() ? QStringLiteral("unified") : a)}};
+        });
+        boot(59);
+        QTRY_COMPARE(app->note(), QString("database is locked"));
+        barrier();
+        QVERIFY(sent("list").isEmpty());
+        QVERIFY(sent("sync").isEmpty());
+        d->stop();
+        QTRY_VERIFY(!c->connected());
+        QVERIFY(d->start());
+        QTRY_COMPARE(sent("sync").size(), 1);
+        QCOMPARE(body(sent("list").at(0)), inboxList(0, 50));
+        QTRY_COMPARE(list->cursor(), 1);   // `--open 59` still honoured
+    }
+
+    void search_error_sets_note()
+    {
+        d->on("search", [](const QJsonObject &) { return QJsonObject{{"error", "search index is broken"}}; });
+        boot();
+        QTRY_COMPARE(list->rowCount(), 50);
+        app->setQuery("ozon");
+        QTRY_COMPARE(app->note(), QString("search index is broken"));
+        QVERIFY(app->noteError());
+    }
+
+    void switch_drops_old_view_reply()
+    {
+        boot();
+        QTRY_COMPARE(list->rowCount(), 50);
+        QTRY_COMPARE(letter->id(), 57);
+        QJsonArray trash;
+        for (int i = 0; i < 3; ++i) {
+            QJsonObject r = rows.at(i).toObject();
+            r["id"] = 1001 + i;
+            r["seen"] = false;
+            trash << r;
+        }
+        d->on("list", [this, trash](const QJsonObject &r) {
+            if (r.value("role").toString() == "trash")
+                return QJsonObject{{"result", trash}, {"delay", 100}};   // still on its way when the view switches
+            return QJsonObject{{"result", slice(r)}};
+        });
+        d->on("folders", [this](const QJsonObject &r) {
+            const QString a = r.value("account").toString();
+            QJsonObject o{{"result", folders.value(a.isEmpty() ? QStringLiteral("unified") : a)}};
+            if (a == "me@yandex.ru")
+                o["delay"] = 200;   // after the old list, as maild answers in order
+            return o;
+        });
+        QList<qint64> firstIds;   // the top row after each reset
+        const auto conn = connect(list, &QAbstractItemModel::modelReset, this,
+                                  [&] { firstIds << list->row(0).value("id").toInteger(); });
+        app->pickFolder(3);    // Trash
+        app->pickAccount(1);   // me@yandex.ru, before Trash's rows arrive
+        QTRY_VERIFY(!firstIds.isEmpty());
+        disconnect(conn);
+        QCOMPARE(firstIds.first(), 60);   // the new view's rows, never Trash's
+        QCOMPARE(body(sent("list").last()),
+                 QJsonObject({{"cmd", "list"}, {"folder", 3}, {"unread_only", false}, {"offset", 0}, {"limit", 50}}));
+        for (const QJsonObject &m : sent("message"))
+            QVERIFY(m.value("message").toInteger() < 1000);
+    }
+
+    void removed_folder_falls_back_to_inbox()
+    {
+        accounts = QJsonArray{accounts.at(0)};
+        boot();
+        QTRY_COMPARE(list->rowCount(), 50);
+        app->pickFolder(4);   // Work
+        QTRY_COMPARE(body(sent("list").last()).value("folder").toInt(), 7);
+        QJsonArray gmail = folders.value("me@gmail.com").toArray();
+        gmail.removeAt(4);
+        folders["me@gmail.com"] = gmail;
+        d->emitEvent({{"event", "changed"}, {"folders", true}, {"ids", QJsonArray()}});
+        QTRY_COMPARE(app->folderIndex(), 0);
+        QTRY_COMPARE(body(sent("list").last()),
+                     QJsonObject({{"cmd", "list"}, {"folder", 1}, {"unread_only", false}, {"offset", 0}, {"limit", 50}}));
     }
 };
 

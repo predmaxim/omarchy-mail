@@ -15,18 +15,23 @@ namespace om {
 namespace {
 constexpr int kPage = 50;
 
-// Reply handler run on success only, and only while `ctx` lives.
-template <typename F>
-Client::Reply onOk(QObject *ctx, F f)
-{
-    return [ctx = QPointer<QObject>(ctx), f = std::move(f)](const QJsonValue &result, const QString &err) {
-        if (ctx && err.isEmpty())
-            f(result);
-    };
-}
-
 QString email(const QJsonValue &account) { return account.toObject().value(QStringLiteral("email")).toString(); }
 } // namespace
+
+// Reply handler: `onResult` on success while the App lives; an error becomes the note
+// (unless the service is gone: the status line says so).
+template <typename F>
+std::function<void(const QJsonValue &, const QString &)> App::ok(F onResult)
+{
+    return [self = QPointer<App>(this), onResult = std::move(onResult)](const QJsonValue &result, const QString &err) {
+        if (!self)
+            return;
+        if (err.isEmpty())
+            onResult(result);
+        else if (self->m_client->connected())
+            self->setNote(err, true);
+    };
+}
 
 App::App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *nav, Theme *theme, QObject *parent)
     : QObject(parent), m_client(client), m_list(list), m_letter(letter), m_compose(compose), m_nav(nav), m_theme(theme)
@@ -136,12 +141,11 @@ bool App::trashView() const
 
 void App::connectedChanged()
 {
-    if (!m_client->connected()) {
-        setStatus();   // "Mail service is not running"
-        Q_EMIT changed();
+    setStatus();   // lost: "Mail service is not running"
+    Q_EMIT changed();
+    if (!m_client->connected())
         return;
-    }
-    m_client->request({{"cmd", "accounts"}}, onOk(this, [this](const QJsonValue &r) {
+    m_client->request({{"cmd", "accounts"}}, ok([this](const QJsonValue &r) {
         m_accounts = r.toArray();
         if (m_accounts.isEmpty())
             m_page = QStringLiteral("settings");
@@ -150,19 +154,18 @@ void App::connectedChanged()
         else if (accountIndex() < 0)
             m_account.clear();
         requestStatus();
-        const bool first = !std::exchange(m_synced, true);
-        loadFolders([this, first] {
+        loadFolders([this] {
             if (m_searching)
                 runSearch();
             else
-                loadList(first, first ? std::exchange(m_openId, 0) : 0);
-            if (first)
+                loadList(false);
+            if (!std::exchange(m_synced, true))
                 m_client->request({{"cmd", "sync"}});   // the other folders refresh when the window opens
             if (m_accounts.size() > 1)   // folder names for the places of search rows
                 for (const QJsonValue &v : std::as_const(m_accounts)) {
                     const QString a = email(v);
                     m_client->request({{"cmd", "folders"}, {"account", a}},
-                                      onOk(this, [this, a](const QJsonValue &f) { remember(a, f.toArray()); }));
+                                      ok([this, a](const QJsonValue &f) { remember(a, f.toArray()); }));
                 }
         });
         Q_EMIT changed();
@@ -198,7 +201,7 @@ void App::onEvent(const QString &name, const QJsonObject &p)
 
 void App::requestStatus()
 {
-    m_client->request({{"cmd", "status"}}, onOk(this, [this](const QJsonValue &r) {
+    m_client->request({{"cmd", "status"}}, ok([this](const QJsonValue &r) {
         m_status = r.toObject().value(QStringLiteral("accounts")).toArray();
         setStatus();
         Q_EMIT changed();
@@ -229,18 +232,21 @@ void App::loadFolders(std::function<void()> then)
     if (!m_account.isEmpty())
         req.insert(QStringLiteral("account"), m_account);
     const QString account = m_account;
-    m_client->request(req, onOk(this, [this, account, then = std::move(then)](const QJsonValue &r) {
+    m_client->request(req, ok([this, account, then = std::move(then)](const QJsonValue &r) {
         if (account == m_account) {
             m_folders = r.toArray();
             if (!account.isEmpty())
                 remember(account, m_folders);
             if (folderIndex() < 0) {   // gone, or none chosen yet: Inbox
+                const bool gone = !m_folder.isEmpty();
                 m_folder = {};
                 for (const QJsonValue &v : std::as_const(m_folders))
                     if (v.toObject().value(QStringLiteral("role")).toString() == QLatin1String("inbox")) {
                         m_folder = v.toObject();
                         break;
                     }
+                if (gone)
+                    loadList(true);
             }
             Q_EMIT changed();
         }
@@ -291,15 +297,22 @@ QJsonObject App::listRequest(int offset, int limit) const
 
 // fresh: a new view, the cursor goes to `target` or the first unread; otherwise a reload keeping the cursor.
 // A `target` not among the rows still opens on the right, the cursor stays.
+// The window's first list is always fresh, aimed at `--open`.
 void App::loadList(bool fresh, qint64 target)
 {
+    if (!m_opened) {
+        fresh = true;
+        if (target == 0)
+            target = m_openId;
+    }
     const quint64 gen = ++m_gen;
     m_paging = false;
     m_end = false;
     const int limit = fresh ? kPage : std::max(kPage, m_list->rowCount());
-    m_client->request(listRequest(0, limit), onOk(this, [this, gen, fresh, limit, target](const QJsonValue &r) {
+    m_client->request(listRequest(0, limit), ok([this, gen, fresh, limit, target](const QJsonValue &r) {
         if (gen != m_gen)
             return;
+        m_opened = true;
         const QJsonArray rows = r.toArray();
         m_end = rows.size() < limit;
         int at = -1;
@@ -324,7 +337,7 @@ void App::loadMore()
 {
     m_paging = true;
     const quint64 gen = m_gen;
-    m_client->request(listRequest(m_list->rowCount(), kPage), onOk(this, [this, gen](const QJsonValue &r) {
+    m_client->request(listRequest(m_list->rowCount(), kPage), ok([this, gen](const QJsonValue &r) {
         if (gen != m_gen)
             return;
         m_paging = false;
@@ -354,6 +367,7 @@ void App::cursorMoved(bool force)
 
 void App::selectView(const QString &account, qint64 target)
 {
+    ++m_gen;   // the old view's replies in flight
     endSearch();
     m_account = account;
     m_folder = {};
@@ -415,7 +429,7 @@ void App::suggest(const QString &prefix)
         return;
     }
     m_client->request({{"cmd", "contacts"}, {"prefix", prefix}},
-                      onOk(this, [this](const QJsonValue &r) { m_compose->setSuggestions(r.toArray().toVariantList()); }));
+                      ok([this](const QJsonValue &r) { m_compose->setSuggestions(r.toArray().toVariantList()); }));
 }
 
 // ---- search ----
@@ -441,7 +455,9 @@ void App::runSearch()
 {
     const quint64 gen = ++m_gen;
     const QString q = m_query;
-    m_client->request({{"cmd", "search"}, {"q", q}}, onOk(this, [this, gen, q](const QJsonValue &r) {
+    m_token = -1;
+    m_early.clear();
+    m_client->request({{"cmd", "search"}, {"q", q}}, ok([this, gen, q](const QJsonValue &r) {
         if (gen != m_gen)
             return;
         const QJsonObject o = r.toObject();
@@ -459,12 +475,20 @@ void App::runSearch()
         m_placing = false;
         cursorMoved();
         updateFound();
+        for (const QJsonObject &e : std::exchange(m_early, {}))
+            remoteHits(e);
     }));
 }
 
 void App::remoteHits(const QJsonObject &p)
 {
-    if (!m_searching || p.value(QStringLiteral("token")).toInteger(-2) != m_token)
+    if (!m_searching)
+        return;
+    if (m_token < 0) {   // maild may report before our `search` reply: kept until its token is known
+        m_early << p;
+        return;
+    }
+    if (p.value(QStringLiteral("token")).toInteger(-2) != m_token)
         return;   // an older search's
     m_list->appendRemote(p.value(QStringLiteral("hits")).toArray());
     if (--m_remoteLeft <= 0) {
@@ -491,6 +515,7 @@ void App::endSearch()
     m_searching = false;
     m_remotePending = false;
     m_token = -1;
+    m_early.clear();
     m_foundText.clear();
     m_list->setWords({}, m_theme->mark());
     m_letter->setWords({});

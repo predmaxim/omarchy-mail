@@ -90,6 +90,8 @@ private:
     void endSearch();
     void remoteHits(const QJsonObject &payload);
     void updateFound();
+    template <typename F>
+    std::function<void(const QJsonValue &, const QString &)> ok(F onResult);
 
     Client *m_client;
     MailList *m_list;
@@ -106,14 +108,16 @@ private:
     bool m_unreadOnly = false;
     qint64 m_openId = 0;
     bool m_synced = false;      // `sync {}` once per window
-    quint64 m_gen = 0;          // list/search loads: replies of an older view are dropped
+    bool m_opened = false;      // the window's first list has arrived
+    quint64 m_gen = 0;          // view changes and list/search loads: replies of an older one are dropped
     bool m_paging = false, m_end = false;
     bool m_placing = false;     // rows being replaced: the cursor settles before the letter follows
     QString m_cursorKey;        // the row the letter last followed
 
     QString m_query, m_foundText;
     bool m_searching = false, m_remotePending = false;
-    qint64 m_token = -1;
+    qint64 m_token = -1;        // -1 while our `search` is on its way
+    QList<QJsonObject> m_early; // search_remote events that came before the `search` reply
     int m_remoteLeft = 0;       // mailboxes yet to send their search_remote
 
     QString m_statusText, m_note;
