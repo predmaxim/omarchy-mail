@@ -718,6 +718,15 @@ mod tests {
     }
 
     #[test]
+    fn reset_folder_clears_refused() {
+        let db = Db::memory();
+        let f = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        db.add_refused(f, 5).unwrap();
+        db.reset_folder(f, 9).unwrap();
+        assert!(db.refused_uids(f).unwrap().is_empty());
+    }
+
+    #[test]
     fn v1_database_migrates_to_v2() {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(&format!("{SCHEMA} PRAGMA user_version = 1;")).unwrap();

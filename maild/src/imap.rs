@@ -101,14 +101,24 @@ pub const AUTH_FAILED: &str = "login rejected";
 /// session stays in step, so the next command may follow on the same connection.
 pub const REFUSED: &str = "refused by server";
 
-/// `err`, with a tagged NO told apart. The crate reports a NO that ends a FETCH as an
-/// unexpected `Response::Data`.
+/// A NO about the whole command or the server, not about one message.
+fn systemic(code: Option<&imap_proto::ResponseCode>, info: &str) -> bool {
+    let info = info.trim_start().to_ascii_uppercase();
+    matches!(code, Some(imap_proto::ResponseCode::Alert))
+        || ["[ALERT]", "[OVERQUOTA]", "[SERVERBUG]"].iter().any(|c| info.starts_with(c))
+}
+
+/// `err`, with a tagged NO about one message told apart. The crate reports a NO that ends a FETCH
+/// as an unexpected `Response::Data`.
 fn fetch_err(e: ::imap::Error) -> String {
     use imap_proto::{Response, Status};
     match e {
-        ::imap::Error::No(ref n) => format!("{REFUSED}: {}", n.information),
-        ::imap::Error::Unexpected(Response::Data { status: Status::No, ref information, .. }) =>
+        ::imap::Error::No(ref n) if !systemic(n.code.as_ref(), &n.information) => format!("{REFUSED}: {}", n.information),
+        ::imap::Error::Unexpected(Response::Data { status: Status::No, ref code, ref information })
+            if !systemic(code.as_ref(), information.as_deref().unwrap_or_default()) =>
             format!("{REFUSED}: {}", information.as_deref().unwrap_or_default()),
+        ::imap::Error::Unexpected(Response::Data { status: Status::No, ref information, .. }) =>
+            format!("server said NO: {}", information.as_deref().unwrap_or_default()),
         e => err(e),
     }
 }
@@ -688,6 +698,10 @@ mod tests {
         assert_eq!(fetch_err(no), format!("{REFUSED}: [UNAVAILABLE] backend error"));
         let ok = ::imap::Error::Unexpected(Response::Data { status: Status::Ok, code: None, information: None });
         assert!(!fetch_err(ok).starts_with(REFUSED));
+        for info in ["[ALERT] x", "[OVERQUOTA] x", "[serverbug] x"] {
+            let sys = ::imap::Error::Unexpected(Response::Data { status: Status::No, code: None, information: Some(info.into()) });
+            assert!(!fetch_err(sys).starts_with(REFUSED), "{info}");
+        }
         let io = ::imap::Error::Io(std::io::Error::other("reset"));
         assert!(!fetch_err(io).starts_with(REFUSED));
         let bad = ::imap::Error::Parse(::imap::error::ParseError::Invalid(b"x".to_vec()));

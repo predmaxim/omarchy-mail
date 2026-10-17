@@ -67,12 +67,20 @@ fn one_folder(conn: &mut Conn, acc: &Account, path: &str, crit: &str, hits: &mut
         Ok(f) => got.push(f),
         // The server refuses a single message: one by one, without that one. A tagged NO keeps the session in step.
         Err(e) if e.starts_with(REFUSED) => {
+            let mut first = None;
             for uid in newest {
                 match conn.fetch(&uid.to_string(), QUERY) {
                     Ok(f) => got.push(f),
-                    Err(e) if e.starts_with(REFUSED) => eprintln!("{}: {path}: uid {uid} refused by server: {e}", acc.email),
+                    Err(e) if e.starts_with(REFUSED) => {
+                        eprintln!("{}: {path}: uid {uid} refused by server: {e}", acc.email);
+                        first.get_or_insert(e);
+                    }
                     Err(e) => return Err(e),
                 }
+            }
+            // Nothing came at all: the folder failed, not single messages.
+            if let (true, Some(e)) = (got.is_empty(), first) {
+                return Err(e);
             }
         }
         Err(e) => return Err(e),
@@ -206,7 +214,7 @@ mod tests {
                                 cmd.clear();
                                 continue;
                             }
-                            "UID" if c.starts_with("UID FETCH 4") => {
+                            "UID" if (c.starts_with("UID FETCH 4 ") || c.starts_with("UID FETCH 4,")) => {
                                 let _ = w.write_all(format!("{tag} NO [UNAVAILABLE] UID FETCH message 1 uid 4: failure due to backend error\r\n").as_bytes());
                                 cmd.clear();
                                 continue;
