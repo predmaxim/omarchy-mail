@@ -293,11 +293,15 @@ impl Conn {
         Ok(v)
     }
 
-    /// SELECT, read-write: for actions (sync only EXAMINEs).
-    pub fn select(&mut self, path: &str) -> Result<(), Error> {
-        let q = quote(path).ok_or_else(|| Error::Refused(format!("{path}: bad folder name")))?;
+    /// SELECT, read-write: for actions (sync only EXAMINEs). The folder's UIDVALIDITY, if the
+    /// server sent it.
+    pub fn select(&mut self, path: &str) -> Result<Option<u32>, Error> {
+        if quote(path).is_none() {
+            return Err(Error::Refused(format!("{path}: bad folder name")));
+        }
+        self.session.take_all_unsolicited().for_each(drop);
         self.inbox = false;
-        self.command(&format!("SELECT {q}"))
+        Ok(self.session.select(path).map_err(refused)?.uid_validity)
     }
 
     /// A command that answers just OK or not (`UID MOVE`, `UID STORE … .SILENT`, `EXPUNGE`, …).

@@ -298,11 +298,13 @@ live in the keyring only.
 - A moved message keeps its `id`; its `uid` is `null` until the server has moved it. If the
   server's copy cannot be found in the target folder afterwards, the message leaves the list and
   comes back with that folder's next sync, under a new `id`.
-- A message that is no longer on the server (deleted from a phone) is skipped silently. If it was
-  being deleted, it also leaves the list.
+- A message that is no longer on the server (deleted from a phone) is skipped silently; the next
+  sync of its folder removes it from the list. A delete the server could not do this way (its
+  Trash is gone) puts the message back in its folder.
 - When a server refuses an action for another reason, the message comes back as it was and
-  `action_failed {batch, error}` is sent, once for the batch. A message deleted forever comes back
-  by downloading it again.
+  `action_failed {batch, error}` is sent, once for the batch. An action that fails on the
+  connection 5 times counts as refused, so it cannot hold up the queue. A message deleted forever
+  comes back by downloading it again.
 - `restore` is not accepted here: it is what `undo` of a delete does.
 
 ### `undo`

@@ -64,6 +64,9 @@ pub fn classify(e: &imap::Error) -> Outcome {
     }
 }
 
+/// Failed tries on the connection before an action counts as refused.
+const MAX_TRIES: u32 = 5;
+
 fn sql(e: rusqlite::Error) -> String { e.to_string() }
 
 /// IMMEDIATE takes the write lock first: a concurrent writer (a sync) makes it wait instead of failing.
@@ -103,12 +106,13 @@ pub fn enqueue(db: &Db, ids: &[i64], op: Op) -> Result<i64, String> {
     let mut changed = false;
     for &id in ids {
         let msg = tx.query_row(
-            "SELECT m.folder, m.uid, m.message_id, m.seen, m.flagged, f.account, f.role FROM messages m JOIN folders f ON f.id = m.folder WHERE m.id = ?1",
+            "SELECT m.folder, m.uid, m.message_id, m.seen, m.flagged, f.account, f.role, COALESCE(f.uidvalidity, 0)
+             FROM messages m JOIN folders f ON f.id = m.folder WHERE m.id = ?1",
             [id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<u32>>(1)?, r.get::<_, String>(2)?, r.get::<_, bool>(3)?, r.get::<_, bool>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?)),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<u32>>(1)?, r.get::<_, String>(2)?, r.get::<_, bool>(3)?, r.get::<_, bool>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, u32>(7)?)),
         ).optional().map_err(sql)?;
         // Gone meanwhile: a sync removed it.
-        let Some((folder, uid, message_id, seen, flagged, account, role)) = msg else { continue };
+        let Some((folder, uid, message_id, seen, flagged, account, role, validity)) = msg else { continue };
         let in_trash = role == Role::Trash.as_str();
         let set = |col: &str, v: bool| tx.execute(&format!("UPDATE messages SET {col} = ?2 WHERE id = ?1"), params![id, v]).map(drop).map_err(sql);
         let to: Option<i64> = match op {
@@ -142,8 +146,9 @@ pub fn enqueue(db: &Db, ids: &[i64], op: Op) -> Result<i64, String> {
             }
         };
         tx.execute(
-            "INSERT INTO actions(batch, account, op, message, from_folder, to_folder, uid, message_id, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending')",
-            params![batch, account, op.name(), id, folder, to, uid, message_id],
+            "INSERT INTO actions(batch, account, op, message, from_folder, to_folder, uid, uidvalidity, message_id, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending')",
+            params![batch, account, op.name(), id, folder, to, uid, validity, message_id],
         ).map_err(sql)?;
         changed = true;
     }
@@ -182,16 +187,18 @@ pub fn has_pending(db: &Db, account: &str) -> Result<bool, String> {
 }
 
 /// A pending row with the paths of its folders (`None`: the folder is gone, its messages with it).
+/// `uid` is valid under `validity` (the source folder's UIDVALIDITY then, 0 = unknown); `moved` is
+/// set once the server has confirmed the MOVE.
 struct Pending {
     id: i64, batch: i64, op: Op, message: i64, from: i64, to: Option<i64>,
-    from_path: Option<String>, to_path: Option<String>, uid: Option<u32>, message_id: String,
+    from_path: Option<String>, to_path: Option<String>, uid: Option<u32>, validity: u32, message_id: String, moved: bool,
 }
 
 /// The worker: replays the account's pending actions on the server, in order. A connection failure
 /// ends it with `Err`; that action and the ones after it stay pending for the next `Actions`.
 pub fn run(conn: &mut Conn, db: &Db, account: &str, hub: &Hub) -> Result<(), String> {
     let pending = rows(db,
-        "SELECT a.id, a.batch, a.op, a.message, a.from_folder, a.to_folder, ff.path, tf.path, a.uid, a.message_id FROM actions a
+        "SELECT a.id, a.batch, a.op, a.message, a.from_folder, a.to_folder, ff.path, tf.path, a.uid, a.message_id, COALESCE(a.uidvalidity, 0) FROM actions a
          LEFT JOIN folders ff ON ff.id = a.from_folder LEFT JOIN folders tf ON tf.id = a.to_folder
          WHERE a.account = ?1 AND a.state = 'pending' ORDER BY a.id",
         [account],
@@ -199,7 +206,8 @@ pub fn run(conn: &mut Conn, db: &Db, account: &str, hub: &Hub) -> Result<(), Str
             let Some(op) = Op::parse(r.get(2)?) else { return Ok(None) };
             Ok(Some(Pending {
                 id: r.get(0)?, batch: r.get(1)?, op, message: r.get(3)?, from: r.get(4)?, to: r.get(5)?, from_path: r.get(6)?,
-                to_path: r.get(7)?, uid: r.get(8)?, message_id: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                to_path: r.get(7)?, uid: r.get(8)?, message_id: r.get::<_, Option<String>>(9)?.unwrap_or_default(), validity: r.get(10)?,
+                moved: false,
             }))
         })?;
     let mut s = Server { conn, selected: None, caps: None };
@@ -209,8 +217,17 @@ pub fn run(conn: &mut Conn, db: &Db, account: &str, hub: &Hub) -> Result<(), Str
             Ok(found) => found,
             Err(e) => match classify(&e) {
                 Outcome::Missing => None,
-                Outcome::Retry => return Err(format!("{}: {e}", a.op.name())),
-                Outcome::Reject => {
+                outcome => {
+                    let broken = outcome == Outcome::Retry;
+                    // One that keeps failing on the connection must not hold up the ones after it.
+                    if broken && add_try(db, a.id)? < MAX_TRIES {
+                        return Err(format!("{}: {e}", a.op.name()));
+                    }
+                    if broken {
+                        // The session is out of step.
+                        s.conn.reconnect()?;
+                        s.selected = None;
+                    }
                     reject(&mut s, db, account, &a, &e.to_string())?;
                     // One event per batch: its rows come one after another.
                     if told != Some(a.batch) {
@@ -221,16 +238,29 @@ pub fn run(conn: &mut Conn, db: &Db, account: &str, hub: &Hub) -> Result<(), Str
                 }
             },
         };
-        settle(db, &a, found)?;
+        // Not found where it went: that folder's sync brings it back, sooner than the periodic one.
+        if settle(db, &a, found)? && let Some(to) = a.to && let Some(h) = hub.handles().into_iter().find(|h| h.email == account) {
+            let _ = h.jobs.send(Job::SyncFolder(to));
+        }
     }
     Ok(())
 }
 
-/// The server side of one action; fills in `a.uid` when it was unknown. `Ok(uid)`: where a move's
-/// message is now in its target folder (`None` if not found there); `None` for the other actions.
+/// Counts a failed try of action `id`; returns how many there have been.
+fn add_try(db: &Db, id: i64) -> Result<u32, String> {
+    db.c.query_row("UPDATE actions SET tries = tries + 1 WHERE id = ?1 RETURNING tries", [id], |r| r.get(0)).map_err(sql)
+}
+
+/// The server side of one action; fills in `a.uid` when it was unknown or stale, and `a.moved`.
+/// `Ok(uid)`: where a move's message is now in its target folder (`None` if not found there);
+/// `None` for the other actions.
 fn execute(s: &mut Server, a: &mut Pending) -> Result<Option<u32>, imap::Error> {
     let Some(from) = &a.from_path else { return Ok(None) };
-    s.select(from)?;
+    let validity = s.select(from)?;
+    // The folder was recreated: the stored uid may name another message now.
+    if a.validity != 0 && validity.is_some_and(|v| v != a.validity) {
+        a.uid = None;
+    }
     // No uid: enqueued while an earlier move of the message was still on its way.
     if a.uid.is_none() {
         a.uid = s.find(&a.message_id)?;
@@ -240,11 +270,12 @@ fn execute(s: &mut Server, a: &mut Pending) -> Result<Option<u32>, imap::Error> 
             let Some(to) = &a.to_path else { return Ok(None) };
             // A gone uid: moved by an earlier try whose answer was lost, or by a phone.
             match a.uid.map(|u| s.mv(u, to)) {
+                Some(Ok(())) => a.moved = true,
                 Some(Err(e)) if classify(&e) != Outcome::Missing => return Err(e),
                 _ => {}
             }
             // Moved, or already there: a refusal from here on is not the move's.
-            return match s.select(to).and_then(|()| s.find(&a.message_id)) {
+            return match s.select(to).and_then(|_| s.find(&a.message_id)) {
                 Err(e) if classify(&e) != Outcome::Retry => Ok(None),
                 r => r,
             };
@@ -265,23 +296,25 @@ fn execute(s: &mut Server, a: &mut Pending) -> Result<Option<u32>, imap::Error> 
 }
 
 /// Done on the server (or nothing to do there). A moved message still waiting in its target gets
-/// its uid there, or goes when the target has no such message (the target's sync brings it).
-fn settle(db: &Db, a: &Pending, found: Option<u32>) -> Result<(), String> {
+/// its uid there. Not found there: if the server did not move it, it goes back to its source with
+/// its uid (whose sync drops it if it is gone there too); otherwise it goes, and `true` says the
+/// target's sync will bring it.
+fn settle(db: &Db, a: &Pending, found: Option<u32>) -> Result<bool, String> {
     let tx = begin(db)?;
+    let mut lost = false;
     if let Some(to) = a.to && awaiting(&tx, a.message, to)? {
         match found {
-            Some(uid) => {
-                place(&tx, a.message, to, Some(uid))?;
-                // A restored message is not new mail.
-                tx.execute("UPDATE folders SET notified_uid = MAX(notified_uid, ?2) WHERE id = ?1", params![to, uid]).map_err(sql)?;
-            }
+            Some(uid) => place(&tx, a.message, to, Some(uid))?,
+            None if !a.moved && a.uid.is_some() && a.from_path.is_some() => place(&tx, a.message, a.from, a.uid)?,
             None => {
                 tx.execute("DELETE FROM messages WHERE id = ?1", [a.message]).map_err(sql)?;
+                lost = true;
             }
         }
     }
     tx.execute("UPDATE actions SET state = 'done' WHERE id = ?1", [a.id]).map_err(sql)?;
-    tx.commit().map_err(sql)
+    tx.commit().map_err(sql)?;
+    Ok(lost)
 }
 
 /// The server refused: the local change is undone; a message deleted forever is fetched again.
@@ -316,18 +349,20 @@ fn reject(s: &mut Server, db: &Db, account: &str, a: &Pending, error: &str) -> R
     Ok(())
 }
 
-/// The worker's connection during one `run`: what is selected, what the server can do.
-struct Server<'a> { conn: &'a mut Conn, selected: Option<String>, caps: Option<(bool, bool)> }
+/// The worker's connection during one `run`: what is selected (with its UIDVALIDITY), what the
+/// server can do.
+struct Server<'a> { conn: &'a mut Conn, selected: Option<(String, Option<u32>)>, caps: Option<(bool, bool)> }
 
 impl Server<'_> {
-    /// SELECT, unless already selected.
-    fn select(&mut self, path: &str) -> Result<(), imap::Error> {
-        if self.selected.as_deref() != Some(path) {
-            self.selected = None;
-            self.conn.select(path)?;
-            self.selected = Some(path.into());
+    /// SELECT, unless already selected; the folder's UIDVALIDITY if the server told it.
+    fn select(&mut self, path: &str) -> Result<Option<u32>, imap::Error> {
+        if let Some((p, v)) = &self.selected && p == path {
+            return Ok(*v);
         }
-        Ok(())
+        self.selected = None;
+        let v = self.conn.select(path)?;
+        self.selected = Some((path.into(), v));
+        Ok(v)
     }
 
     /// (MOVE, UIDPLUS)
@@ -370,7 +405,7 @@ impl Server<'_> {
         if self.conn.search("DELETED")? == [uid] {
             return self.conn.command("EXPUNGE");
         }
-        eprintln!("{}: uid {uid} stays marked \\Deleted: no UIDPLUS, and other messages are marked too", self.selected.as_deref().unwrap_or_default());
+        eprintln!("{}: uid {uid} stays marked \\Deleted: no UIDPLUS, and other messages are marked too", self.selected.as_ref().map_or("", |(p, _)| p));
         Ok(())
     }
 }
@@ -504,12 +539,10 @@ mod tests {
         assert_eq!(seen_flagged(), (false, true));
     }
 
-    #[test]
-    fn move_and_restore_on_server() {
-        let (db, inbox, trash, id) = setup();
-        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+    /// Moves uid 5 INBOX → Trash, where it is 9, and 9 back to INBOX, where it is 11.
+    fn mover() -> (Conn, Log) {
         let selected = Mutex::new(String::new());
-        let (mut c, log) = server(move |cmd| {
+        server(move |cmd| {
             if let Some(path) = cmd.strip_prefix("SELECT ") {
                 *selected.lock().unwrap() = path.into();
                 return Some(String::new());
@@ -517,12 +550,18 @@ mod tests {
             Some(match cmd {
                 "CAPABILITY" => CAPS.into(),
                 "UID MOVE 5 \"Trash\"" | "UID MOVE 9 \"INBOX\"" => String::new(),
-                // in Trash it is uid 9; back in INBOX, 11
                 FIND if *selected.lock().unwrap() == "\"Trash\"" => "* SEARCH 9\r\n".into(),
                 FIND => "* SEARCH 11\r\n".into(),
                 _ => return None,
             })
-        });
+        })
+    }
+
+    #[test]
+    fn move_and_restore_on_server() {
+        let (db, inbox, trash, id) = setup();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, log) = mover();
         let hub = Hub::default();
         run(&mut c, &db, ME, &hub).unwrap();
         assert_eq!(take(&log), ["SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 5 \"Trash\"", "SELECT \"Trash\"", FIND]);
@@ -534,7 +573,91 @@ mod tests {
         assert_eq!(take(&log), ["SELECT \"Trash\"", "CAPABILITY", "UID MOVE 9 \"INBOX\"", "SELECT \"INBOX\"", FIND]);
         assert_eq!(place_of(&db, id), (inbox, Some(11)));
         assert_eq!(states(&db, u), ["done"]);
-        assert_eq!(db.folders_of(ME).unwrap()[0].notified_uid, 11, "a restored message is not new mail");
+    }
+
+    #[test]
+    fn restored_mail_is_not_new_mail() {
+        let (db, inbox, _, id) = setup();
+        db.set_folder_marks(inbox, 5, 5).unwrap();
+        let (mut c, _) = mover();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        undo(&db, b).unwrap();
+        // Mail 10 came while offline; the restore lands above it, as 11, before the Inbox sync.
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        // What that sync then stores.
+        let new = db.insert_message(inbox, 10, false, false, 1, &Parsed { subject: "new".into(), ..Default::default() }, true).unwrap();
+        let p = Parsed { subject: "s".into(), message_id: "m1@x".into(), ..Default::default() };
+        assert_eq!(db.insert_message(inbox, 11, false, false, 1, &p, true).unwrap(), id);
+        let notified = db.folders_of(ME).unwrap()[0].notified_uid;
+        db.set_folder_marks(inbox, 11, notified).unwrap();
+        let unread: Vec<i64> = db.unread_inbox(ME).unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(unread, [new], "the new mail is announced, the restored one is not");
+    }
+
+    #[test]
+    fn stale_uid_after_uidvalidity_change() {
+        for (validity, store) in [(7, "UID STORE 5 +FLAGS.SILENT (\\Seen)"), (8, "UID STORE 12 +FLAGS.SILENT (\\Seen)")] {
+            let db = Db::memory();
+            let inbox = db.upsert_folder(ME, "INBOX", Role::Inbox).unwrap();
+            db.reset_folder(inbox, 7).unwrap();
+            let p = Parsed { message_id: "m1@x".into(), ..Default::default() };
+            let id = db.insert_message(inbox, 5, false, false, 1, &p, true).unwrap();
+            enqueue(&db, &[id], Op::Read).unwrap();
+            let (mut c, log) = server(move |cmd| Some(match cmd {
+                "SELECT \"INBOX\"" => format!("* OK [UIDVALIDITY {validity}] v\r\n"),
+                // recreated folder: uid 5 may be another message now, this one is 12
+                FIND => "* SEARCH 12\r\n".into(),
+                c if c == store => String::new(),
+                _ => return None,
+            }));
+            run(&mut c, &db, ME, &Hub::default()).unwrap();
+            let want: Vec<&str> = if validity == 7 { vec!["SELECT \"INBOX\"", store] } else { vec!["SELECT \"INBOX\"", FIND, store] };
+            assert_eq!(take(&log), want);
+        }
+    }
+
+    #[test]
+    fn poison_action_gives_up() {
+        let (db, inbox, _, id) = setup();
+        let other = db.insert_message(inbox, 6, false, false, 1, &Parsed { message_id: "m2@x".into(), ..Default::default() }, true).unwrap();
+        let del = enqueue(&db, &[id], Op::Delete).unwrap();
+        let read = enqueue(&db, &[other], Op::Read).unwrap();
+        let hub = Hub::default();
+        let events = hub.subscribe(false);
+        let (mut c, log) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            // every try of this one breaks the session
+            "UID MOVE 5 \"Trash\"" => "#garbage#\r\n".into(),
+            c if c.starts_with("SELECT ") || c == "UID STORE 6 +FLAGS.SILENT (\\Seen)" => String::new(),
+            _ => return None,
+        }));
+        for _ in 1..MAX_TRIES {
+            assert!(run(&mut c, &db, ME, &hub).is_err());
+            assert_eq!((states(&db, del), states(&db, read)), (vec!["pending".to_string()], vec!["pending".to_string()]));
+            c.reconnect().unwrap(); // as the worker's `attempt` does
+        }
+        run(&mut c, &db, ME, &hub).unwrap();
+        assert_eq!((states(&db, del), states(&db, read)), (vec!["failed".to_string()], vec!["done".to_string()]));
+        assert_eq!(place_of(&db, id), (inbox, Some(5)));
+        assert!(take(&log).iter().any(|c| c == "UID STORE 6 +FLAGS.SILENT (\\Seen)"));
+        assert_eq!(events.try_iter().filter(|e| e.contains("action_failed")).count(), 1);
+    }
+
+    #[test]
+    fn failed_move_keeps_mail() {
+        // Trash is gone on the server: nothing moved, so the message goes back where it was.
+        let (db, inbox, _, id) = setup();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, _) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            "SELECT \"INBOX\"" => String::new(),
+            "UID MOVE 5 \"Trash\"" | "SELECT \"Trash\"" => "NO [NONEXISTENT] no such folder".into(),
+            _ => return None,
+        }));
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        assert_eq!(place_of(&db, id), (inbox, Some(5)));
+        assert_eq!(states(&db, b), ["done"]);
     }
 
     #[test]

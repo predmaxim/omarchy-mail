@@ -100,8 +100,9 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF subject, from_name, fro
 END;
 CREATE TABLE IF NOT EXISTS actions(
   id INTEGER PRIMARY KEY, batch INTEGER, account TEXT, op TEXT, message INTEGER, from_folder INTEGER,
-  to_folder INTEGER, uid INTEGER, message_id TEXT, state TEXT, error TEXT);
-CREATE INDEX IF NOT EXISTS actions_pending ON actions(message) WHERE state = 'pending';
+  to_folder INTEGER, uid INTEGER, uidvalidity INTEGER, message_id TEXT, state TEXT, error TEXT,
+  tries INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS actions_message ON actions(message);
 CREATE TABLE IF NOT EXISTS outbox(
   id INTEGER PRIMARY KEY, account TEXT NOT NULL, raw BLOB, to_json TEXT NOT NULL DEFAULT '[]',
   subject TEXT NOT NULL DEFAULT '', date INTEGER NOT NULL DEFAULT 0, state TEXT, error TEXT);
@@ -343,9 +344,11 @@ impl Db {
         tx.commit().map_err(e)
     }
 
-    /// Unread Inbox mail with `uid > notified_uid`, for notifications.
+    /// Unread Inbox mail with `uid > notified_uid`, for notifications. A message restored from
+    /// Trash lands under a new uid but is not new mail.
     pub fn unread_inbox(&self, account: &str) -> Result<Vec<Summary>, String> {
-        let sql = format!("SELECT {SUMMARY_COLS} {SUMMARY_FROM} WHERE f.account = ?1 AND f.role = 'inbox' AND m.seen = 0 AND m.uid > f.notified_uid ORDER BY m.uid");
+        let sql = format!("SELECT {SUMMARY_COLS} {SUMMARY_FROM} WHERE f.account = ?1 AND f.role = 'inbox' AND m.seen = 0 AND m.uid > f.notified_uid
+                           AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.message = m.id AND a.op = 'restore') ORDER BY m.uid");
         let mut st = self.c.prepare(&sql).map_err(e)?;
         st.query_map([account], summary).map_err(e)?.collect::<Result<_, _>>().map_err(e)
     }
