@@ -173,7 +173,7 @@ Item {
         objectName: "noText"
         anchors.centerIn: body
         visible: letter.blank
-        text: attachments.count > 0 ? i18n.t("No text — only attachments") : i18n.t("No text in this letter")
+        text: i18n.t("No content")
         color: theme.dim
         font.pixelSize: theme.fontBody
     }

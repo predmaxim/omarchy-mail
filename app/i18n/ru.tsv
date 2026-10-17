@@ -29,8 +29,6 @@ Attachments of unsent mail can't be opened	Вложения неотправле
 Downloading from the server…	Загрузка с сервера…
 Loading…	Загрузка…
 (no subject)	(без темы)
-No text in this letter	В письме нет текста
-No text — only attachments	Текста нет — только вложения
 Could not save the file	Не удалось сохранить файл
 All mailboxes	Все ящики
 Found %n	Найдено %n|Найдено %n|Найдено %n
@@ -56,6 +54,7 @@ Queued — will be sent when online	В очереди — уйдёт при по
 Send again	Отправить ещё раз
 Discard	Выбросить
 No mail here	Писем нет
+No content	Нет содержания
 to: %1	кому: %1
 Mailboxes	Ящики
 Add a mailbox	Добавить ящик

@@ -559,14 +559,14 @@ private Q_SLOTS:
         *mode = 1;
         s->letter.reload();
         QTRY_VERIFY_WITH_TIMEOUT(note->isVisible(), 10000);
-        QCOMPARE(note->property("text").toString(), QString("No text — only attachments"));
+        QCOMPARE(note->property("text").toString(), QString("No content"));
         QCOMPARE(note->property("color").value<QColor>().rgba(), s->theme.dim().rgba());
         const QPointF centre = note->mapToScene(QPointF(note->width() / 2, note->height() / 2)),
                       middle = view->mapToScene(QPointF(view->width() / 2, view->height() / 2));
         QVERIFY(qAbs(centre.x() - middle.x()) <= 1 && qAbs(centre.y() - middle.y()) <= 1);
         *mode = 2;
         s->letter.reload();
-        QTRY_COMPARE_WITH_TIMEOUT(note->property("text").toString(), QString("No text in this letter"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(note->property("text").toString(), QString("No content"), 10000);
         QVERIFY(note->isVisible());
         *mode = 0;
         s->letter.reload();
