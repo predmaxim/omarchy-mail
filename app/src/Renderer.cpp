@@ -232,9 +232,17 @@ void Renderer::render(const RenderJob &job)
         // once more without the tall quotes, or with the quotes' greys for a dark letter
         const QList<QRect> boxes = holder->doc.boxes(QStringLiteral("blockquote"));
         const QByteArray shown = boxes.size() == quotes.size() ? folded(html, quotes, boxes, job, r.dark) : html;
+        // content of a fixed width wider than the job's (a 600 px newsletter at a big zoom) is laid out as wide as
+        // it is, so @media sees the width it is shown at; Letter shrinks it to fit. ponytail: a fixed cap, wider
+        // is junk (a huge word, a photo without a width) that would shrink the letter to dust: it's cut as before
+        constexpr int maxFit = 1200;
+        RenderJob fit = job;
+        if (const int wide = holder->doc.documentWidth(); wide > job.width && wide <= maxFit)
+            fit.width = wide;
         std::shared_ptr<Holder> dropped;
-        if (shown != html || (r.dark && !quotes.isEmpty()))
-            dropped = std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), job, &r.wanted));
+        if (shown != html || (r.dark && !quotes.isEmpty()) || fit.width != job.width)
+            dropped = std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), fit, &r.wanted));
+        r.width = fit.width;
         r.size = QSize(holder->doc.documentWidth(), holder->doc.documentHeight());
         r.links = holder->doc.links();
         r.doc = std::shared_ptr<DocumentContainer>(holder, &holder->doc);

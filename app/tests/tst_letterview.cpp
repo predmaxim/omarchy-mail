@@ -14,6 +14,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <cmath>
 
 using namespace om;
 using namespace om::test;
@@ -222,6 +223,46 @@ private Q_SLOTS:
         QTRY_COMPARE_WITH_TIMEOUT(near(win->grabWindow(), edge, theme->accent()), 0, 3000);
         QTest::mouseClick(win, Qt::LeftButton, {}, mid);
         QTRY_COMPARE(stubCalls(stub), (QList<QStringList>{{"--", "xdg-open", "https://x.org/go"}}));
+    }
+    void fixed_width_letter_shrinks_to_fit()   // W41: never past the right edge; @media sees the width it's shown at
+    {
+        QTemporaryDir dir(scratch());
+        const QString stub = writeStub(dir.path());
+        launch::setProgramForTests(stub);
+        const int m = theme->space(18), pane = 600;
+        view->setSize(QSizeF(pane + 2 * m, 600));
+        open(QStringLiteral("<style>.m{height:50px}@media (max-width:500px){.m{height:3000px}}</style>"
+                            "<table width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#c00\"><tr><td>"
+                            "<div class=\"m\"></div><a href=\"https://x.org/far\" style=\"float:right\">far link</a>"
+                            "</td></tr></table>"));
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->setZoom(2.0);
+        QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 1, 10000);
+        QCOMPARE(letter->zoom(), 2.0);   // the reader's zoom stays; the letter is shown smaller
+        const qreal z = letter->documentZoom();
+        const auto doc = letter->document();
+        QVERIFY2(z < 1.0, qPrintable(QString::number(z)));
+        QVERIFY2(doc->documentWidth() * z <= pane, qPrintable(QString::number(doc->documentWidth() * z)));
+        QCOMPARE(view->contentHeight(), int(std::ceil(doc->documentHeight() * z)));
+        QVERIFY2(view->contentHeight() < 1000, qPrintable(QString::number(view->contentHeight())));   // not the 300 px @media
+        QImage img;
+        QTRY_VERIFY_WITH_TIMEOUT((img = win->grabWindow()).pixelColor(m + pane - 20, int(30 * z)) != theme->background(), 3000);
+        for (int x = m + pane + 1; x < pane + 2 * m; ++x)   // the right margin: nothing painted there
+            QCOMPARE(img.pixelColor(x, int(30 * z)), theme->background());
+        const QRect r = letter->links().at(0).rect;
+        QTest::mouseClick(win, Qt::LeftButton, {}, QPoint(m + int(r.center().x() * z), int(r.center().y() * z - view->scrollY())));
+        QTRY_COMPARE(stubCalls(stub), (QList<QStringList>{{"--", "xdg-open", "https://x.org/far"}}));
+    }
+    void text_keeps_the_full_zoom()   // W41: only fixed-width content is shrunk, and not past 1200 CSS px of it
+    {
+        view->setSize(QSizeF(600 + 2 * theme->space(18), 600));
+        letter->setZoom(2.0);
+        open(QStringLiteral("<p>Only text: nothing of a fixed width.</p>"));
+        QCOMPARE(letter->documentZoom(), 2.0);
+        letter->clear();
+        open(QStringLiteral("<p>%1</p>").arg(QString(20000, QLatin1Char('x'))));   // its tail is one huge piece
+        QVERIFY(letter->document()->documentWidth() > 1200);
+        QCOMPARE(letter->documentZoom(), 2.0);   // cut on the right, as before, rather than shrunk to dust
     }
     void zoom_keeps_the_place_in_the_letter()
     {

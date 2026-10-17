@@ -651,14 +651,24 @@ private Q_SLOTS:
         QCOMPARE(s->letter.zoom(), 1.0);
     }
 
-    void letter_zoom_shots()   // OM_SHOT_ZOOM=<prefix>: <prefix>-100.png and <prefix>-136.png, a made-up letter
+    // OM_SHOT_ZOOM=<prefix>: made-up letters, <prefix>-100.png and <prefix>-136.png; <prefix>-fit.png: a 600 px
+    // newsletter in a ~600 px pane at 136 %
+    void letter_zoom_shots()
     {
         const QString shot = qEnvironmentVariable("OM_SHOT_ZOOM");
         if (shot.isEmpty())
             QSKIP("OM_SHOT_ZOOM not set");
-        h.d->on("message", [](const QJsonObject &r) {
+        const auto newsletter = std::make_shared<bool>(false);
+        h.d->on("message", [newsletter](const QJsonObject &r) {
             QJsonObject f = letter(r.value("message").toInteger());
-            f.insert("html", QStringLiteral(
+            f.insert("html", *newsletter ? QStringLiteral(
+                "<table width=\"100%\" bgcolor=\"#eeeeee\"><tr><td align=\"center\">"
+                "<table width=\"600\" cellpadding=\"24\" bgcolor=\"#ffffff\" style=\"font-family:Arial\">"
+                "<tr><td><img src=\"cid:logo@x\" width=\"552\" height=\"60\"></td></tr>"
+                "<tr><td><h1 style=\"font-size:28px\">Autumn sale</h1><p style=\"font-size:16px\">Everything in the shop "
+                "is 30% off until Sunday. <a href=\"https://example.org/shop\">Open the shop</a>.</p>"
+                "<p style=\"font-size:8pt;color:#777777\">You get this letter because you subscribed. Unsubscribe.</p>"
+                "</td></tr></table></td></tr></table>") : QStringLiteral(
                 "<h2>October report</h2><p>Hello! The summary for <b>October</b> is below, the details are in "
                 "<a href=\"https://example.org/report\">the full report</a>.</p>"
                 "<table width=\"600\" align=\"center\" cellpadding=\"8\" style=\"border:1px solid #888\"><tr>"
@@ -679,6 +689,12 @@ private Q_SLOTS:
         s->letter.setZoom(1.3636);   // GNOME's text-scaling-factor on the author's machine
         QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 1, 10000);
         save(shot + "-136.png");
+        *newsletter = true;
+        win->resize(1060, 800);   // the letter's pane: ~600 px
+        s->letter.reload();
+        QTRY_VERIFY_WITH_TIMEOUT(s->letter.documentZoom() < 1.3, 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 3, 10000);   // the resize's debounced layout too
+        save(shot + "-fit.png");
     }
 
     // ---- the mailboxes page ----

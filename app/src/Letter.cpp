@@ -86,6 +86,15 @@ Letter::Letter(Client *client, Images *images, Renderer *renderer, Theme *theme,
             layout();
     });
     connect(theme, &Theme::changed, this, &Letter::layout);   // font size
+    m_saveTimer.setSingleShot(true);
+    m_saveTimer.setInterval(500);   // a held Ctrl+= writes the file once
+    connect(&m_saveTimer, &QTimer::timeout, this, &Letter::saveZoom);
+}
+
+Letter::~Letter()
+{
+    if (m_saveTimer.isActive())
+        saveZoom();
 }
 
 // The full letter's summary once loaded, the list row's until then.
@@ -272,14 +281,23 @@ void Letter::loadZoom(qreal gnome)
 {
     m_gnomeZoom = gnome;
     const double saved = readWindowFile().value(QStringLiteral("letterZoom")).toDouble();
-    setZoom(saved > 0 ? saved : gnome);
+    m_ownZoom = saved > 0;
+    setZoom(m_ownZoom ? saved : gnome);
 }
 
 void Letter::zoomBy(int steps)
 {
     setZoom(steps ? m_zoom * std::pow(1.1, steps) : m_gnomeZoom);
+    m_ownZoom = steps != 0;
+    m_saveTimer.start();
+    Q_EMIT note(t("Letter zoom %1%").arg(qRound(m_zoom * 100)), false);
+}
+
+void Letter::saveZoom()
+{
+    m_saveTimer.stop();
     QJsonObject o = readWindowFile();
-    if (steps)
+    if (m_ownZoom)
         o.insert(QStringLiteral("letterZoom"), m_zoom);
     else
         o.remove(QStringLiteral("letterZoom"));
@@ -293,7 +311,6 @@ void Letter::zoomBy(int steps)
         f.write(QJsonDocument(o).toJson());
         f.commit();   // a zoom that isn't saved is still the zoom of this window
     }
-    Q_EMIT note(t("Letter zoom %1%").arg(qRound(m_zoom * 100)), false);
 }
 
 void Letter::setWords(const QStringList &words)
@@ -318,6 +335,7 @@ void Letter::layout()
     job.width = qMax(1, int(m_width / m_zoom));   // CSS px, for @media too; viewportHeight stays 0: a viewport
                                                   // would cut html,body{height:100%;overflow:hidden}
     m_jobZoom = m_zoom;
+    m_jobWidth = m_width;
     job.font = QFont(QStringLiteral("sans-serif"));
     job.font.setPixelSize(m_theme->fontBody());
     job.selection = m_theme->selection();
@@ -337,7 +355,8 @@ void Letter::rendered(const Rendered &r)
         return;
     const bool same = bool(m_doc);
     m_doc = r.doc;
-    m_docZoom = m_jobZoom;   // only the latest job arrives
+    // only the latest job arrives; fixed-width content wider than the pane at this zoom is shown smaller (W41)
+    m_docZoom = qMin(m_jobZoom, qreal(m_jobWidth) / r.width);
     m_dark = r.dark;
     m_blank = r.blank;
     m_links.clear();

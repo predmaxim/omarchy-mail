@@ -34,6 +34,7 @@ class Letter : public QObject {
     Q_PROPERTY(bool blank READ blank NOTIFY changed)
 public:
     Letter(Client *client, Images *images, Renderer *renderer, Theme *theme, QObject *parent = nullptr);
+    ~Letter() override;   // a zoom not saved yet is saved
 
     qint64 id() const { return m_id; }
     bool empty() const { return summary().isEmpty(); }   // no letter open
@@ -58,10 +59,10 @@ public:
     QJsonObject full() const { return m_full; }
     // Browser-like zoom: laid out at the width / zoom CSS px, painted × zoom (LetterView); 50–300 %.
     qreal zoom() const { return m_zoom; }
-    qreal documentZoom() const { return m_docZoom; }   // the zoom document() was laid out at
+    qreal documentZoom() const { return m_docZoom; }   // document()'s: less when fixed-width content needs it to fit
     void setZoom(qreal z);
     void loadZoom(qreal gnome);   // once: the saved zoom, else GNOME's text-scaling-factor
-    void zoomBy(int steps);       // ×1.1 a step, saved, shown in the note; 0: GNOME's again, not saved
+    void zoomBy(int steps);       // ×1.1 a step, saved 0.5 s after the last, shown in the note; 0: GNOME's again
     std::shared_ptr<DocumentContainer> document() const { return m_doc; }
     bool dark() const { return m_dark; }
     QList<DocumentContainer::Link> links() const { return m_links; }
@@ -87,6 +88,7 @@ private:
     void openRemote();
     void layout();
     void rendered(const Rendered &r);
+    void saveZoom();
     void withAttachment(int i, std::function<void(const QString &path)> use);
 
     Client *m_client;
@@ -104,11 +106,13 @@ private:
     QStringList m_words;
     int m_width = 0;
     qreal m_zoom = 1, m_gnomeZoom = 1, m_jobZoom = 1, m_docZoom = 1;
+    int m_jobWidth = 0;          // the pane's width (view px) the latest job was laid out for
+    bool m_ownZoom = false;      // the reader's zoom, saved; else GNOME's is followed
     std::shared_ptr<DocumentContainer> m_doc;
     bool m_dark = false, m_blank = false;
     QList<DocumentContainer::Link> m_links;
     QSet<int> m_expanded;   // quotes the reader opened, until another letter is shown
-    QTimer m_remoteTimer, m_widthTimer;
+    QTimer m_remoteTimer, m_widthTimer, m_saveTimer;
 };
 
 } // namespace om

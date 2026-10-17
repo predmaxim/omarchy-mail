@@ -639,7 +639,8 @@ private Q_SLOTS:
         QVERIFY(press(Qt::Key_Equal, 21, ctrl));
         QCOMPARE(letter->zoom(), 1.1);
         QCOMPARE(app->note(), QString("Letter zoom 110%"));
-        QCOMPARE(saved().value("letterZoom").toDouble(), 1.1);
+        QVERIFY(!QFileInfo::exists(file));   // saved once the keys stop
+        QTRY_COMPARE(saved().value("letterZoom").toDouble(), 1.1);
         QCOMPARE(QFileInfo(file).permissions() & 0x7777,
                  QFile::Permissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser | QFile::WriteUser));
         QCOMPARE(QFileInfo(config.filePath("omarchy-mail")).permissions() & 0x0077, QFile::Permissions());
@@ -651,10 +652,11 @@ private Q_SLOTS:
             press(Qt::Key_Plus, 21, ctrl | Qt::ShiftModifier, {}, i > 0);   // held: it keeps zooming
         QCOMPARE(letter->zoom(), 3.0);
         QCOMPARE(app->note(), QString("Letter zoom 300%"));
+        QCOMPARE(saved().value("letterZoom").toDouble(), 1.1);   // not on every key
+        QTRY_COMPARE(saved().value("letterZoom").toDouble(), 3.0);
         QVERIFY(press(Qt::Key_0, 19, ctrl));
         QCOMPARE(letter->zoom(), 1.0);   // back to the default, which follows GNOME again
-        QVERIFY(QFileInfo::exists(file));
-        QVERIFY(!saved().contains("letterZoom"));
+        QTRY_VERIFY(!saved().contains("letterZoom"));
         QCOMPARE(app->note(), QString("Letter zoom 100%"));
 
         QVERIFY(press(Qt::Key_C, 54));   // the form: no letter on the screen

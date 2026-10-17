@@ -36,6 +36,7 @@ struct Rendered
     bool dark = false;
     QStringList wanted; // remote images not in the cache yet
     QList<DocumentContainer::Link> links;
+    int width = 0;      // laid out at (CSS px): the job's width, or wider fixed-width content's own
     QSize size;
     bool blank = false; // no text and no image: nothing to show
 };
