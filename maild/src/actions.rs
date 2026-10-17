@@ -8,6 +8,7 @@ use crate::db::{Db, Role};
 use crate::hub::{Event, Hub};
 use crate::i18n::tr;
 use crate::imap::{self, Conn};
+use crate::mime;
 use crate::sync;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -273,7 +274,12 @@ fn execute(s: &mut Server, a: &mut Pending) -> Result<Option<u32>, imap::Error> 
             let Some(to) = &a.to_path else { return Ok(None) };
             // A gone uid: moved by an earlier try whose answer was lost, or by a phone.
             match a.uid.map(|u| s.mv(u, to)) {
-                Some(Ok(())) => a.moved = true,
+                Some(Ok(new)) => {
+                    a.moved = true;
+                    if new.is_some() {
+                        return Ok(new);
+                    }
+                }
                 Some(Err(e)) if classify(&e) != Outcome::Missing => return Err(e),
                 _ => {}
             }
@@ -352,20 +358,23 @@ fn reject(s: &mut Server, db: &Db, account: &str, a: &Pending, error: &str) -> R
     Ok(())
 }
 
-/// The worker's connection during one `run`: what is selected (with its UIDVALIDITY), what the
-/// server can do.
-struct Server<'a> { conn: &'a mut Conn, selected: Option<(String, Option<u32>)>, caps: Option<(bool, bool)> }
+/// The worker's connection during one `run`: what is selected (with its UIDVALIDITY and UIDNEXT),
+/// what the server can do.
+struct Server<'a> { conn: &'a mut Conn, selected: Option<(String, Option<u32>, Option<u32>)>, caps: Option<(bool, bool)> }
+
+/// How many of the newest uids `find` scans when the server cannot search headers.
+const SCAN: u32 = 200;
 
 impl Server<'_> {
     /// SELECT, unless already selected; the folder's UIDVALIDITY if the server told it.
     fn select(&mut self, path: &str) -> Result<Option<u32>, imap::Error> {
-        if let Some((p, v)) = &self.selected && p == path {
+        if let Some((p, v, _)) = &self.selected && p == path {
             return Ok(*v);
         }
         self.selected = None;
-        let v = self.conn.select(path)?;
-        self.selected = Some((path.into(), v));
-        Ok(v)
+        let m = self.conn.select(path)?;
+        self.selected = Some((path.into(), m.uid_validity, m.uid_next));
+        Ok(m.uid_validity)
     }
 
     /// (MOVE, UIDPLUS)
@@ -379,24 +388,42 @@ impl Server<'_> {
         Ok(c)
     }
 
-    /// The newest message with this Message-ID in the selected folder.
+    /// The newest message with this Message-ID in the selected folder. A server that refuses the
+    /// search (Yandex: `[UNAVAILABLE] UID SEARCH Backend error`, every time) gets the newest
+    /// messages scanned instead; only if that fails too is it the search's error.
     fn find(&mut self, message_id: &str) -> Result<Option<u32>, imap::Error> {
-        match imap::quote(&format!("<{message_id}>")) {
-            Some(q) if !message_id.is_empty() => Ok(self.conn.search(&format!("HEADER Message-ID {q}"))?.last().copied()),
-            _ => Ok(None),
+        let Some(q) = imap::quote(&format!("<{message_id}>")).filter(|_| !message_id.is_empty()) else { return Ok(None) };
+        match self.conn.search(&format!("HEADER Message-ID {q}")) {
+            Err(imap::Error::Refused(e)) => self.scan(message_id).map_err(|s| imap::Error::Broken(format!("{e}; scanning instead: {s}"))),
+            r => Ok(r?.last().copied()),
         }
     }
 
-    /// `UID MOVE`; without MOVE: copy, mark \Deleted, expunge.
-    fn mv(&mut self, uid: u32, to: &str) -> Result<(), imap::Error> {
+    /// `find` without SEARCH: the Message-IDs of the newest `SCAN` uids, compared here.
+    // ponytail: a message further down counts as not found (its folder's sync brings it back);
+    // a wider window if servers that cannot search are common.
+    fn scan(&mut self, message_id: &str) -> Result<Option<u32>, String> {
+        let next = self.selected.as_ref().and_then(|s| s.2);
+        let from = next.map_or(1, |n| n.saturating_sub(SCAN).max(1));
+        let got = self.conn.fetch(&format!("{from}:*"), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")?;
+        let norm = |id: &str| id.trim().trim_start_matches('<').trim_end_matches('>').trim().to_ascii_lowercase();
+        let want = norm(message_id);
+        Ok(got.iter().filter(|f| f.header().is_some_and(|h| norm(&mime::parse(h).message_id) == want)).filter_map(|f| f.uid).max())
+    }
+
+    /// `UID MOVE`; without MOVE: copy, mark \Deleted, expunge. The message's new uid if the server
+    /// told it (UIDPLUS COPYUID).
+    fn mv(&mut self, uid: u32, to: &str) -> Result<Option<u32>, imap::Error> {
         let q = imap::quote(to).ok_or_else(|| imap::Error::Refused(format!("{to}: bad folder name")))?;
+        let new = |answer: String| imap::parse_copyuid(&answer)?.into_iter().find(|p| p.0 == uid).map(|p| p.1);
         if self.caps()?.0 {
-            return self.conn.command(&format!("UID MOVE {uid} {q}"));
+            return self.conn.command_text(&format!("UID MOVE {uid} {q}")).map(new);
         }
         // ponytail: a connection lost between COPY and EXPUNGE copies it again on the retry (a duplicate, nothing lost).
-        self.conn.command(&format!("UID COPY {uid} {q}"))?;
+        let copied = new(self.conn.command_text(&format!("UID COPY {uid} {q}"))?);
         self.conn.command(&format!("UID STORE {uid} +FLAGS.SILENT (\\Deleted)"))?;
-        self.expunge(uid)
+        self.expunge(uid)?;
+        Ok(copied)
     }
 
     /// Expunges `uid`, marked \Deleted. Without UIDPLUS a plain EXPUNGE takes every \Deleted message
@@ -408,7 +435,7 @@ impl Server<'_> {
         if self.conn.search("DELETED")? == [uid] {
             return self.conn.command("EXPUNGE");
         }
-        eprintln!("{}: uid {uid} stays marked \\Deleted: no UIDPLUS, and other messages are marked too", self.selected.as_ref().map_or("", |(p, _)| p));
+        eprintln!("{}: uid {uid} stays marked \\Deleted: no UIDPLUS, and other messages are marked too", self.selected.as_ref().map_or("", |(p, _, _)| p));
         Ok(())
     }
 }
@@ -694,6 +721,144 @@ mod tests {
             let want: Vec<&str> = copy.iter().chain(expunge).copied().chain(["SELECT \"Trash\"", FIND]).collect();
             assert_eq!(take(&log), want, "caps{caps:?}");
             assert_eq!(place_of(&db, id), (trash, Some(9)));
+        }
+    }
+
+    #[test]
+    fn copyuid_skips_search() {
+        let (db, inbox, trash, id) = setup();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, log) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            "UID MOVE 5 \"Trash\"" => "* OK [COPYUID 7 5 9] Moved\r\n* 1 EXPUNGE\r\n".into(),
+            "UID MOVE 9 \"INBOX\"" => "* OK [COPYUID 3 9 11] Moved\r\n* 1 EXPUNGE\r\n".into(),
+            c if c.starts_with("SELECT ") => String::new(),
+            _ => return None,
+        }));
+        let hub = Hub::default();
+        run(&mut c, &db, ME, &hub).unwrap();
+        assert_eq!(take(&log), ["SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 5 \"Trash\""]);
+        assert_eq!(place_of(&db, id), (trash, Some(9)));
+        assert_eq!(states(&db, b), ["done"]);
+        let u = undo(&db, b).unwrap();
+        run(&mut c, &db, ME, &hub).unwrap();
+        assert_eq!(take(&log), ["SELECT \"Trash\"", "CAPABILITY", "UID MOVE 9 \"INBOX\""]);
+        assert_eq!(place_of(&db, id), (inbox, Some(11)));
+        assert_eq!(states(&db, u), ["done"]);
+    }
+
+    #[test]
+    fn copy_fallback_takes_copyuid() {
+        let (db, _, trash, id) = setup();
+        enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, log) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => "* CAPABILITY IMAP4rev1 UIDPLUS\r\n".into(),
+            // in the tagged OK for COPY (RFC 4315)
+            "UID COPY 5 \"Trash\"" => "OK [COPYUID 7 5 9] Copied".into(),
+            c if c.starts_with("SELECT ") || c.starts_with("UID STORE ") || c == "UID EXPUNGE 5" => String::new(),
+            _ => return None,
+        }));
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        assert_eq!(take(&log), ["SELECT \"INBOX\"", "CAPABILITY", "UID COPY 5 \"Trash\"", "UID STORE 5 +FLAGS.SILENT (\\Deleted)", "UID EXPUNGE 5"]);
+        assert_eq!(place_of(&db, id), (trash, Some(9)));
+    }
+
+    const SCAN_ALL: &str = "UID FETCH 1:* (UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+    const BACKEND: &str = "NO [UNAVAILABLE] UID SEARCH Backend error. sc=UXT6170ke4Y0_";
+
+    /// `* n FETCH` lines with each (uid, Message-ID header line).
+    fn ids_answer(msgs: &[(u32, &str)]) -> String {
+        msgs.iter().enumerate().map(|(i, (uid, h))| {
+            let h = format!("{h}\r\n\r\n");
+            format!("* {} FETCH (UID {uid} BODY[HEADER.FIELDS (MESSAGE-ID)] {{{}}}\r\n{h})\r\n", i + 1, h.len())
+        }).collect()
+    }
+
+    #[test]
+    fn search_backend_error_scans() {
+        let (db, _, trash, id) = setup();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, log) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            FIND => BACKEND.into(),
+            SCAN_ALL => ids_answer(&[(7, "Message-ID: <m1@x>"), (9, "Message-ID:\r\n  <M1@X> "), (10, "Message-ID: <m2@x>"), (12, "Subject: no id")]),
+            c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
+            _ => return None,
+        }));
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        assert_eq!(take(&log), ["SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 5 \"Trash\"", "SELECT \"Trash\"", FIND, SCAN_ALL]);
+        assert_eq!(place_of(&db, id), (trash, Some(9)), "the newest match");
+        assert_eq!(states(&db, b), ["done"]);
+        assert_eq!(db.c.query_row("SELECT tries FROM actions WHERE batch = ?1", [b], |r| r.get::<_, u32>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn search_backend_error_scan_misses() {
+        // moved, but neither the search nor the scan finds it: Trash's sync brings it back
+        let (db, _, _, id) = setup();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, _) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            FIND => BACKEND.into(),
+            SCAN_ALL => ids_answer(&[(8, "Message-ID: <m2@x>")]),
+            c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
+            _ => return None,
+        }));
+        run(&mut c, &db, ME, &Hub::default()).unwrap();
+        assert!(db.message(id).unwrap().is_none());
+        assert_eq!(states(&db, b), ["done"]);
+
+        // the scan fails too: a try, as before
+        let (db, _, trash, id) = setup();
+        let b = enqueue(&db, &[id], Op::Delete).unwrap();
+        let (mut c, _) = server(|cmd| Some(match cmd {
+            "CAPABILITY" => CAPS.into(),
+            FIND => BACKEND.into(),
+            c if c.starts_with("SELECT ") || c.starts_with("UID MOVE ") => String::new(),
+            _ => return None,
+        }));
+        let e = run(&mut c, &db, ME, &Hub::default()).unwrap_err();
+        assert!(e.contains("Backend error"), "{e}");
+        assert_eq!(states(&db, b), ["pending"]);
+        assert_eq!(place_of(&db, id), (trash, None));
+        assert_eq!(db.c.query_row("SELECT tries FROM actions WHERE batch = ?1", [b], |r| r.get::<_, u32>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn yandex_recovery() {
+        // The live state: the delete's MOVE went through, its SEARCH failed 4 times; then undo.
+        // The uid is gone from INBOX, which the server may say either way.
+        for gone in ["NO [NONEXISTENT] No such message", ""] {
+            let db = Db::memory();
+            let inbox = db.upsert_folder(ME, "INBOX", Role::Inbox).unwrap();
+            db.upsert_folder(ME, "Trash", Role::Trash).unwrap();
+            let p = Parsed { subject: "s".into(), message_id: "m1@x".into(), ..Default::default() };
+            let id = db.insert_message(inbox, 12541, false, false, 1, &p, true).unwrap();
+            let del = enqueue(&db, &[id], Op::Delete).unwrap();
+            db.c.execute("UPDATE actions SET tries = 4 WHERE batch = ?1", [del]).unwrap();
+            let res = undo(&db, del).unwrap();
+            let scan = "UID FETCH 2900:* (UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+            let (mut c, log) = server(move |cmd| Some(match cmd {
+                "CAPABILITY" => CAPS.into(),
+                "SELECT \"INBOX\"" => "* OK [UIDNEXT 12600] x\r\n".into(),
+                "SELECT \"Trash\"" => "* OK [UIDNEXT 3100] x\r\n".into(),
+                "UID MOVE 12541 \"Trash\"" => gone.into(),
+                FIND => BACKEND.into(),
+                c if c == scan => ids_answer(&[(3049, "Message-ID: <other@x>"), (3050, "Message-ID: <m1@x>")]),
+                "UID MOVE 3050 \"INBOX\"" => "* OK [COPYUID 1 3050 12600] Moved\r\n* 5 EXPUNGE\r\n".into(),
+                _ => return None,
+            }));
+            let hub = Hub::default();
+            let events = hub.subscribe(false);
+            run(&mut c, &db, ME, &hub).unwrap();
+            assert_eq!(take(&log), [
+                "SELECT \"INBOX\"", "CAPABILITY", "UID MOVE 12541 \"Trash\"", "SELECT \"Trash\"", FIND, scan,
+                FIND, scan, "UID MOVE 3050 \"INBOX\"",
+            ], "{gone:?}");
+            assert_eq!(place_of(&db, id), (inbox, Some(12600)));
+            assert_eq!((states(&db, del), states(&db, res)), (vec!["done".to_string()], vec!["done".to_string()]));
+            assert_eq!(db.queued_count(ME).unwrap(), 0);
+            assert!(events.try_iter().all(|e| !e.contains("action_failed")));
         }
     }
 

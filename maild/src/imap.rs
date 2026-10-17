@@ -175,6 +175,36 @@ pub fn quote(s: &str) -> Option<String> {
     s.chars().all(|c| c.is_ascii() && !c.is_ascii_control()).then(|| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
 }
 
+/// The (source uid, new uid) pairs of the first well-formed RFC 4315
+/// `[COPYUID <uidvalidity> <source set> <destination set>]` in a `UID MOVE`/`UID COPY` answer.
+pub fn parse_copyuid(resp: &str) -> Option<Vec<(u32, u32)>> {
+    resp.lines().find_map(|line| {
+        let up = line.to_ascii_uppercase();
+        let (_, rest) = up.split_once("[COPYUID ")?;
+        let (code, _) = rest.split_once(']')?;
+        let [validity, src, dst] = code.split_ascii_whitespace().collect::<Vec<_>>()[..] else { return None };
+        validity.parse::<u32>().ok().filter(|&v| v > 0)?;
+        let (src, dst) = (uid_set(src)?, uid_set(dst)?);
+        (src.len() == dst.len()).then(|| src.into_iter().zip(dst).collect())
+    })
+}
+
+/// `n`, `n:m` (= `m:n`) and comma lists of them, expanded; `None` if malformed or over 100 000 uids.
+fn uid_set(s: &str) -> Option<Vec<u32>> {
+    let mut out = vec![];
+    for part in s.split(',') {
+        let (a, b) = part.split_once(':').unwrap_or((part, part));
+        let n = |x: &str| x.parse::<u32>().ok().filter(|&n| n > 0);
+        let (a, b) = (n(a)?, n(b)?);
+        let (lo, hi) = (a.min(b), a.max(b));
+        if out.len() as u64 + u64::from(hi - lo) >= 100_000 {
+            return None;
+        }
+        out.extend(lo..=hi);
+    }
+    Some(out)
+}
+
 /// SO_KEEPALIVE with TCP_KEEPIDLE 60, TCP_KEEPINTVL 10, TCP_KEEPCNT 3: a dead peer is noticed in ~90 s.
 fn keepalive(s: &TcpStream) -> Result<(), String> {
     let opts = [
@@ -325,15 +355,14 @@ impl Conn {
         Ok(v)
     }
 
-    /// SELECT, read-write: for actions (sync only EXAMINEs). The folder's UIDVALIDITY, if the
-    /// server sent it.
-    pub fn select(&mut self, path: &str) -> Result<Option<u32>, Error> {
+    /// SELECT, read-write: for actions (sync only EXAMINEs).
+    pub fn select(&mut self, path: &str) -> Result<::imap::types::Mailbox, Error> {
         if quote(path).is_none() {
             return Err(Error::Refused(format!("{path}: bad folder name")));
         }
         self.session.take_all_unsolicited().for_each(drop);
         self.inbox = false;
-        Ok(unpanic(|| self.session.select(path)).map_err(refused)?.uid_validity)
+        unpanic(|| self.session.select(path)).map_err(refused)
     }
 
     /// APPENDs a message to `path` flagged `\Seen`.
@@ -347,7 +376,14 @@ impl Conn {
     /// A command that answers just OK or not (`UID MOVE`, `UID STORE … .SILENT`, `EXPUNGE`, …).
     /// Untagged lines in the answer are not looked at.
     pub fn command(&mut self, cmd: &str) -> Result<(), Error> {
-        unpanic(|| self.session.run_command_and_check_ok(cmd)).map_err(refused)
+        self.command_text(cmd).map(drop)
+    }
+
+    /// `command`, with its whole answer, the tagged OK included: where `UID MOVE` and `UID COPY`
+    /// tell the new uids (`parse_copyuid`).
+    pub fn command_text(&mut self, cmd: &str) -> Result<String, Error> {
+        let (data, _) = unpanic(|| self.session.run(cmd)).map_err(refused)?;
+        Ok(String::from_utf8_lossy(&data).into_owned())
     }
 
     /// Capability atoms, upper case (`MOVE`, `UIDPLUS`, …).
@@ -527,7 +563,7 @@ fn try_mutf7(s: &str) -> Option<String> {
 }
 
 /// Fake IMAP server for tests, any number of connections: greets, then answers each command with
-/// `reply(cmd)` + tagged OK (a reply starting with `NO ` is the tagged answer itself); `None` gets BAD.
+/// `reply(cmd)` + tagged OK (a reply starting with `NO ` or `OK ` is the tagged answer itself); `None` gets BAD.
 /// `IDLE` gets `+ idling` followed by `reply("IDLE")` (untagged updates); `DONE` gets the IDLE's tagged OK.
 #[cfg(test)]
 pub fn fake_server(reply: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> std::net::SocketAddr {
@@ -554,7 +590,7 @@ pub fn fake_server(reply: impl Fn(&str) -> Option<String> + Send + Sync + 'stati
                                 idle = tag.into();
                                 format!("+ idling\r\n{r}")
                             }
-                            Some(r) if r.starts_with("NO ") => format!("{tag} {r}\r\n"),
+                            Some(r) if r.starts_with("NO ") || r.starts_with("OK ") => format!("{tag} {r}\r\n"),
                             Some(r) => format!("{r}{tag} OK done\r\n"),
                             None => format!("{tag} BAD unexpected {cmd}\r\n"),
                         }
@@ -718,6 +754,23 @@ mod tests {
         }))).unwrap();
         let e = c.examine("INBOX").unwrap_err();
         assert!(e.starts_with(UNPARSEABLE), "{e}");
+    }
+
+    #[test]
+    fn copyuid_pairs() {
+        assert_eq!(parse_copyuid("* OK [COPYUID 7 5 9] Moved\r\n* 1 EXPUNGE\r\nA3 OK done\r\n"), Some(vec![(5, 9)]));
+        assert_eq!(parse_copyuid("A4 ok [copyuid 7 3:5,8 10:12,20] copied\r\n"), Some(vec![(3, 10), (4, 11), (5, 12), (8, 20)]));
+        // n:m is the same set as m:n
+        assert_eq!(parse_copyuid("* OK [COPYUID 7 5:3 12:10] x"), Some(vec![(3, 10), (4, 11), (5, 12)]));
+        // the first well-formed one counts
+        assert_eq!(parse_copyuid("* OK [COPYUID x 1 2] a\r\n* OK [COPYUID 7 1 2] b"), Some(vec![(1, 2)]));
+        for bad in [
+            "A1 OK done", "* OK [COPYUID 7 5] x", "* OK [COPYUID 7 5 9 1] x", "* OK [COPYUID 0 5 9] x", "* OK [COPYUID 7 5 9",
+            "* OK [COPYUID 7 1:3 9] x", "* OK [COPYUID 7 * 9] x", "* OK [COPYUID 7 0 9] x", "* OK [COPYUID 7 5, 9] x",
+            "* OK [COPYUID 7 a:b 9] x", "* OK [COPYUID 7 1:4294967295 1:4294967295] x", "* OK [COPYUIDS 7 5 9] x", "* OK [COPYUID 7 5\r\n 9] x",
+        ] {
+            assert_eq!(parse_copyuid(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
