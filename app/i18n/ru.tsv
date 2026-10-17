@@ -1,0 +1,18 @@
+# en<TAB>ru; plural forms separated by | (1 / 2-4 / 5-20)
+Inbox	Входящие
+Flagged	Помеченные
+Sent	Отправленные
+Trash	Корзина
+Junk	Спам
+today	сегодня
+yesterday	вчера
+offline	нет сети
+%n queued	%n в очереди|%n в очереди|%n в очереди
+%1 offline	%1 не в сети
+%n mailbox offline|%n mailboxes offline	%n ящик не в сети|%n ящика не в сети|%n ящиков не в сети
+%1: login rejected	%1: вход отклонён
+Mail service is not running	Служба почты не запущена
+B	Б
+KB	КБ
+MB	МБ
+GB	ГБ
