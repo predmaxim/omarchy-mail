@@ -144,9 +144,16 @@ impl Db {
     }
 
     /// UIDVALIDITY changed: drop the messages, restart UID tracking (`notified_uid` stays).
+    /// One transaction: a crash in between must not keep the old `last_uid` with the messages gone.
     pub fn reset_folder(&self, id: i64, uidvalidity: u32) -> Result<(), String> {
-        self.c.execute("DELETE FROM messages WHERE folder = ?1", [id]).map_err(e)?;
-        self.c.execute("UPDATE folders SET uidvalidity = ?2, last_uid = 0 WHERE id = ?1", params![id, uidvalidity]).map(|_| ()).map_err(e)
+        let tx = self.c.unchecked_transaction().map_err(e)?;
+        tx.execute("DELETE FROM messages WHERE folder = ?1", [id]).map_err(e)?;
+        tx.execute("UPDATE folders SET uidvalidity = ?2, last_uid = 0 WHERE id = ?1", params![id, uidvalidity]).map_err(e)?;
+        tx.commit().map_err(e)
+    }
+
+    pub fn min_uid(&self, folder: i64) -> Result<Option<u32>, String> {
+        self.c.query_row("SELECT MIN(uid) FROM messages WHERE folder = ?1", [folder], |r| r.get(0)).map_err(e)
     }
 
     pub fn set_folder_marks(&self, id: i64, last_uid: u32, notified_uid: u32) -> Result<(), String> {
@@ -169,8 +176,9 @@ impl Db {
             |r| r.get(0)).map_err(e)
     }
 
+    /// Unchanged rows are not rewritten: every sync refreshes the flags of the whole folder.
     pub fn set_flags(&self, folder: i64, uid: u32, seen: bool, flagged: bool) -> Result<(), String> {
-        self.c.execute("UPDATE messages SET seen = ?3, flagged = ?4 WHERE folder = ?1 AND uid = ?2", params![folder, uid, seen, flagged]).map(|_| ()).map_err(e)
+        self.c.execute("UPDATE messages SET seen = ?3, flagged = ?4 WHERE folder = ?1 AND uid = ?2 AND (seen <> ?3 OR flagged <> ?4)", params![folder, uid, seen, flagged]).map(|_| ()).map_err(e)
     }
 
     /// Delete the folder's messages whose UID is not in `present`.

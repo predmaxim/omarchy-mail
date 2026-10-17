@@ -3,8 +3,10 @@
 mod config;
 mod db;
 mod i18n;
+mod imap;
 mod mime;
 mod secret;
+mod sync;
 
 fn usage() -> ! {
     eprintln!("usage: maild [ctl [json] | add-account <provider> <email> [name]]");
