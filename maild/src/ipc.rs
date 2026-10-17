@@ -68,6 +68,7 @@ enum Req {
     Accounts,
     AccountAdd(NewAccount),
     AccountRemove { email: String },
+    AccountUpdate { email: String, name: String },
     Folders { account: Option<String> },
     List(ListQuery),
     Message { message: i64 },
@@ -143,6 +144,7 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
         Req::Accounts => val(config::load(&st.paths.config)?),
         Req::AccountAdd(n) => account_add(st, n),
         Req::AccountRemove { email } => account_remove(st, &email),
+        Req::AccountUpdate { email, name } => account_update(st, &email, &name),
         Req::Folders { account } => val(st.db.folder_list(account.as_deref())?),
         Req::List(q) => val(st.db.list(&q)?),
         Req::Message { message } => message_full(st, message),
@@ -309,6 +311,17 @@ fn account_remove(st: &State, email: &str) -> Result<Value, String> {
     all.remove(i);
     config::save(&st.paths.config, &all)?;
     st.hub.emit(Event::Changed { folders: true, ids: vec![] });
+    Ok(Value::Null)
+}
+
+/// Only accounts.toml changes: `send` reads the account from it per mail, so the next "From" has
+/// the new name; no thread keeps the name.
+fn account_update(st: &State, email: &str, name: &str) -> Result<Value, String> {
+    let _one = lock(&CONFIG);
+    let mut all = config::load(&st.paths.config)?;
+    all.iter_mut().find(|a| a.email == email).ok_or_else(no_account)?.name = name.trim().into();
+    config::save(&st.paths.config, &all)?;
+    st.hub.emit_status();
     Ok(Value::Null)
 }
 
@@ -738,6 +751,34 @@ mod tests {
         assert_eq!(call(&mut st, json!({"id": 1, "cmd": "account_remove", "email": "b@x"}))["ok"], false);
         assert_eq!(config::load(&st.paths.config).unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(st.paths.config.parent().unwrap());
+    }
+
+    #[test]
+    fn account_update_renames() {
+        let mut st = state("rename");
+        let (imap, smtp, append_sent) = config::preset(Provider::Gmail).unwrap();
+        let a = Account { email: "a@x.org".into(), name: "Old".into(), provider: Provider::Gmail, login: "a@x.org".into(), imap, smtp, append_sent };
+        config::save(&st.paths.config, &[a.clone(), Account { email: "b@x.org".into(), ..a }]).unwrap();
+        let events = st.hub.subscribe(false);
+        let r = call(&mut st, json!({"id": 1, "cmd": "account_update", "email": "a@x.org", "name": " Иван Петров "}));
+        assert_eq!(r, json!({"id": 1, "ok": true}));
+        let all = config::load(&st.paths.config).unwrap();
+        assert_eq!((all[0].name.as_str(), all[1].name.as_str()), ("Иван Петров", "Old"));
+        assert!(events.try_recv().unwrap().starts_with(r#"{"event":"status""#));
+        // the next mail goes out with the new From, nothing restarted
+        let s = call(&mut st, json!({"id": 2, "cmd": "send", "account": "a@x.org", "to": [{"name": "", "addr": "b@y.org"}], "subject": "s", "text": "t"}));
+        assert_eq!(s["ok"], true, "{s}");
+        let (_, _, _, raw) = st.db.outbox_queued().unwrap().pop().unwrap();
+        let from = crate::mime::parse(&raw).from;
+        assert_eq!((from.name.as_str(), from.addr.as_str()), ("Иван Петров", "a@x.org"));
+        let _ = std::fs::remove_dir_all(st.paths.config.parent().unwrap());
+    }
+
+    #[test]
+    fn account_update_unknown_err() {
+        let mut st = state("rename-unknown");
+        assert_eq!(call(&mut st, json!({"id": 1, "cmd": "account_update", "email": "no@x", "name": "N"}))["ok"], false);
+        assert!(!st.paths.config.exists(), "no accounts.toml written for an unknown mailbox");
     }
 
     fn read_line(r: &mut BufReader<UnixStream>) -> String {

@@ -90,6 +90,12 @@ impl Hub {
         self.emit(Event::Status { accounts: v.clone() });
     }
 
+    /// `Status` with every account as it is (a renamed account); under the lock, in order with `set_status`.
+    pub fn emit_status(&self) {
+        let v = lock(&self.accounts);
+        self.emit(Event::Status { accounts: v.clone() });
+    }
+
     pub fn statuses(&self) -> Vec<AccountState> {
         lock(&self.accounts).clone()
     }

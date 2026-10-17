@@ -63,6 +63,7 @@ Failure:
 | `accounts` | — | `Account[]` |
 | `account_add` | `provider, email, name?, password, login?, imap?, smtp?` | `Account` |
 | `account_remove` | `email` | — |
+| `account_update` | `email, name` | — |
 | `folders` | `account?` | `FolderInfo[]` |
 | `list` | `account?, role?, folder?, unread_only?, offset?, limit?` | `Summary[]` |
 | `message` | `message` (message id; negative: an outbox message) | `Full` |
@@ -167,6 +168,19 @@ live in the keyring only.
   4. Remove it from `accounts.toml`.
 - Nothing is deleted on the server.
 - Events follow: `status` without the account, and `changed {folders: true, ids: []}`.
+
+### `account_update`
+
+```json
+→ {"id": 7, "cmd": "account_update", "email": "me@gmail.com", "name": "Max Petrov"}
+← {"id": 7, "ok": true}
+```
+
+- Sets the sender name ("From") of the account in `accounts.toml`; leading and trailing spaces
+  are dropped, it may be empty. Nothing else of the account changes, nothing restarts.
+- The next `send` of the account goes out with the new name.
+- An unknown `email` is an error.
+- A `status` event follows, with the statuses as they were, so other clients can reload `accounts`.
 
 ### `folders`
 
@@ -416,7 +430,7 @@ They go to subscribed connections only, one JSON object per line.
 | `event` | Fields | When |
 |---|---|---|
 | `changed` | `folders: bool, ids: [i64]` | Mail changed. `ids` are added or re-fetched messages; the list may be empty (flags changed, messages deleted, an account removed). `folders: true` means unread counts may have changed: reload `folders`. Reload the visible list in both cases. |
-| `status` | `accounts: [{email, status}]` | An account's `Status` changed, or an account was removed. Carries every account; for `queued`, call `status`. |
+| `status` | `accounts: [{email, status}]` | An account's `Status` changed, an account was removed or renamed (`account_update`). Carries every account; for `queued`, call `status`. |
 | `open` | `id: i64` | A new-mail notification was clicked while a window is subscribed: show message `id` and raise the window. |
 | `search_remote` | `token: u64, hits: Summary[], error?: string` | Server search hits of one mailbox. `error` only when its search failed. |
 | `action_failed` | `batch: i64, error: string` | A server refused an action of `batch` (see `act`). The database is already back to the previous state. |
