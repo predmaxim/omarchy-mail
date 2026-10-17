@@ -199,7 +199,8 @@ fn decode_entities(v: &str) -> String {
 
 fn url_is_unsafe(v: &str) -> bool {
     let c: String = decode_entities(v).chars().filter(|c| !c.is_whitespace() && !c.is_control()).collect::<String>().to_lowercase();
-    c.starts_with("javascript:") || c.starts_with("vbscript:") || (c.starts_with("data:") && !c.starts_with("data:image/"))
+    // file: would let a mail point the window at local files.
+    c.starts_with("javascript:") || c.starts_with("vbscript:") || c.starts_with("file:") || (c.starts_with("data:") && !c.starts_with("data:image/"))
 }
 
 /// Tokenizes the start tag at `s[i]` (name is `name_len` bytes) with HTML-tokenizer rules: quotes matter only
@@ -477,6 +478,15 @@ mod tests {
             assert!(!s.contains("href"), "{h} -> {s}");
         }
         assert!(sanitize_html(r#"<a href="https://e.com/?a=1&amp;b=2">x</a>"#).contains("href"));
+    }
+
+    #[test]
+    fn sanitize_drops_file_urls() {
+        for h in [r#"<img src="file:///etc/passwd">"#, r#"<a href=" FILE:/home/me/.ssh/id_rsa">x</a>"#, r#"<td background="fil&#101;:///x">"#] {
+            let s = sanitize_html(h);
+            assert!(!s.contains("src") && !s.contains("href") && !s.contains("background"), "{h} -> {s}");
+        }
+        assert!(sanitize_html(r#"<img src="cid:a@b">"#).contains("src"));
     }
 
     #[test]

@@ -49,8 +49,8 @@ The full socket protocol is in [maild/PROTOCOL.md](maild/PROTOCOL.md).
 
 - Syncs mail since 2026-01-01; older mail is found by server-side search.
 - IMAP IDLE keeps each mailbox current; bodies and attachments are fetched on demand.
-- Actions (read, move, delete, send) made offline are queued and replayed when the connection returns; sent mail goes through an SMTP outbox.
-- A notification is shown for each new message (not for mail that was already there at start).
+- Actions (read/unread, flag/unflag, delete, delete forever, send) made offline are queued and replayed when the connection returns; sent mail goes through an SMTP outbox.
+- Up to 3 new Inbox messages get a notification each; more arrive as one "N new messages" notification. Mail already there at the first sync is not announced.
 
 ## Where things live
 

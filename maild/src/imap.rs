@@ -86,7 +86,7 @@ pub struct Conn {
 }
 
 /// Per resolved address.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Socket read/write timeout for the TLS handshake, LOGIN and ordinary commands (not while idling).
 const IO_TIMEOUT: Duration = if cfg!(test) { Duration::from_millis(500) } else { Duration::from_secs(60) };
 

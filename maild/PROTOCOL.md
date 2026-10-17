@@ -14,7 +14,7 @@ window and `maild ctl`. Only this file defines it.
 - A request line longer than 1 MiB (1 048 576 bytes) gets an error and the connection is closed.
 - One connection carries any number of requests. They are answered one at a time, in the order
   sent. A slow request delays the requests behind it on the same connection; `account_add`
-  waits for a trial login (up to about 90 s). Run slow requests on a second connection if that
+  waits for a trial login (up to about 70 s). Run slow requests on a second connection if that
   matters.
 - After `subscribe`, events arrive on the same connection, between responses. A response has
   `id` and `ok`; an event has `event`.
@@ -53,8 +53,6 @@ Failure:
 - Errors from servers, the keyring or the file system are passed on as they are.
 - Malformed requests get English parser text. Examples: bad JSON, an unknown `cmd`, a missing
   or mistyped field. Such errors mean a client bug.
-- Commands of later stages answer `"error": "not implemented"` until those stages land (see the
-  table).
 
 ## Commands
 
@@ -67,7 +65,7 @@ Failure:
 | `account_remove` | `email` | — |
 | `folders` | `account?` | `FolderInfo[]` |
 | `list` | `account?, role?, folder?, unread_only?, offset?, limit?` | `Summary[]` |
-| `message` | `message` (message id) | `Full` |
+| `message` | `message` (message id; negative: an outbox message) | `Full` |
 | `search` | `q` | `{local: Summary[], token}` |
 | `contacts` | `prefix` | `Addr[]` |
 | `sync` | `account?, folder?` | — |
@@ -76,6 +74,8 @@ Failure:
 | `act` | `ids, op` | `{batch}` |
 | `undo` | `batch` | `{batch}` |
 | `send` | a `Draft` | `{outbox}` |
+| `outbox_retry` | `outbox` | — |
+| `outbox_discard` | `outbox` | — |
 
 `?` marks an optional parameter: leave it out or send `null`.
 
@@ -189,7 +189,8 @@ live in the keyring only.
   `path` and `name` are the role name, and the window translates it. Open such an entry with
   `list {role}`.
 - With `account` the result is that mailbox's folders from the server, in discovery order.
-  Open one with `list {folder: id}`. The `remote` folder (stage 10) is not listed.
+  Open one with `list {folder: id}`. The `remote` folders (opened server search hits) are not
+  listed.
   - `name` is for display: the decoded last part of the path.
   - `path` is the raw IMAP name. Never show it, and never decode it yourself.
 - `unread` counts unread messages. For `flagged` it counts unread flagged messages outside
@@ -208,7 +209,8 @@ live in the keyring only.
   - `role: "flagged"` lists flagged messages of every folder except Trash and Junk.
   - Any other role lists the folders with that role.
 - `folder` is a folder id from `folders {account}`.
-- With neither `role` nor `folder`, the list holds every message.
+- With neither `role` nor `folder`, the list holds every message except opened server search
+  hits (role `remote`; `role: "remote"` lists those).
 - `unread_only` (default `false`) lists unseen messages only.
 - `offset` and `limit` page the list. A `limit` of `0` or a missing one means no limit; always
   send one.
@@ -224,10 +226,11 @@ live in the keyring only.
 ```
 
 - An unknown id is an error ("message not found").
-- `has_body: false` means a big message (over 2 MiB) whose body is not downloaded. Then `text`
-  holds what sync took (the text parts) and `html` may be `null`.
-- A big message is fetched first: the reply waits up to 30 s, then errors ("no network"). The
-  `attachments` of a fetched big message are the list `attachment` numbers by.
+- `has_body: false` means a big message (over 2 MiB) of which sync took no text part (it has
+  none, or the server sent no structure): `text` is empty and `html` is `null`. A big message
+  whose text parts sync took has `has_body: true`.
+- A message with `has_body: false` is fetched first: the reply waits up to 30 s, then errors
+  ("no network"). The `attachments` of a fetched big message are the list `attachment` numbers by.
 - A message that has a body is answered at once, never waiting for the network. If its inline
   images are not cached, the service fetches them in the background (at most every 5 minutes per
   message) and sends `changed` with the message id when it caches something: re-request then.
@@ -237,6 +240,9 @@ live in the keyring only.
   `html` references as `cid:` (`{}` for none). If only the images could not be fetched, the
   message is still returned, without them in `inline`.
 - Error while a local move waits for the server (`uid` is `null`): "message is being moved".
+- A negative id (an outbox row of `list {role: "sent"}`) returns that outbox message, parsed from
+  its text, in the same shape, with `summary.queued` / `summary.failed` and `send_error: string`
+  for a failed one; `inline` is `{}`. Attachments of outbox messages are not served.
 
 ### `attachment`
 
@@ -352,35 +358,56 @@ live in the keyring only.
 - Errors: an unknown batch or one with nothing left to undo, and a `delete_forever` batch: deleting
   forever cannot be undone.
 
-### Later stages
+### `open_remote`
 
-- `outbox_retry {outbox}` → `{}`. Queues a failed message again. `outbox` is the id `send`
-  returned (a negative id as `list` shows it works too). Error if the message is not failed.
-- `outbox_discard {outbox}` → `{}`. Deletes a queued or failed message from the outbox.
-- `message {message: <negative id>}` returns an outbox message (parsed from its text) in the same
-  shape as any other, with `summary.queued` / `summary.failed`, and `send_error: string` for a
-  failed one; `inline` is `{}`. Attachments of outbox messages are not served.
-- `open_remote {account, folder_path, uid}` → `{id}`.
-  - Downloads a server search hit (`Summary.remote`) into the account's `remote` folders.
-  - Returns the local id for `message`; opening the same hit again returns the same id.
-  - Waits for the server up to 30 s.
-- `send {account, to: Addr[], subject, text, reply_to: i64|null, attachments: [path]}` →
-  `{outbox}`. This is the `Draft`.
-  - `to` must not be empty. `subject` is used as given (the window adds `Re:`). `text` is plain
-    text. `reply_to` is a message id: the mail gets `In-Reply-To` and `References` from it.
-  - `attachments` are absolute paths on the machine of `maild`; a file that cannot be read makes
-    the request fail and nothing is queued.
-  - The message is queued: it shows in `list {role: "sent"}` as `queued` (negative `id` =
-    `-outbox`), and is sent when online; a network error retries every 30 s. Mail on servers that
-    do not file sent mail themselves (`append_sent`) is copied to the Sent folder afterwards.
-  - With `append_sent`, after the server took the mail the row stays in Sent (`queued: false`)
-    until `maild` has copied it to the Sent folder; a failed copy is retried at the next sync.
-    The mail is never sent twice.
-  - Without `append_sent` (the server files sent mail itself, as Gmail does) the row leaves the
-    outbox once the server took the mail, and the account's Sent folder is synced right away.
-  - A queued message discarded before its turn is not sent.
-  - When the server refuses it permanently, `send_failed {outbox, error}` is sent and the row
-    stays in Sent with `failed: true` (and still `queued: true`: it is an outbox row).
+```json
+→ {"id": 19, "cmd": "open_remote", "account": "me@gmail.com", "folder_path": "[Gmail]/All Mail", "uid": 7}
+← {"id": 19, "ok": true, "result": {"id": 230}}
+```
+
+- Downloads a server search hit (`Summary.remote`) into the account's `remote` folders.
+- Returns the local id for `message`; opening the same hit again returns the same id.
+- Waits for the server up to 30 s.
+
+### `send`
+
+```json
+→ {"id": 20, "cmd": "send", "account": "me@gmail.com", "to": [{"name": "Иван", "addr": "ivan@example.org"}],
+   "subject": "Re: счёт", "text": "…", "reply_to": 42, "attachments": ["/home/me/счёт.pdf"]}
+← {"id": 20, "ok": true, "result": {"outbox": 3}}
+```
+
+- The request is a `Draft`: `account, to: Addr[], subject, text, reply_to?: i64,
+  attachments?: [path]`.
+- `to` must not be empty. `subject` is used as given (the window adds `Re:`). `text` is plain
+  text. `reply_to` is a message id: the mail gets `In-Reply-To` and `References` from it.
+- `attachments` are absolute paths on the machine of `maild`; a file that cannot be read makes
+  the request fail and nothing is queued.
+- The message is queued: it shows in `list {role: "sent"}` as `queued` (negative `id` =
+  `-outbox`), and is sent when online; a network error retries every 30 s. Mail on servers that
+  do not file sent mail themselves (`append_sent`) is copied to the Sent folder afterwards.
+- With `append_sent`, after the server took the mail the row stays in Sent (`queued: false`)
+  until `maild` has copied it to the Sent folder; a failed copy is retried at the next sync.
+  The mail is never sent twice.
+- Without `append_sent` (the server files sent mail itself, as Gmail does) the row leaves the
+  outbox once the server took the mail, and the account's Sent folder is synced right away.
+- A queued message discarded before its turn is not sent.
+- When the server refuses it permanently, `send_failed {outbox, error}` is sent and the row
+  stays in Sent with `failed: true` (and still `queued: true`: it is an outbox row).
+
+### `outbox_retry` and `outbox_discard`
+
+```json
+→ {"id": 21, "cmd": "outbox_retry", "outbox": 3}
+→ {"id": 22, "cmd": "outbox_discard", "outbox": -3}
+← {"id": 21, "ok": true}
+```
+
+- `outbox` is the id `send` returned; the negative id `list` shows works too.
+- `outbox_retry` queues a failed message again. Error if the message is not failed.
+- `outbox_discard` deletes a queued or failed message from the outbox. Error for one the server
+  has taken already (`queued: false`) or one that is gone.
+- Both are followed by a `changed` event.
 
 ## Events
 
