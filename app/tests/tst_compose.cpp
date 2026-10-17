@@ -100,6 +100,29 @@ private Q_SLOTS:
         QVERIFY(!QFile::exists(d + "/new.json"));
         QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(d + "/new.json"), 3000);
     }
+    void late_edit_does_not_resurrect_draft()
+    {
+        const QString d = dir.filePath("late");
+        Compose c(d);
+        c.startNew("a");
+        c.setBody("x");
+        c.sent();
+        c.setBody("y");
+        QTest::qWait(1500);
+        QVERIFY(!QFile::exists(d + "/new.json"));
+    }
+    void failed_save_keeps_form_open()
+    {
+        const QString d = dir.filePath("fail");
+        QVERIFY(QDir().mkpath(d + "/new.json"));   // a directory where the draft file belongs
+        Compose c(d);
+        c.startNew("a");
+        c.setBody("x");
+        c.close();
+        QVERIFY(c.isOpen());
+        QVERIFY(c.noteError());
+        QCOMPARE(c.note(), QString("Could not save draft"));
+    }
     void discard_needs_second_press()
     {
         const QString d = dir.filePath("discard");

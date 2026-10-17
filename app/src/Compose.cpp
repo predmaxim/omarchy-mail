@@ -123,9 +123,11 @@ void Compose::load()
     }
 }
 
-void Compose::save()
+bool Compose::save()
 {
     m_saveTimer.stop();
+    if (!m_open)   // late edits after sent()/discard()/close() must not resurrect a draft
+        return true;
     privateDir(m_dir);
     QJsonArray atts;
     for (const Att &a : m_atts)
@@ -133,11 +135,14 @@ void Compose::save()
     const QJsonObject j{{"account", m_account}, {"to", m_to}, {"subject", m_subject}, {"body", m_body},
                         {"cursor", m_cursor}, {"attachments", atts}};
     QSaveFile f(draftPath());
-    if (!f.open(QIODevice::WriteOnly))
-        return;
-    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-    f.write(QJsonDocument(j).toJson(QJsonDocument::Compact));
-    f.commit();
+    f.setDirectWriteFallback(false);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        if (f.write(QJsonDocument(j).toJson(QJsonDocument::Compact)) >= 0 && f.commit())
+            return true;
+    }
+    setNote(t("Could not save draft"), true);
+    return false;
 }
 
 void Compose::removeDraft()
@@ -198,9 +203,8 @@ void Compose::startMailto(const QUrl &url, const QString &account)
 
 void Compose::close()
 {
-    if (!m_open)
+    if (!m_open || !save())
         return;
-    save();
     m_open = false;
     Q_EMIT changed();
 }

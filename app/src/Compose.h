@@ -79,7 +79,7 @@ private:
     void edit(QString &field, const QString &v);
     void begin(const QString &key, const QString &account);
     void load();
-    void save();
+    bool save();
     void removeDraft();
     void setNote(const QString &text, bool error = false);
     QString draftPath() const { return m_dir + QLatin1Char('/') + m_key + QStringLiteral(".json"); }
