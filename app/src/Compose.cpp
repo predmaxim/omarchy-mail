@@ -34,8 +34,14 @@ void privateDir(const QString &path)
 MailtoDraft parseMailto(const QString &mailto)
 {
     const QUrl url(mailto);
+    if (url.scheme().compare(QStringLiteral("mailto"), Qt::CaseInsensitive) != 0)
+        return {};
     const QUrlQuery q(url);
-    return {url.path(QUrl::FullyDecoded), q.queryItemValue(QStringLiteral("subject"), QUrl::FullyDecoded),
+    QString to = url.path(QUrl::FullyDecoded);
+    const QString more = q.queryItemValue(QStringLiteral("to"), QUrl::FullyDecoded);   // RFC 6068: `to` adds addresses
+    if (!more.isEmpty())
+        to = to.isEmpty() ? more : to + QStringLiteral(", ") + more;
+    return {to, q.queryItemValue(QStringLiteral("subject"), QUrl::FullyDecoded),
             q.queryItemValue(QStringLiteral("body"), QUrl::FullyDecoded)};
 }
 
@@ -188,11 +194,13 @@ void Compose::startMailto(const QUrl &url, const QString &account)
     startNew(account);
     const MailtoDraft d = parseMailto(url.toString());
     QString bad;
-    bool have = false;
-    for (const auto &p : parseAddresses(m_to, &bad))
-        have = have || p.second.compare(d.to, Qt::CaseInsensitive) == 0;
-    if (!d.to.isEmpty() && !have)
-        m_to = m_to.trimmed().isEmpty() ? d.to : m_to.trimmed() + QStringLiteral(", ") + d.to;
+    for (const auto &add : parseAddresses(d.to, &bad)) {
+        bool have = false;
+        for (const auto &p : parseAddresses(m_to, &bad))
+            have = have || p.second.compare(add.second, Qt::CaseInsensitive) == 0;
+        if (!have)
+            m_to = m_to.trimmed().isEmpty() ? add.second : m_to.trimmed() + QStringLiteral(", ") + add.second;
+    }
     if (m_subject.isEmpty())
         m_subject = d.subject;
     if (m_body.isEmpty())

@@ -1,11 +1,10 @@
 #include "I18n.h"
 #include "Launch.h"
 #include "Session.h"
-#include <QCommandLineParser>
+#include "Single.h"
 #include <QGuiApplication>
 #include <QProcessEnvironment>
 #include <QQmlApplicationEngine>
-#include <cstdio>
 
 int main(int argc, char *argv[])
 {
@@ -16,23 +15,22 @@ int main(int argc, char *argv[])
     om::I18n::setRu(om::I18n::ruFromEnv());
     om::launch::setEnvironment(launchEnv);
 
-    QCommandLineParser args;
-    const QCommandLineOption open(QStringLiteral("open"), QStringLiteral("Show this letter first."), QStringLiteral("id"));
-    args.addOption(open);
-    args.process(app);
-    qint64 openId = 0;
-    if (args.isSet(open)) {
-        bool ok = false;
-        openId = args.value(open).toLongLong(&ok);
-        if (!ok)
-            std::fprintf(stderr, "omarchy-mail: --open wants a letter id, not \"%s\"\n", qPrintable(args.value(open)));
-    }
+    const QStringList cmdline = app.arguments().mid(1);
+    if (om::single::forward(cmdline))   // a window is open: it takes the arguments and comes forward
+        return 0;
+    const om::Session::Args args = om::Session::parseArgs(cmdline);
 
     om::Session session(om::Client::defaultSocketPath(), om::Compose::defaultDir(), om::Images::defaultDir());
     QQmlApplicationEngine engine;   // dies before the session
     session.load(engine);
     if (engine.rootObjects().isEmpty())
         return 1;
-    session.start(openId);
+    session.start(args.openId);
+    session.handleArgs(args, false);
+    om::single::Server single;
+    QObject::connect(&single, &om::single::Server::received, &app, [&session](const QStringList &a) {
+        session.handleArgs(om::Session::parseArgs(a), true);
+    });
+    single.listen();   // ponytail: no socket, no forwarding: a second window opens (single.lua still guards it)
     return app.exec();
 }

@@ -89,6 +89,11 @@ om_test(tst_ui)
 target_sources(mailcore PRIVATE src/AppAccounts.cpp)
 qt_add_resources(mailcore "qml_settings" PREFIX "/" FILES qml/SettingsPage.qml)
 om_test(tst_app_accounts)
+target_sources(mailcore PRIVATE src/Single.h src/Single.cpp)
+om_test(tst_mailto)
+om_test(tst_single)
+add_dependencies(tst_single omarchy-mail)
+target_compile_definitions(tst_single PRIVATE OM_APP_BINARY="$<TARGET_FILE:omarchy-mail>")
 
 # ---- packaging checks ----
 add_test(NAME install_script COMMAND bash -n ${CMAKE_SOURCE_DIR}/../install.sh)

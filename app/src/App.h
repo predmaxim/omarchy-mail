@@ -74,6 +74,8 @@ public:
     Q_INVOKABLE void closeSettings();
     Q_INVOKABLE void suggest(const QString &prefix);   // "To" completion -> compose.suggestions
     void openMessage(qint64 id);
+    void openMailto(const QUrl &url);   // the new-message form filled from `mailto:`; waits for the mailboxes
+
 
     // focus: "" the window, "search" the search field, "compose" the form; true: the key is eaten
     Q_INVOKABLE bool key(int key, quint32 nativeScanCode, int modifiers, bool autoRepeat, const QString &focus);
@@ -156,6 +158,7 @@ private:
     QHash<QString, QHash<QString, QString>> m_places;   // mailbox -> folder path -> label
     bool m_unreadOnly = false;
     qint64 m_openId = 0;
+    QUrl m_pendingMailto;   // asked before the mailboxes arrived
     bool m_synced = false;      // `sync {}` once per window
     bool m_opened = false;      // the window's first list has arrived
     quint64 m_gen = 0;          // view changes and list/search loads: replies of an older one are dropped

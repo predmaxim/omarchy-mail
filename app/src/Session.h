@@ -20,6 +20,15 @@ struct Session {
     void load(QQmlApplicationEngine &engine);   // the engine must die first: QML holds these objects
     void start(qint64 openId);
 
+    // The command line: `--open <id>` and `mailto:` URLs. A bad id is reported on stderr and ignored.
+    struct Args {
+        qint64 openId = 0;
+        QList<QUrl> mailto;
+    };
+    static Args parseArgs(const QStringList &args);
+    // forwarded: from a later launch, to the window already open (the first launch's --open went to start()).
+    void handleArgs(const Args &args, bool forwarded);
+
     Theme theme;
     I18n i18n;
     Client client;

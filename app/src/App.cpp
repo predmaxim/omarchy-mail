@@ -158,6 +158,8 @@ void App::connectedChanged()
             m_account = email(m_accounts.at(0));
         else if (accountIndex() < 0)
             m_account.clear();
+        if (!m_pendingMailto.isEmpty())
+            m_compose->startMailto(std::exchange(m_pendingMailto, {}), composeAccount());
         requestStatus();
         loadFolders([this] {
             if (m_searching)
@@ -440,6 +442,14 @@ void App::openMessage(qint64 id)
 {
     m_page = QStringLiteral("main");
     selectView(m_accounts.size() == 1 ? email(m_accounts.at(0)) : QString(), id);
+}
+
+void App::openMailto(const QUrl &url)
+{
+    if (m_accounts.isEmpty())
+        m_pendingMailto = url;   // composeAccount() needs the first mailbox
+    else
+        m_compose->startMailto(url, composeAccount());
 }
 
 void App::openSettings()
