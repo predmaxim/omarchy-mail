@@ -484,6 +484,39 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(view, "positionViewAtIndex", Q_ARG(int, 10), Q_ARG(int, 4 /* ListView.Contain */));
         QVERIFY(itemAt(view, 10)->findChild<QQuickItem *>("unreadBar")->isVisible());
     }
+    void empty_subject_shows_a_dim_placeholder()
+    {
+        const auto subject = [this](int i, const QString &s) {
+            QJsonObject r = h.rows.at(i).toObject();
+            r.insert("subject", s);
+            h.rows[i] = r;
+        };
+        subject(0, "");
+        subject(1, " \t ");
+        h.d->on("message", [](const QJsonObject &r) {
+            QJsonObject f = letter(r.value("message").toInteger()), sum = f.value("summary").toObject();
+            sum.insert("subject", "");
+            f.insert("summary", sum);
+            return QJsonObject{{"result", f}};
+        });
+        QQuickItem *heading = item("letterSubject");
+        QVERIFY(!heading->isVisible());   // no letter open yet: no heading at all
+        start();
+        QQuickItem *view = item("mailList");
+        for (int i : {0, 1}) {
+            QQuickItem *line = itemAt(view, i)->findChild<QQuickItem *>("subject");
+            QCOMPARE(line->property("text").toString(), QString("(no subject)"));
+            QCOMPARE(line->property("color").value<QColor>().rgba(), s->theme.dim().rgba());
+        }
+        QQuickItem *real = itemAt(view, 2)->findChild<QQuickItem *>("subject");
+        QCOMPARE(real->property("text").toString(), h.rows.at(2).toObject().value("subject").toString());
+        QCOMPARE(real->property("color").value<QColor>().rgba(), s->theme.foreground().rgba());
+        letterShown();
+        QVERIFY(heading->isVisible());
+        QCOMPARE(heading->property("text").toString(), QString("(no subject)"));
+        QCOMPARE(heading->property("color").value<QColor>().rgba(), s->theme.dim().rgba());
+        QCOMPARE(s->letter.subject(), QString());   // the placeholder is the window's only
+    }
     void paddings_follow_a_live_base_size()
     {
         start();

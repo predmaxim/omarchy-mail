@@ -47,12 +47,14 @@ Item {
         spacing: theme.space(6)
 
         Text {
+            objectName: "letterSubject"
+            readonly property bool none: letter.subject.trim() === ""
             width: parent.width
-            visible: text !== ""
+            visible: !letter.empty
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
-            text: letter.subject
-            color: theme.foreground
+            text: none ? i18n.t("(no subject)") : letter.subject
+            color: none ? theme.dim : theme.foreground
             font.pixelSize: theme.fontDisplay
             font.bold: true
         }

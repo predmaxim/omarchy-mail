@@ -7,6 +7,7 @@ Rectangle {
     id: row
     required property int index
     required property string sender
+    required property string subject
     required property string subjectRich
     required property string previewRich
     required property string dateText
@@ -90,11 +91,13 @@ Rectangle {
             }
         }
         Text {
+            objectName: "subject"
+            readonly property bool none: row.subject.trim() === ""
             width: parent.width
             elide: Text.ElideRight
-            textFormat: Text.StyledText
-            text: row.subjectRich
-            color: theme.foreground
+            textFormat: none ? Text.PlainText : Text.StyledText
+            text: none ? i18n.t("(no subject)") : row.subjectRich
+            color: none ? theme.dim : theme.foreground
             font.pixelSize: theme.fontTitle
         }
         Text {

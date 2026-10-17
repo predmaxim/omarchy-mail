@@ -20,6 +20,7 @@ QString renderSource(const QJsonObject &full, const QStringList &words, const QC
 class Letter : public QObject {
     Q_OBJECT
     Q_PROPERTY(qint64 id READ id NOTIFY changed)
+    Q_PROPERTY(bool empty READ empty NOTIFY changed)
     Q_PROPERTY(QString subject READ subject NOTIFY changed)
     Q_PROPERTY(QString from READ from NOTIFY changed)
     Q_PROPERTY(QString to READ to NOTIFY changed)
@@ -34,6 +35,7 @@ public:
     Letter(Client *client, Images *images, Renderer *renderer, Theme *theme, QObject *parent = nullptr);
 
     qint64 id() const { return m_id; }
+    bool empty() const { return summary().isEmpty(); }   // no letter open
     QString subject() const;
     QString from() const;
     QString to() const;
