@@ -1,0 +1,25 @@
+From: Alice Example <alice@example.com>
+To: bob@example.org
+Subject: Files
+Date: Mon, 05 Jan 2026 10:00:00 +0000
+Message-ID: <att1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mix"
+
+--mix
+Content-Type: text/plain; charset=utf-8
+
+See attached.
+--mix
+Content-Type: application/pdf; name="doc.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="doc.pdf"
+
+JVBERi0xLjQKJSVFT0YK
+--mix
+Content-Type: image/png; name="pic.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="pic.png"
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==
+--mix--

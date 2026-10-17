@@ -1,0 +1,20 @@
+From: Alice Example <alice@example.com>
+To: bob@example.org
+Subject: Logo mail
+Date: Mon, 05 Jan 2026 10:00:00 +0000
+Message-ID: <cid1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel"
+
+--rel
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Hi</p><img src="cid:logo@x"></body></html>
+--rel
+Content-Type: image/png; name="logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <logo@x>
+Content-Disposition: inline; filename="logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==
+--rel--

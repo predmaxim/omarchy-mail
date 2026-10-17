@@ -2,6 +2,7 @@
 
 mod config;
 mod i18n;
+mod mime;
 mod secret;
 
 fn usage() -> ! {

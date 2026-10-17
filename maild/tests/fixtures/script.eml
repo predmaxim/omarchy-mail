@@ -1,0 +1,10 @@
+From: a@example.com
+To: b@example.org
+Subject: Active
+Date: Mon, 05 Jan 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>p{color:red}</style><script>alert(1)</script></head>
+<body onload="x()"><p onclick="evil()">Hi</p><a href="javascript:alert(1)">bad</a>
+<a href="https://example.com/x">good</a><iframe src="https://example.com"></iframe></body></html>

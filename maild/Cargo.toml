@@ -9,3 +9,4 @@ description = "Mail sync service for omarchy-mail"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 libc = "0.2"
+mail-parser = "0.11"
