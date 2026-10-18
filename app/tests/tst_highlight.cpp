@@ -45,6 +45,42 @@ private Q_SLOTS:
     {
         QCOMPARE(highlight::html(QStringLiteral("ДОГОВОР"), {"догов"}, mark), open + "ДОГОВ</span>ОР");
     }
+    void links_in_text()
+    {
+        const QString r = highlight::links(QStringLiteral(
+            "<p>Пишите на ivan@x.ru или смотрите https://x.ru/a?b=1. Также www.site.ru, (см. https://ru.wikipedia.org/wiki/X_(y))</p>"));
+        QCOMPARE(r, QStringLiteral(
+            "<p>Пишите на <a href=\"mailto:ivan@x.ru\">ivan@x.ru</a> или смотрите <a href=\"https://x.ru/a?b=1\">https://x.ru/a?b=1</a>."
+            " Также <a href=\"https://www.site.ru\">www.site.ru</a>, (см. <a href=\"https://ru.wikipedia.org/wiki/X_(y)\">"
+            "https://ru.wikipedia.org/wiki/X_(y)</a>)</p>"));
+    }
+    void links_skip_existing_and_raw()
+    {
+        const QString s = "<a href=\"https://a.ru\">https://a.ru</a><style>b@c.de</style><img alt=\"x@y.ru\"><!-- z@w.ru -->";
+        QCOMPARE(highlight::links(s), s);
+    }
+    void links_url_wins_over_email()
+    {
+        QCOMPARE(highlight::links(QStringLiteral("https://user@host.ru/x")),
+                 QStringLiteral("<a href=\"https://user@host.ru/x\">https://user@host.ru/x</a>"));
+    }
+    void links_keep_entities()
+    {
+        QCOMPARE(highlight::links(QStringLiteral("<p>https://x.ru/?a=1&amp;b=2</p>")),
+                 QStringLiteral("<p><a href=\"https://x.ru/?a=1&amp;b=2\">https://x.ru/?a=1&amp;b=2</a></p>"));
+        QCOMPARE(highlight::links(QStringLiteral("&lt;https://x.ru&gt;")),
+                 QStringLiteral("&lt;<a href=\"https://x.ru\">https://x.ru</a>&gt;"));
+    }
+    void links_cyrillic_domain()
+    {
+        QCOMPARE(highlight::links(QStringLiteral("info@почта.рф")),
+                 QStringLiteral("<a href=\"mailto:info@почта.рф\">info@почта.рф</a>"));
+    }
+    void links_then_search_highlight()
+    {
+        const QString r = highlight::html(highlight::links(QStringLiteral("info@почта.рф")), {"почта"}, mark);
+        QCOMPARE(r, "<a href=\"mailto:info@почта.рф\">info@" + open + "почта</span>.рф</a>");
+    }
     void styled_escapes()
     {
         const QString r = highlight::styled(QStringLiteral("<b>x</b> договор"), {"догов"}, mark);

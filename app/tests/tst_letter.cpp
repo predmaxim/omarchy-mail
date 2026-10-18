@@ -290,6 +290,24 @@ private Q_SLOTS:
         QCOMPARE(letter->linkCount(), 1);
         QCOMPARE(letter->links().at(0).url, QUrl("https://b.example/"));
     }
+    void plain_text_links_and_mail()
+    {
+        d->on("message", [](const QJsonObject &req) {
+            QJsonObject f = full(req.value("message").toInteger());
+            f.insert("html", "");
+            f.insert("text", "Write ivan@x.example or see www.site.example.");
+            return QJsonObject{{"result", f}};
+        });
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->show({{"id", 42}});
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
+        QCOMPARE(letter->linkCount(), 2);
+        QCOMPARE(letter->links().at(0).url, QUrl("mailto:ivan@x.example"));
+        QCOMPARE(letter->links().at(1).url, QUrl("https://www.site.example"));
+        QSignalSpy compose(letter, &Letter::composeTo);
+        letter->activateLink(letter->links().at(0).url);
+        QCOMPARE(compose.size(), 1);
+    }
     void links_only_http_https_mailto()
     {
         QTemporaryDir dir(scratch());

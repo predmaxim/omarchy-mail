@@ -26,20 +26,9 @@ QString renderSource(const QJsonObject &full, const QStringList &words, const QC
 {
     const QString html = full.value(QStringLiteral("html")).toString();
     if (!html.isEmpty())
-        return highlight::html(html, words, mark);
-    static const QRegularExpression link(QStringLiteral("https?://[^\\s<>\"]+"));
+        return highlight::html(highlight::links(html), words, mark);
     QString out = QStringLiteral("<pre style=\"white-space:pre-wrap;font-family:monospace\">");
-    const auto add = [&](const QString &text) {   // escaped, links made
-        qsizetype done = 0;
-        for (auto it = link.globalMatch(text); it.hasNext();) {
-            const auto m = it.next();
-            const QString url = m.captured().toHtmlEscaped();
-            out += text.mid(done, m.capturedStart() - done).toHtmlEscaped() + QStringLiteral("<a href=\"") + url
-                + QStringLiteral("\">") + url + QStringLiteral("</a>");
-            done = m.capturedEnd();
-        }
-        out += text.mid(done).toHtmlEscaped();
-    };
+    const auto add = [&](const QString &text) { out += highlight::links(text.toHtmlEscaped()); };
     // lines starting with ">" (or "> >", ">>") are quotes: nested <blockquote>s without the marks
     int level = 0;
     QStringList run;
