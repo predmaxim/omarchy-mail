@@ -69,6 +69,8 @@ Mail is in the app menu. Its desktop entry declares the `mailto:` scheme; to mak
 xdg-mime default omarchy-mail.desktop x-scheme-handler/mailto
 ```
 
+Bare web addresses (`https://…`, `www.…`) and e-mail addresses in a letter's text are links too, in plain and HTML mail: a web address opens in the browser, an e-mail address starts a new letter to it. Trailing punctuation and `&nbsp;` stay outside the link.
+
 A `mailto:` link never goes into an unfinished new message: it gets a letter of its own, which `c` opens until it is sent or discarded. The author's dotfiles bind the window to `Super+Shift+M`. There is one window per system: a second launch hands its arguments to the open window and exits.
 
 One cursor moves through the whole window; the letters work in the Russian layout too (they are matched by key code).
