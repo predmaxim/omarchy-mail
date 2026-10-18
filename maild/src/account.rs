@@ -396,7 +396,7 @@ fn work(sh: &Shared, acc: &Account, db: &Path, queue: &Receiver<Job>) -> Result<
         if r.is_ok() {
             // Folders are re-read: the sync has just moved `notified_uid` and `last_uid`.
             if let Some(inbox) = db.folders_of(&acc.email).ok().and_then(|v| v.into_iter().find(|f| f.role == Role::Inbox)) {
-                notify::announce(&db, &sh.hub, &inbox);
+                notify::announce(&db, &inbox);
             }
         }
         match r {

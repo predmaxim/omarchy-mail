@@ -54,6 +54,8 @@ fn daemon() -> Result<(), String> {
     // The schema exists before the threads open their own.
     fetch::sweep(&db::Db::open(&paths.db)?, &paths.cache);
     let hub = hub::Hub::default();
+    // Before any account can notify.
+    notify::start(hub.clone(), paths.notify_ids.clone());
     for acc in config::load(&paths.config)? {
         hub.add_handle(account::spawn(acc, paths.clone(), hub.clone()));
     }

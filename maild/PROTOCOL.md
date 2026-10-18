@@ -96,8 +96,10 @@ The message id parameter is named `message`, not `id`. `id` is the request id.
   window sets it; `maild ctl` subscribes with `false`.
 - A click is the notification server's `ActionInvoked(id, "default")`, so a click on the entry in
   a notification center that keeps the notification works like a click on the toast, until the
-  server closes it (`NotificationClosed`). maild remembers its newest 1000 notifications; older
-  ones, and those from before a maild or notification server restart, open nothing.
+  server closes it (`NotificationClosed`). maild remembers its newest 1000 notifications, also
+  across a maild restart (in `$XDG_RUNTIME_DIR/omarchy-mail/notify-ids.json`, kept while the same
+  notification server runs). Older ones, and those from before a notification server restart,
+  open nothing.
 - Events are sent as they happen, in order, also while a request on this connection is still
   being answered.
 - Subscribing gives no initial state. Call `status`, `folders` and `list` afterwards.

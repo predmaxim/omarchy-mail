@@ -4,10 +4,12 @@ use crate::db::{Db, Folder, Summary};
 use crate::hub::{Event, Hub, lock};
 use crate::i18n;
 use notify_rust::{Hint, Notification};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Up to this many new messages get a notification each; more are folded into one.
@@ -19,18 +21,30 @@ const SERVER_PATH: &str = "/org/freedesktop/Notifications";
 /// Clickable notifications remembered; older ones (still in the center) open nothing.
 const KEEP: usize = 1000;
 
-static SHOWN: Mutex<Shown> = Mutex::new(Shown(VecDeque::new()));
-static LISTENER: Once = Once::new();
+static SHOWN: Mutex<Shown> = Mutex::new(Shown { owner: String::new(), ids: VecDeque::new(), file: None, resumed: false });
 
-/// (server notification id, message id) of the shown notifications, oldest first.
-struct Shown(VecDeque<(u32, i64)>);
+/// The shown notifications that open a message. Saved to `file` on every change, so the
+/// ones still in the notification center stay clickable after a maild restart.
+#[derive(Default, Serialize, Deserialize)]
+struct Shown {
+    /// Unique bus name of the notification server the ids belong to; empty: none.
+    owner: String,
+    /// (server notification id, message id), oldest first.
+    ids: VecDeque<(u32, i64)>,
+    #[serde(skip)]
+    file: Option<PathBuf>,
+    /// `owner` is known; until then nothing is saved, the previous maild's file is still to be read.
+    #[serde(skip)]
+    resumed: bool,
+}
 
 impl Shown {
     fn record(&mut self, id: u32, msg: i64) {
-        if self.0.len() >= KEEP {
-            self.0.pop_front();
+        if self.ids.len() >= KEEP {
+            self.ids.pop_front();
         }
-        self.0.push_back((id, msg));
+        self.ids.push_back((id, msg));
+        self.save();
     }
 
     /// The message to open for `ActionInvoked(id, key)`.
@@ -38,11 +52,51 @@ impl Shown {
         if key != "default" {
             return None;
         }
-        self.0.iter().rev().find(|e| e.0 == id).map(|e| e.1)
+        self.ids.iter().rev().find(|e| e.0 == id).map(|e| e.1)
     }
 
     fn closed(&mut self, id: u32) {
-        self.0.retain(|e| e.0 != id);
+        let n = self.ids.len();
+        self.ids.retain(|e| e.0 != id);
+        if self.ids.len() != n {
+            self.save();
+        }
+    }
+
+    /// A restarted server numbers from 1 again: the old ids now belong to other apps.
+    fn owner_changed(&mut self, owner: &str) {
+        self.owner = owner.into();
+        self.ids.clear();
+        self.save();
+    }
+
+    /// On (re)connecting, with the server running now: keeps its ids, from memory or from
+    /// the file a previous maild left; drops those of any other server.
+    fn resume(&mut self, owner: &str) {
+        if self.resumed && self.owner == owner {
+            return;
+        }
+        let saved = self.file.as_deref().and_then(|f| serde_json::from_slice::<Shown>(&std::fs::read(f).ok()?).ok());
+        let mut ids = saved.filter(|s| s.owner == owner).map(|s| s.ids).unwrap_or_default();
+        // Recorded before the first resume: shown by the server running now.
+        if !self.resumed {
+            ids.append(&mut self.ids);
+        }
+        ids.drain(..ids.len().saturating_sub(KEEP));
+        self.ids = ids;
+        self.owner = owner.into();
+        self.resumed = true;
+        self.save();
+    }
+
+    /// Atomic, the file 0600 in a 0700 directory. Failures are logged: clicks still work until a restart.
+    fn save(&self) {
+        let Some(path) = self.file.as_ref().filter(|_| self.resumed) else { return };
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return };
+        let saved = serde_json::to_vec(self).map_err(|e| e.to_string()).and_then(|b| crate::fetch::store(dir, name, &b));
+        if let Err(e) = saved {
+            eprintln!("notify: {}: {e}", path.display());
+        }
     }
 
     /// Applies a signal of the notification server or the bus; returns the message to open.
@@ -59,11 +113,10 @@ impl Shown {
                 self.closed(id);
                 None
             }
-            // A restarted server numbers from 1 again: our ids now belong to other apps.
             ("org.freedesktop.DBus", "NameOwnerChanged") => {
-                let (name, _, _): (String, String, String) = msg.body().deserialize().ok()?;
+                let (name, _, owner): (String, String, String) = msg.body().deserialize().ok()?;
                 if name == SERVER {
-                    self.0.clear();
+                    self.owner_changed(&owner);
                 }
                 None
             }
@@ -72,20 +125,25 @@ impl Shown {
     }
 }
 
-/// Runs for the service's lifetime: one session bus connection for every notification's clicks.
+/// Starts listening for clicks, for the service's lifetime. The ids a previous maild saved in
+/// `file` stay clickable while the same notification server runs.
+pub fn start(hub: Hub, file: PathBuf) {
+    lock(&SHOWN).file = Some(file);
+    std::thread::spawn(move || listen(hub));
+}
+
+/// One session bus connection for every notification's clicks; reconnects.
 fn listen(hub: Hub) {
     loop {
-        if let Err(e) = zbus::blocking::Connection::session().and_then(|c| listen_on(c, &hub)) {
+        if let Err(e) = zbus::blocking::Connection::session().and_then(|c| listen_on(c, &hub, &SHOWN)) {
             eprintln!("notify: click listener: {e}");
         }
-        // Off the bus the server may have restarted unseen.
-        lock(&SHOWN).0.clear();
         std::thread::sleep(Duration::from_secs(5));
     }
 }
 
 /// Returns when the connection drops.
-fn listen_on(conn: zbus::blocking::Connection, hub: &Hub) -> zbus::Result<()> {
+fn listen_on(conn: zbus::blocking::Connection, hub: &Hub, shown: &Mutex<Shown>) -> zbus::Result<()> {
     use zbus::{MatchRule, message::Type::Signal};
     let signals = zbus::blocking::MessageIterator::from(conn.clone());
     let dbus = zbus::blocking::fdo::DBusProxy::new(&conn)?;
@@ -93,8 +151,15 @@ fn listen_on(conn: zbus::blocking::Connection, hub: &Hub) -> zbus::Result<()> {
     dbus.add_match_rule(
         MatchRule::builder().msg_type(Signal).sender("org.freedesktop.DBus")?.member("NameOwnerChanged")?.arg(0, SERVER)?.build(),
     )?;
+    // After subscribing: a server change from now on is seen in `signals`.
+    let owner = match dbus.get_name_owner(SERVER.try_into()?) {
+        Ok(o) => o.to_string(),
+        Err(zbus::fdo::Error::NameHasNoOwner(_)) => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    lock(shown).resume(&owner);
     for msg in signals {
-        let open = lock(&SHOWN).on_signal(&msg?);
+        let open = lock(shown).on_signal(&msg?);
         if let Some(id) = open {
             clicked(hub, id);
         }
@@ -116,8 +181,8 @@ pub fn plan(new: &[Summary]) -> Vec<(String, String, Option<i64>)> {
 
 /// Notifies about unread Inbox mail newer than `notified_uid`, then marks everything up to
 /// `last_uid` as notified. Failures to notify are logged, never returned.
-pub fn announce(db: &Db, hub: &Hub, folder: &Folder) {
-    announce_with(db, folder, |t, b, id| show(hub, t, b, id));
+pub fn announce(db: &Db, folder: &Folder) {
+    announce_with(db, folder, show);
 }
 
 fn announce_with(db: &Db, folder: &Folder, show: impl Fn(&str, &str, Option<i64>)) {
@@ -134,12 +199,7 @@ fn announce_with(db: &Db, folder: &Folder, show: impl Fn(&str, &str, Option<i64>
     }
 }
 
-fn show(hub: &Hub, title: &str, text: &str, id: Option<i64>) {
-    // Subscribing takes milliseconds, well before anyone clicks the first notification.
-    LISTENER.call_once(|| {
-        let hub = hub.clone();
-        std::thread::spawn(move || listen(hub));
-    });
+fn show(title: &str, text: &str, id: Option<i64>) {
     let shown = Notification::new()
         .appname(if i18n::is_ru() { "Почта" } else { "Mail" })
         .summary(title)
@@ -261,7 +321,7 @@ mod tests {
 
     #[test]
     fn click_opens_the_recorded_message() {
-        let mut s = Shown(VecDeque::new());
+        let mut s = Shown::default();
         s.record(7, 101);
         s.record(8, 102);
         assert_eq!(s.on_signal(&action(7, "default")), Some(101));
@@ -276,36 +336,124 @@ mod tests {
 
     #[test]
     fn close_forgets() {
-        let mut s = Shown(VecDeque::new());
+        let mut s = Shown::default();
         s.record(7, 101);
         s.record(8, 102);
         assert_eq!(s.on_signal(&closed(7)), None);
         assert_eq!(s.on_signal(&action(7, "default")), None);
         assert_eq!(s.on_signal(&action(8, "default")), Some(102));
         s.on_signal(&closed(42));
-        assert_eq!(s.0.len(), 1);
+        assert_eq!(s.ids.len(), 1);
     }
 
     #[test]
     fn server_restart_forgets_all() {
-        let mut s = Shown(VecDeque::new());
+        let mut s = Shown::default();
         s.record(7, 101);
         let owner = |name: &str| signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", &(name, ":1.5", ""));
         s.on_signal(&owner("org.example.Other"));
-        assert_eq!(s.0.len(), 1);
+        assert_eq!(s.ids.len(), 1);
         s.on_signal(&owner(SERVER));
         assert_eq!(s.on_signal(&action(7, "default")), None);
+    }
+
+    fn tmp_file(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("maild-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d.join("omarchy-mail/notify-ids.json")
+    }
+
+    fn with_file(f: &std::path::Path) -> Shown {
+        Shown { file: Some(f.into()), ..Default::default() }
+    }
+
+    fn saved(f: &std::path::Path) -> (String, Vec<(u32, i64)>) {
+        let s: Shown = serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap();
+        (s.owner, s.ids.into())
+    }
+
+    fn mode(p: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn saved_ids_survive_a_restart() {
+        let f = tmp_file("notify-restart");
+        let mut s = with_file(&f);
+        s.resume(":1.5");
+        s.record(7, 101);
+        s.record(8, 102);
+        s.closed(7);
+        assert_eq!(saved(&f), (":1.5".into(), vec![(8, 102)]));
+        assert_eq!((mode(f.parent().unwrap()), mode(&f)), (0o700, 0o600));
+        // the next maild, the same server
+        let mut s = with_file(&f);
+        s.record(9, 103); // shown before the listener got going
+        s.resume(":1.5");
+        assert_eq!(s.clicked(8, "default"), Some(102));
+        assert_eq!(s.clicked(9, "default"), Some(103));
+        assert_eq!(s.clicked(7, "default"), None);
+        // reconnecting to the same server keeps what is in memory
+        s.file = None;
+        s.resume(":1.5");
+        assert_eq!(s.ids.len(), 2);
+        let _ = std::fs::remove_dir_all(f.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn saved_ids_of_another_server_are_dropped() {
+        let f = tmp_file("notify-owner");
+        let mut s = with_file(&f);
+        s.resume(":1.5");
+        s.record(8, 102);
+        // a restarted server, seen by the next maild
+        let mut s = with_file(&f);
+        s.resume(":1.6");
+        assert_eq!(s.clicked(8, "default"), None);
+        assert_eq!(saved(&f), (":1.6".into(), vec![]));
+        // seen by the running maild: NameOwnerChanged
+        s.record(1, 201);
+        s.owner_changed(":1.7");
+        assert_eq!(s.clicked(1, "default"), None);
+        assert_eq!(saved(&f), (":1.7".into(), vec![]));
+        // a reconnect finding another server forgets what is in memory
+        s.record(2, 202);
+        s.resume(":1.8");
+        assert!(s.ids.is_empty());
+        let _ = std::fs::remove_dir_all(f.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn corrupt_or_missing_file_is_ignored() {
+        let f = tmp_file("notify-corrupt");
+        let mut s = with_file(&f);
+        s.resume(":1.5");
+        assert!(s.ids.is_empty());
+        std::fs::write(&f, "{not json").unwrap();
+        let mut s = with_file(&f);
+        s.resume(":1.5");
+        assert!(s.ids.is_empty());
+        assert_eq!(saved(&f), (":1.5".into(), vec![]));
+        // too many: the newest KEEP
+        let many: VecDeque<(u32, i64)> = (0..KEEP as u32 + 3).map(|n| (n, n as i64)).collect();
+        std::fs::write(&f, serde_json::to_vec(&Shown { owner: ":1.5".into(), ids: many, ..Default::default() }).unwrap()).unwrap();
+        let mut s = with_file(&f);
+        s.resume(":1.5");
+        assert_eq!((s.ids.len(), s.ids[0].0), (KEEP, 3));
+        let _ = std::fs::remove_dir_all(f.parent().unwrap().parent().unwrap());
     }
 
     /// The real listener on a private dbus-daemon, a fake server emitting the signals.
     #[test]
     fn listener_on_a_private_bus() {
         use std::io::BufRead;
+        use std::sync::Arc;
         use std::time::Instant;
         let dir = std::env::temp_dir().join(format!("maild-test-{}-bus", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         /// Killed however the test ends: a leftover daemon would keep `cargo test`'s output open.
-        struct Daemon(std::process::Child, std::path::PathBuf);
+        struct Daemon(std::process::Child, PathBuf);
         impl Drop for Daemon {
             fn drop(&mut self) {
                 let _ = self.0.kill();
@@ -325,6 +473,7 @@ mod tests {
         let mut daemon = Daemon(child, dir);
         let mut addr = String::new();
         std::io::BufReader::new(daemon.0.stdout.take().unwrap()).read_line(&mut addr).unwrap();
+        let file = daemon.1.join("rt/omarchy-mail/notify-ids.json");
         let connect = || zbus::blocking::connection::Builder::address(addr.trim()).unwrap().build().unwrap();
         let hub = Hub::default();
         // A window: a click becomes an `open` event, nothing is launched.
@@ -340,48 +489,73 @@ mod tests {
             }
             None
         };
-        let listener = connect();
-        let h = hub.clone();
-        std::thread::spawn(move || listen_on(listener, &h));
         let server = connect();
         server.request_name(SERVER).unwrap();
+        let owner = server.unique_name().unwrap().to_string();
         let emit = |member: &str, body: &(u32, &str)| {
             server.emit_signal(None::<&str>, SERVER_PATH, SERVER, member, body).unwrap()
         };
-        // Until the listener has subscribed (and seen the name taken, which forgets everything).
+        // One maild run: its own map, the same file.
+        let run = || {
+            let shown = Arc::new(Mutex::new(with_file(&file)));
+            let (conn, h, s) = (connect(), hub.clone(), shown.clone());
+            let keep = conn.clone();
+            (shown, keep, std::thread::spawn(move || listen_on(conn, &h, &s)))
+        };
+        let open = |id: i64| format!(r#"{{"event":"open","id":{id}}}"#);
+        let (a, conn_a, thread_a) = run();
+        // Until the listener has subscribed.
         let start = Instant::now();
         loop {
-            lock(&SHOWN).record(7, 101);
+            lock(&a).record(7, 101);
             emit("ActionInvoked", &(7, "default"));
             if let Some(e) = next_open(Duration::from_millis(100)) {
-                break assert_eq!(e, r#"{"event":"open","id":101}"#);
+                break assert_eq!(e, open(101));
             }
             assert!(start.elapsed() < Duration::from_secs(10), "listener never heard the click");
         }
         // A slow round above may have heard two clicks.
         while next_open(Duration::from_millis(200)).is_some() {}
-        lock(&SHOWN).record(8, 102);
+        lock(&a).record(8, 102);
         server.emit_signal(None::<&str>, SERVER_PATH, SERVER, "NotificationClosed", &(7u32, 2u32)).unwrap();
         emit("ActionInvoked", &(7, "default"));
         emit("ActionInvoked", &(8, "reply"));
         emit("ActionInvoked", &(99, "default"));
         emit("ActionInvoked", &(8, "default"));
-        assert_eq!(next_open(Duration::from_secs(5)).as_deref(), Some(r#"{"event":"open","id":102}"#));
+        assert_eq!(next_open(Duration::from_secs(5)), Some(open(102)));
         assert_eq!(next_open(Duration::from_millis(200)), None);
-        // The server goes away: its ids are forgotten.
+        assert_eq!(saved(&file), (owner.clone(), vec![(8, 102)]));
+        // maild restarts: a new, empty map; the notification left in the center still opens.
+        conn_a.close().unwrap();
+        let start = Instant::now();
+        while !thread_a.is_finished() {
+            assert!(start.elapsed() < Duration::from_secs(5), "listener kept running");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (b, _conn_b, _) = run();
+        let start = Instant::now();
+        loop {
+            emit("ActionInvoked", &(8, "default"));
+            if let Some(e) = next_open(Duration::from_millis(100)) {
+                break assert_eq!(e, open(102));
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "restarted listener never opened the old notification");
+        }
+        // The server goes away: its ids are forgotten, also in the file.
         server.release_name(SERVER).unwrap();
         let start = Instant::now();
-        while !lock(&SHOWN).0.is_empty() {
+        while !lock(&b).ids.is_empty() {
             assert!(start.elapsed() < Duration::from_secs(5), "server restart not seen");
             std::thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(saved(&file), (String::new(), vec![]));
     }
 
     #[test]
     fn keeps_the_newest() {
-        let mut s = Shown(VecDeque::new());
+        let mut s = Shown::default();
         (0..KEEP as u32 + 5).for_each(|n| s.record(n, n as i64 + 100));
-        assert_eq!(s.0.len(), KEEP);
+        assert_eq!(s.ids.len(), KEEP);
         assert_eq!(s.clicked(4, "default"), None);
         assert_eq!(s.clicked(5, "default"), Some(105));
         assert_eq!(s.clicked(KEEP as u32 + 4, "default"), Some(KEEP as i64 + 104));

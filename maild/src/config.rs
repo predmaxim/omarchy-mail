@@ -53,6 +53,8 @@ pub struct Paths {
     pub db: PathBuf,
     pub cache: PathBuf,
     pub socket: PathBuf,
+    /// Clickable notifications, kept across a maild restart (see `notify`).
+    pub notify_ids: PathBuf,
 }
 
 pub fn paths() -> Paths {
@@ -74,6 +76,7 @@ fn paths_from(get: impl Fn(&str) -> Option<String>, home: &str, uid: u32) -> Pat
         db: dir("XDG_DATA_HOME", ".local/share").join("omarchy-mail/mail.db"),
         cache: dir("XDG_CACHE_HOME", ".cache").join("omarchy-mail"),
         socket: runtime.join("omarchy-mail.sock"),
+        notify_ids: runtime.join("omarchy-mail/notify-ids.json"),
     }
 }
 
@@ -141,6 +144,7 @@ mod tests {
     fn paths_follow_xdg() {
         let p = paths_from(|k| (k == "XDG_RUNTIME_DIR").then(|| "/r".into()), "/h", 1000);
         assert_eq!(p.socket, PathBuf::from("/r/omarchy-mail.sock"));
+        assert_eq!(p.notify_ids, PathBuf::from("/r/omarchy-mail/notify-ids.json"));
         assert_eq!(p.config, PathBuf::from("/h/.config/omarchy-mail/accounts.toml"));
         assert_eq!(p.db, PathBuf::from("/h/.local/share/omarchy-mail/mail.db"));
         assert_eq!(p.cache, PathBuf::from("/h/.cache/omarchy-mail"));

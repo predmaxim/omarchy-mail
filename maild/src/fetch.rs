@@ -89,7 +89,7 @@ pub fn cached_attachment(dir: &Path, f: &Full, index: u32) -> Option<PathBuf> {
 }
 
 /// Directories 0700, the file 0600; written under a temporary name so a half-written file is never "cached".
-fn store(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+pub fn store(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let e = |x: std::io::Error| x.to_string();
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(e)?;
     let path = dir.join(name);

@@ -451,7 +451,7 @@ mod tests {
     fn paths(name: &str) -> Paths {
         let d = std::env::temp_dir().join(format!("maild-test-{}-ipc-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        Paths { config: d.join("accounts.toml"), db: d.join("mail.db"), cache: d.join("cache"), socket: d.join("s.sock") }
+        Paths { config: d.join("accounts.toml"), db: d.join("mail.db"), cache: d.join("cache"), socket: d.join("s.sock"), notify_ids: d.join("notify-ids.json") }
     }
 
     fn state(name: &str) -> State {
