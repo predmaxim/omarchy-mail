@@ -47,8 +47,8 @@ Window {
                 mailList.positionViewAtIndex(list.cursor, ListView.Contain)
         }
     }
-    Connections {   // a click in the letter takes the keys back from the search field, as a click on a row does
-        target: pane.view
+    Connections {   // a click in the letter or its header takes the keys back from the search field, as a click on a row does
+        target: pane
         function onPressed() { root.forceActiveFocus() }
     }
     Binding {

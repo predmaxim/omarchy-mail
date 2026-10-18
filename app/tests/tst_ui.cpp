@@ -281,6 +281,44 @@ private Q_SLOTS:
         QTest::keyClick(win, Qt::Key_C, Qt::ControlModifier);
         QCOMPARE(QGuiApplication::clipboard()->text(), selected);
     }
+    void header_selects_and_copies_like_the_letter()
+    {
+        start();
+        letterShown();
+        QQuickItem *field = item("searchField"), *subject = item("letterSubject"), *view = item("letterView");
+        QTest::keyClick(win, Qt::Key_Slash);
+        QVERIFY(field->hasActiveFocus());
+        QGuiApplication::clipboard()->setText("before");
+        const auto at = [&](qreal x) { return subject->mapToScene(QPointF(x, subject->height() / 2)).toPoint(); };
+        const qreal end = subject->property("contentWidth").toReal() - 1;
+        QTest::mousePress(win, Qt::LeftButton, {}, at(1));
+        QTest::mouseMove(win, at(end / 2));
+        QTest::mouseMove(win, at(end));
+        QTest::mouseRelease(win, Qt::LeftButton, {}, at(end));
+        QVERIFY(!field->hasActiveFocus());   // the keys are the window's again, not the subject's
+        QVERIFY(!subject->hasActiveFocus());
+        const QString selected = subject->property("selectedText").toString();
+        QVERIFY(!selected.isEmpty());
+        QTest::keyClick(win, Qt::Key_C, Qt::ControlModifier);
+        QCOMPARE(QGuiApplication::clipboard()->text(), selected);
+        const QString shot = qEnvironmentVariable("OM_SHOT_SELECT");   // <prefix>-head.png, <prefix>-body.png
+        if (!shot.isEmpty())
+            QVERIFY(win->grabWindow().save(shot + "-head.png"));
+        const int m = s->theme.space(18);   // a drag in the letter drops the header's selection
+        const auto in = [&](int x) { return view->mapToScene(QPointF(m + x, 8)).toPoint(); };
+        QTest::mousePress(win, Qt::LeftButton, {}, in(2));
+        QTest::mouseMove(win, in(60));
+        QTest::mouseMove(win, in(120));
+        QTest::mouseRelease(win, Qt::LeftButton, {}, in(120));
+        QCOMPARE(subject->property("selectedText").toString(), QString());
+        QTest::keyClick(win, Qt::Key_C, Qt::ControlModifier);
+        QString body;
+        QMetaObject::invokeMethod(view, "selectedText", Q_RETURN_ARG(QString, body));
+        QVERIFY(!body.isEmpty());
+        QCOMPARE(QGuiApplication::clipboard()->text(), body);
+        if (!shot.isEmpty())
+            QVERIFY(win->grabWindow().save(shot + "-body.png"));
+    }
     void single_account_hides_account_picker()
     {
         h.accounts = QJsonArray{h.accounts.at(0)};

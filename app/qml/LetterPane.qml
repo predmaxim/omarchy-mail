@@ -11,6 +11,27 @@ Item {
     readonly property int pad: theme.space(18)
     readonly property QtObject shown: letter   // inside LetterView `letter` and `theme` are its own properties
     readonly property QtObject colours: theme
+    property TextEdit picked: null   // the header line selected in last: Ctrl+C copies it before the letter
+    signal pressed()   // a selection starts in the header or the letter: the window takes the keys back
+
+    component HeadText: TextEdit {   // a header line selects like the letter; the keys stay the window's
+        id: line
+        readOnly: true
+        selectByMouse: true
+        activeFocusOnPress: false
+        wrapMode: TextEdit.Wrap
+        textFormat: TextEdit.PlainText
+        selectionColor: theme.selection
+        selectedTextColor: color
+        onSelectedTextChanged: {
+            if (selectedText === "")
+                return
+            if (pane.picked && pane.picked !== line)
+                pane.picked.deselect()
+            pane.picked = line
+            pane.pressed()
+        }
+    }
 
     component PaneButton: Rectangle {   // "Send again" / "Discard" under a mail that wasn't sent
         id: button
@@ -60,33 +81,27 @@ Item {
         width: pane.width - 2 * x
         spacing: theme.space(6)
 
-        Text {
+        HeadText {
             objectName: "letterSubject"
             readonly property bool none: letter.subject.trim() === ""
             width: parent.width
             visible: !letter.empty
-            wrapMode: Text.Wrap
-            textFormat: Text.PlainText
             text: none ? i18n.t("(no subject)") : letter.subject
             color: none ? theme.dim : theme.foreground
             font.pixelSize: theme.fontDisplay
             font.bold: true
         }
-        Text {
+        HeadText {
             width: parent.width
             visible: text !== ""
-            elide: Text.ElideRight
-            textFormat: Text.PlainText
             text: letter.from
             color: theme.foreground
             font.pixelSize: theme.fontTitle
         }
-        Text {
+        HeadText {
             objectName: "letterMeta"
             width: parent.width
             visible: text !== ""
-            wrapMode: Text.Wrap
-            textFormat: Text.PlainText
             text: [letter.to !== "" ? i18n.t("to: %1").arg(letter.to) : "", letter.date].filter(s => s !== "").join(" · ")
             color: theme.dim
             font.pixelSize: theme.fontSubtitle
@@ -198,8 +213,22 @@ Item {
         }
     }
 
+    Connections {   // a press in the letter starts its own selection
+        target: body
+        function onPressed() {
+            if (pane.picked)
+                pane.picked.deselect()
+            pane.pressed()
+        }
+    }
+
     Shortcut {   // the field copies its own text: it takes Ctrl+C before the window's shortcuts
         sequences: [StandardKey.Copy]
-        onActivated: body.copySelection()
+        onActivated: {
+            if (pane.picked && pane.picked.selectedText !== "")
+                pane.picked.copy()
+            else
+                body.copySelection()
+        }
     }
 }

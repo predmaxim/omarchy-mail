@@ -132,7 +132,11 @@ QColor Theme::mark() const
             return m_palette.value(QLatin1String(k));
     return accent();
 }
-QColor Theme::selection() const { return m_palette.value(QStringLiteral("selection"), accent()); }
+QColor Theme::selection() const   // the theme's own is faint behind text: a third of the way to accent
+{
+    const QColor s = m_palette.value(QStringLiteral("selection"), accent()), a = accent();
+    return QColor::fromRgbF(s.redF() * 0.65 + a.redF() * 0.35, s.greenF() * 0.65 + a.greenF() * 0.35, s.blueF() * 0.65 + a.blueF() * 0.35);
+}
 QColor Theme::fill(double alpha) const
 {
     QColor c = foreground();

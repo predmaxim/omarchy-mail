@@ -144,6 +144,8 @@ private Q_SLOTS:
         QCOMPARE(t.urgent(), QColor("#a55555"));
         QCOMPARE(t.mark(), QColor("#abcdef"));        // no yellow/color3 -> accent
         QCOMPARE(t.selection(), QColor("#abcdef"));   // no selection -> accent
+        withPalette((QByteArray(base) + "selection\\t#2b3040\\n").constData());
+        QCOMPARE(Theme().selection().name(), QString("#58677d"));   // a third of the way to accent: brighter
     }
     void surface_is_a_step_toward_foreground()
     {

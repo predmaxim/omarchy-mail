@@ -88,7 +88,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | `f` | flag / unflag |
 | `o` | open the original in the browser |
 | `y` | copy the message text |
-| Ctrl+C | copy the text selected in the message |
+| Ctrl+C | copy the text selected in the message or its header |
 | `s` | save the attachment to Downloads |
 | Space | preview the attachment in `omarchy-quicklook`; scroll the message |
 | `/` | search; typing goes into the field |

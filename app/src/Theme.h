@@ -44,7 +44,7 @@ public:
     QColor urgent() const;      // red -> color1 -> #a55555
     QColor dim() const;         // foreground.darker(140)
     QColor mark() const;        // yellow -> color3 -> accent (search highlight)
-    QColor selection() const;   // selection -> accent
+    QColor selection() const;   // selection -> accent, brightened toward accent
     QColor surface() const;       // background, 3 % toward foreground
     QColor hoverFill() const;     // foreground, alpha 0.08
     QColor currentFill() const;   // foreground, alpha 0.18
