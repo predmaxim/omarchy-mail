@@ -114,8 +114,14 @@ pub fn build(acc: &Account, d: &Draft, reply: Option<&Full>) -> Result<Vec<u8>, 
 /// Builds and queues; the id is what `list` shows negated.
 pub fn queue(db: &Db, acc: &Account, d: &Draft) -> Result<i64, String> {
     let reply = match d.reply_to {
-        Some(id) => Some(db.message(id)?.ok_or_else(|| tr("message not found", "письмо не найдено"))?),
+        // A negative id is an own outbox letter; it has no `messages` row.
+        Some(id) if id < 0 => db.outbox_full(-id)?.map(|(f, _)| f),
+        Some(id) => db.message(id)?,
         None => None,
+    };
+    let reply = match (d.reply_to, reply) {
+        (Some(_), None) => return Err(tr("message not found", "письмо не найдено")),
+        (_, r) => r,
     };
     let raw = build(acc, d, reply.as_ref())?;
     let date = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |t| t.as_secs() as i64);
@@ -370,6 +376,21 @@ mod tests {
         assert_eq!(db.queued_count("me@x.org").unwrap(), 1, "nothing queued on error");
         let mut d = draft("x");
         d.reply_to = Some(999);
+        assert!(queue(&db, &acc(false), &d).is_err());
+    }
+
+    #[test]
+    fn reply_to_outbox_letter() {
+        let db = Db::memory();
+        let first = queue(&db, &acc(false), &draft("first")).unwrap();
+        let (f, _) = db.outbox_full(first).unwrap().unwrap();
+        let mut d = draft("Re: first");
+        d.reply_to = Some(-first);
+        let second = queue(&db, &acc(false), &d).unwrap();
+        let (r, _) = db.outbox_full(second).unwrap().unwrap();
+        assert!(!f.message_id.is_empty());
+        assert_eq!(r.in_reply_to.as_str(), f.message_id.as_str());
+        d.reply_to = Some(-999);
         assert!(queue(&db, &acc(false), &d).is_err());
     }
 
