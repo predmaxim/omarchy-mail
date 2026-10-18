@@ -136,11 +136,12 @@ static QString linkText(const QString &s)
         const bool mail = a.contains(QLatin1Char('@')) && !a.startsWith(u"http", Qt::CaseInsensitive)
             && !a.startsWith(u"www.", Qt::CaseInsensitive);
         if (!mail) {
-            for (const QString &e : {u"&lt;"_s, u"&gt;"_s, u"&quot;"_s})   // escaped <url> or "url"
-                if (const qsizetype k = a.indexOf(e); k >= 0)
-                    a.truncate(k);
+            // an entity that is no URL character ends it: escaped <url> or "url", &nbsp;
+            static const QRegularExpression stop(QStringLiteral("&(?:lt|gt|quot|nbsp|#0*(?:160|34|60|62)|#x0*(?:a0|22|3c|3e));"),
+                                                 QRegularExpression::CaseInsensitiveOption);
+            if (const auto e = stop.match(a); e.hasMatch())
+                a.truncate(e.capturedStart());
             for (bool again = true; again && !a.isEmpty();) {
-                again = true;
                 const QChar c = a.back();
                 if (c == QLatin1Char(')')) {
                     again = a.count(QLatin1Char('(')) < a.count(QLatin1Char(')'));

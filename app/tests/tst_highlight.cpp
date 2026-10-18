@@ -71,6 +71,12 @@ private Q_SLOTS:
         QCOMPARE(highlight::links(QStringLiteral("&lt;https://x.ru&gt;")),
                  QStringLiteral("&lt;<a href=\"https://x.ru\">https://x.ru</a>&gt;"));
     }
+    void links_stop_at_nbsp_entity()
+    {
+        for (const char *nb : {"&nbsp;", "&#160;", "&#xa0;"})
+            QCOMPARE(highlight::links(QString("<p>https://x.ru/a%1дальше</p>").arg(nb)),
+                     QString("<p><a href=\"https://x.ru/a\">https://x.ru/a</a>%1дальше</p>").arg(nb));
+    }
     void links_cyrillic_domain()
     {
         QCOMPARE(highlight::links(QStringLiteral("info@почта.рф")),
