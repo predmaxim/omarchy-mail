@@ -35,6 +35,8 @@ class TstSingle : public QObject {
         e.insert("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + root + "/no-bus");
         return e;
     }
+    // Sockets need a short dir: a unix socket path must fit sun_path (108 bytes), and scratch() lives in the build dir.
+    static QString sockets() { return QDir::tempPath() + "/oms-XXXXXX"; }
     static QString draft(const QString &root)
     {
         QFile f(root + "/d/omarchy-mail/drafts/new.json");
@@ -51,7 +53,7 @@ private Q_SLOTS:
 
     void forward_roundtrip()
     {
-        QTemporaryDir dir(scratch());
+        QTemporaryDir dir(sockets());
         runtime(dir);
         single::Server first, second;
         QCOMPARE(first.claim({}), single::Server::Listening);
@@ -63,7 +65,7 @@ private Q_SLOTS:
 
     void stale_socket_is_replaced()
     {
-        QTemporaryDir dir(scratch());
+        QTemporaryDir dir(sockets());
         const QString path = runtime(dir);
         const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);   // bound, never listening: what a dead window leaves
         sockaddr_un addr{};
@@ -78,7 +80,7 @@ private Q_SLOTS:
 
     void frozen_window_is_not_stolen()
     {
-        QTemporaryDir dir(scratch());
+        QTemporaryDir dir(sockets());
         const QString path = runtime(dir);
         QLocalServer frozen;   // no event loop runs here: it never accepts
         QVERIFY(frozen.listen(path));
@@ -98,7 +100,7 @@ private Q_SLOTS:
 
     void junk_is_ignored_and_input_is_bounded()
     {
-        QTemporaryDir dir(scratch());
+        QTemporaryDir dir(sockets());
         const QString path = runtime(dir);
         single::Server server;
         QCOMPARE(server.claim({}), single::Server::Listening);
@@ -130,7 +132,7 @@ private Q_SLOTS:
 
     void help_exits_without_window()
     {
-        QTemporaryDir dir(scratch());
+        QTemporaryDir dir(sockets());
         QProcess p;
         p.setProcessEnvironment(env(dir.path()));
         p.start(OM_APP_BINARY, {"--help"});
