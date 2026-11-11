@@ -20,7 +20,7 @@ License: GPL-3.0.
 ./uninstall.sh   # removes the binaries, unit and desktop entry; mail data and passwords are kept
 ```
 
-The first build downloads qlitehtml and litehtml from `code.qt.io`, so it needs network. The window is built and its tests pass before `maild` is restarted.
+The first build downloads qlitehtml from `code.qt.io` and litehtml from GitHub, so it needs network. The window is built and its tests pass before `maild` is restarted.
 Run `./install.sh` again to update. Logs: `journalctl --user -u maild -f`.
 
 ## Adding accounts
@@ -145,7 +145,7 @@ The window talks to the network only to load the images of the open message (`ht
 
 ### Licenses
 
-The window renders HTML mail with [qlitehtml](https://code.qt.io/cgit/playground/qlitehtml.git) (GPL-3.0 WITH Qt-GPL-exception-1.0) and [litehtml](https://github.com/litehtml/litehtml) (BSD). Both are built from `code.qt.io` at pinned commits with two patches, `app/third_party/qlitehtml.patch` and `app/third_party/litehtml.patch`. Besides the window's own changes, `litehtml.patch` fixes table bugs still present upstream: column percentages that add up to more than 100 % (later columns get only what is left, as in css-tables-3), and a table cell's `height`, which litehtml ignored (border-box in quirks mode, as in browsers). It also backports litehtml master's doctype check: the pinned one put a page with an HTML 4.0 Transitional doctype in standards mode, where browsers use quirks mode.
+The window renders HTML mail with [qlitehtml](https://code.qt.io/cgit/playground/qlitehtml.git) (GPL-3.0 WITH Qt-GPL-exception-1.0) and [litehtml](https://github.com/litehtml/litehtml) (BSD). qlitehtml is built from `code.qt.io` at 180e3ebb and litehtml from github.com/litehtml/litehtml at master a5ee957801d4, each with its patch, `app/third_party/qlitehtml.patch` and `app/third_party/litehtml.patch`. `qlitehtml.patch` also ports qlitehtml to litehtml master's API (its own submodule still pins an older litehtml). Besides the window's own changes, `litehtml.patch` fixes table bugs still present upstream: column percentages that add up to more than 100 % (later columns get only what is left, as in css-tables-3), and a table cell's `height`, which litehtml ignored (border-box in quirks mode, as in browsers).
 
 ## Where things live
 

@@ -1,61 +1,65 @@
+diff --git a/include/litehtml/css_values.h b/include/litehtml/css_values.h
+index b3291c89..9b33edeb 100644
+--- a/include/litehtml/css_values.h
++++ b/include/litehtml/css_values.h
+@@ -385,14 +385,15 @@ namespace litehtml
+     // ==========================================================
+     // CSS Property: align
+     // ==========================================================
+-    inline constexpr auto text_align_strings = split_css_values<4>("left;right;center;justify");
++    inline constexpr auto text_align_strings = split_css_values<5>("left;right;center;justify;-webkit-center");
+ 
+     enum text_align
+     {
+         text_align_left,
+         text_align_right,
+         text_align_center,
+-        text_align_justify
++        text_align_justify,
++        text_align_webkit_center // align=center: centres the text and the narrower blocks inside
+     };
+ 
+     // ==========================================================
 diff --git a/include/litehtml/master_css.h b/include/litehtml/master_css.h
-index ea532922..baebee3b 100644
+index 36f27311..6676234b 100644
 --- a/include/litehtml/master_css.h
 +++ b/include/litehtml/master_css.h
-@@ -62,7 +62,7 @@ del, s, strike {
+@@ -64,7 +64,7 @@ del, s, strike {
  
- center 
+ center
  {
 -	text-align:center;
 +	text-align:-webkit-center;
  	display:block;
  }
  
-diff --git a/include/litehtml/types.h b/include/litehtml/types.h
-index d046eac5..f4642d77 100644
---- a/include/litehtml/types.h
-+++ b/include/litehtml/types.h
-@@ -666,14 +666,15 @@ namespace litehtml
- 		element_position_fixed,
- 	};
- 
--#define text_align_strings		"left;right;center;justify"
-+#define text_align_strings		"left;right;center;justify;-webkit-center"
- 
- 	enum text_align
- 	{
- 		text_align_left,
- 		text_align_right,
- 		text_align_center,
--		text_align_justify
-+		text_align_justify,
-+		text_align_webkit_center	// align=center: centres the text and the narrower blocks inside
- 	};
- 
- #define text_transform_strings		"none;capitalize;uppercase;lowercase"
 diff --git a/src/css_properties.cpp b/src/css_properties.cpp
-index 59ef0f70..3a8dd6dc 100644
+index 5b03ba4d..f1bab8f0 100644
 --- a/src/css_properties.cpp
 +++ b/src/css_properties.cpp
-@@ -233,12 +233,15 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
- 		m_line_height.computed_value = m_font_metrics.height;
- 	} else if(m_line_height.css_value.units() == css_units_none)
- 	{
--		m_line_height.computed_value = (pixel_t) (m_line_height.css_value.val() * font_size);
-+		m_line_height.computed_value = (pixel_t) (m_line_height.css_value.val() * m_font_metrics.font_size);   // the raised font, not the CSS size
- 	} else
- 	{
- 		m_line_height.computed_value = doc->to_pixels(m_line_height.css_value, m_font_metrics, m_font_metrics.font_size);
- 		m_line_height.css_value = (float) m_line_height.computed_value;
- 	}
-+	// a raised font (container's minimum size) must not overlap its lines, whatever unit the line-height has
-+	if(m_font_metrics.font_size > font_size && m_line_height.computed_value < m_font_metrics.height)
-+		m_line_height.computed_value = m_font_metrics.height;
+@@ -260,13 +260,19 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
+         m_line_height.computed_value = m_font_metrics.height;
+     } else if(m_line_height.css_value.units() == css_units_none)
+     {
+-        m_line_height.computed_value = pixel_t(m_line_height.css_value.val() * font_size.value());
++        // the raised font, not the CSS size
++        m_line_height.computed_value = pixel_t(m_line_height.css_value.val() * m_font_metrics.font_size.value());
+     } else
+     {
+         m_line_height.computed_value =
+             doc->to_pixels(m_line_height.css_value, m_font_metrics, m_font_metrics.font_size);
+         m_line_height.css_value = static_cast<float>(m_line_height.computed_value);
+     }
++    // a raised font (container's minimum size) must not overlap its lines, whatever unit the line-height has
++    if(m_font_metrics.font_size > font_size && m_line_height.computed_value < m_font_metrics.height)
++    {
++        m_line_height.computed_value = m_font_metrics.height;
++    }
  
- 	m_list_style_type     = (list_style_type)     el->get_property<int>(_list_style_type_,     true, list_style_type_disc,        offset(m_list_style_type));
- 	m_list_style_position = (list_style_position) el->get_property<int>(_list_style_position_, true, list_style_position_outside, offset(m_list_style_position));
+     m_list_style_type = static_cast<list_style_type>(
+         el->get_property<int>(_list_style_type_, true, list_style_type_disc, offset(m_list_style_type)));
 diff --git a/src/el_div.cpp b/src/el_div.cpp
-index a23681cd..689358a9 100644
+index ca6ad2f0..47906c12 100644
 --- a/src/el_div.cpp
 +++ b/src/el_div.cpp
 @@ -1,5 +1,6 @@
@@ -63,19 +67,21 @@ index a23681cd..689358a9 100644
  #include "document.h"
 +#include "html.h"
  
- 
- litehtml::el_div::el_div(const document::ptr& doc) : html_tag(doc)
-@@ -12,7 +13,7 @@ void litehtml::el_div::parse_attributes()
- 	const char* str = get_attr("align");
- 	if(str)
- 	{
--		m_style.add_property(_text_align_, str);
-+		m_style.add_property(_text_align_, litehtml::equal_i(str, "center") || litehtml::equal_i(str, "middle") ? "-webkit-center" : str);
- 	}
- 	html_tag::parse_attributes();
+ litehtml::el_div::el_div(const document::ptr& doc) :
+     html_tag(doc)
+@@ -11,7 +12,9 @@ void litehtml::el_div::parse_attributes()
+     const char* str = get_attr("align");
+     if(str)
+     {
+-        m_style.add_property(_text_align_, str);
++        m_style.add_property(_text_align_, litehtml::equal_i(str, "center") || litehtml::equal_i(str, "middle")
++                                               ? "-webkit-center"
++                                               : str);
+     }
+     html_tag::parse_attributes();
  }
 diff --git a/src/el_td.cpp b/src/el_td.cpp
-index f665c7c0..a5bdf615 100644
+index 42c9883e..72167d16 100644
 --- a/src/el_td.cpp
 +++ b/src/el_td.cpp
 @@ -1,5 +1,6 @@
@@ -85,28 +91,31 @@ index f665c7c0..a5bdf615 100644
  
  namespace litehtml
  {
-@@ -39,7 +40,18 @@ void el_td::parse_attributes()
- 	str = get_attr("align");
- 	if(str)
- 	{
--		m_style.add_property(_text_align_, str);
-+		m_style.add_property(_text_align_, equal_i(str, "center") || equal_i(str, "middle") ? "-webkit-center" : str);
-+	}
+@@ -44,7 +45,21 @@ namespace litehtml
+         str = get_attr("align");
+         if(str)
+         {
+-            m_style.add_property(_text_align_, str);
++            m_style.add_property(_text_align_,
++                                 equal_i(str, "center") || equal_i(str, "middle") ? "-webkit-center" : str);
++        }
 +
-+	// https://html.spec.whatwg.org/multipage/rendering.html#tables-2:attr-table-cellpadding
-+	for (element::ptr p = parent(); p; p = p->parent())
-+	{
-+		if (p->tag() == _table_)
-+		{
-+			if ((str = p->get_attr("cellpadding")))
-+				map_to_pixel_length_property(_padding_, str);
-+			break;
-+		}
- 	}
++        // https://html.spec.whatwg.org/multipage/rendering.html#tables-2:attr-table-cellpadding
++        for(element::ptr p = parent(); p; p = p->parent())
++        {
++            if(p->tag() == _table_)
++            {
++                if((str = p->get_attr("cellpadding")))
++                {
++                    map_to_pixel_length_property(_padding_, str);
++                }
++                break;
++            }
+         }
  
- 	str = get_attr("valign");
+         str = get_attr("valign");
 diff --git a/src/el_tr.cpp b/src/el_tr.cpp
-index 78c53f4e..fd77fd7e 100644
+index 35c5c3ff..07e2c8f6 100644
 --- a/src/el_tr.cpp
 +++ b/src/el_tr.cpp
 @@ -1,5 +1,6 @@
@@ -114,134 +123,120 @@ index 78c53f4e..fd77fd7e 100644
  #include "document.h"
 +#include "html.h"
  
- 
- litehtml::el_tr::el_tr(const std::shared_ptr<document>& doc) : html_tag(doc)
-@@ -16,7 +17,7 @@ void litehtml::el_tr::parse_attributes()
- 	str = get_attr("align");
- 	if(str)
- 	{
--		m_style.add_property(_text_align_, str);
-+		m_style.add_property(_text_align_, litehtml::equal_i(str, "center") || litehtml::equal_i(str, "middle") ? "-webkit-center" : str);
- 	}
- 	str = get_attr("valign");
- 	if(str)
-diff --git a/src/gumbo/parser.c b/src/gumbo/parser.c
-index 0ab3f920..5f094110 100644
---- a/src/gumbo/parser.c
-+++ b/src/gumbo/parser.c
-@@ -538,13 +538,14 @@ static GumboNode* get_adjusted_current_node(GumboParser* parser) {
- // Returns true if the given needle is in the given array of literal
- // GumboStringPieces.  If exact_match is true, this requires that they match
- // exactly; otherwise, this performs a prefix match to check if any of the
--// elements in haystack start with needle.  This always performs a
--// case-insensitive match.
-+// elements in haystack are the start of needle.  This always performs a
-+// case-insensitive match (litehtml master's fix, backported).
- static bool is_in_static_list(
-     const char* needle, const GumboStringPiece* haystack, bool exact_match) {
-   for (unsigned int i = 0; haystack[i].length > 0; ++i) {
--    if ((exact_match && !strcmp(needle, haystack[i].data)) ||
--        (!exact_match && !strcasecmp(needle, haystack[i].data))) {
-+    if ((exact_match && !strcasecmp(needle, haystack[i].data)) ||
-+        (!exact_match &&
-+            !strncasecmp(needle, haystack[i].data, haystack[i].length))) {
-       return true;
+ litehtml::el_tr::el_tr(const std::shared_ptr<document>& doc) :
+     html_tag(doc)
+@@ -18,7 +19,9 @@ void litehtml::el_tr::parse_attributes()
+     str = get_attr("align");
+     if(str)
+     {
+-        m_style.add_property(_text_align_, str);
++        m_style.add_property(_text_align_, litehtml::equal_i(str, "center") || litehtml::equal_i(str, "middle")
++                                               ? "-webkit-center"
++                                               : str);
      }
-   }
+     str = get_attr("valign");
+     if(str)
 diff --git a/src/line_box.cpp b/src/line_box.cpp
-index 091a96c0..d159dd38 100644
+index 48f79487..ba085243 100644
 --- a/src/line_box.cpp
 +++ b/src/line_box.cpp
-@@ -313,6 +313,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
-             }
-             break;
-         case text_align_center:
-+        case text_align_webkit_center:
-             if(m_width < (m_right - m_left))
-             {
- 				shift_x = ((m_right - m_left) - m_width) / 2;
-@@ -335,7 +336,16 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
+@@ -316,6 +316,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+         }
+         break;
+     case text_align_center:
++    case text_align_webkit_center:
+         if(m_width < (m_right - m_left))
+         {
+             shift_x = ((m_right - m_left) - m_width) / 2_px;
+@@ -338,7 +339,16 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
  
- 	std::optional<pixel_t> line_height;
+     std::optional<pixel_t> line_height;
  
--	if(!m_default_line_height.css_value.is_predefined())
-+	// Quirks (almost every letter: no doctype or XHTML Transitional): a line without text is as tall as its
-+	// pictures, the line-height of its block and of inline wrappers like <a> doesn't count (no gap under them).
-+	// A line break is text, as in Blink: a blank line stays
-+	const bool no_text = std::none_of(m_items.begin(), m_items.end(), [](const std::unique_ptr<line_box_item>& lbi) {
-+		const element::ptr el = lbi->get_el()->src_el();
-+		return lbi->get_type() == line_box_item::type_text_part &&
-+			   (el->is_break() || (el->css().get_display() == display_inline_text && !el->is_white_space()));
-+	});
+-    if(!m_default_line_height.css_value.is_predefined())
++    // Quirks (almost every letter: no doctype or XHTML Transitional): a line without text is as tall as its
++    // pictures, the line-height of its block and of inline wrappers like <a> doesn't count (no gap under them).
++    // A line break is text, as in Blink: a blank line stays
++    const bool no_text = std::none_of(m_items.begin(), m_items.end(), [](const std::unique_ptr<line_box_item>& lbi) {
++        const element::ptr el = lbi->get_el()->src_el();
++        return lbi->get_type() == line_box_item::type_text_part &&
++               (el->is_break() || (el->css().get_display() == display_inline_text && !el->is_white_space()));
++    });
 +
-+	if(!no_text && !m_default_line_height.css_value.is_predefined())
- 	{
- 		line_height = m_default_line_height.computed_value;
- 	}
-@@ -503,7 +513,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
- 				default:
- 					break;
- 			}
--		} else
-+		} else if(!no_text || (lbi->get_type() == line_box_item::type_text_part && !lbi->get_el()->src_el()->is_white_space()))
- 		{
- 			if(!lbi->get_el()->src_el()->is_inline_box())
- 			{
-@@ -514,7 +524,7 @@ std::list< std::unique_ptr<litehtml::line_box_item> > litehtml::line_box::finish
- 			}
- 		}
++    if(!no_text && !m_default_line_height.css_value.is_predefined())
+     {
+         line_height = m_default_line_height.computed_value;
+     }
+@@ -509,7 +519,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+             default:
+                 break;
+             }
+-        } else
++        } else if(!no_text ||
++                  (lbi->get_type() == line_box_item::type_text_part && !lbi->get_el()->src_el()->is_white_space()))
+         {
+             if(!lbi->get_el()->src_el()->is_inline_box())
+             {
+@@ -520,7 +531,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+             }
+         }
  
--		if(!lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
-+		if(!no_text && !lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
- 		{
- 			if(line_height.has_value())
- 			{
+-        if(!lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
++        if(!no_text && !lbi->get_el()->src_el()->is_inline_box() &&
++           !lbi->get_el()->css().line_height().css_value.is_predefined())
+         {
+             if(line_height.has_value())
+             {
 diff --git a/src/render_item.cpp b/src/render_item.cpp
-index b2109e71..957284e6 100644
+index e2a8344b..30920a91 100644
 --- a/src/render_item.cpp
 +++ b/src/render_item.cpp
-@@ -109,6 +109,18 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
+@@ -207,6 +207,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
              m_margins.right = parent_width - el_width;
-             if (m_margins.right < 0) m_margins.right = 0;
+             m_margins.right = std::max<pixel_t>(m_margins.right, 0_px);
          }
 +        // HTML "align descendants": inside align=center or <center> a narrower block is centred despite its margins
-+        else if (src_el()->parent() && src_el()->parent()->css().get_text_align() == text_align_webkit_center)
++        else if(src_el()->parent() && src_el()->parent()->css().get_text_align() == text_align_webkit_center)
 +        {
-+            pixel_t el_width = m_pos.width + m_borders.left + m_borders.right + m_padding.left + m_padding.right + m_margins.left + m_margins.right;
-+            if (el_width < parent_width)
++            pixel_t el_width = m_pos.width + m_borders.left + m_borders.right + m_padding.left + m_padding.right +
++                               m_margins.left + m_margins.right;
++            if(el_width < parent_width)
 +            {
-+                pixel_t shift = (parent_width - el_width) / 2;
-+                m_margins.left += shift;
++                pixel_t shift    = (parent_width - el_width) / 2_px;
++                m_margins.left  += shift;
 +                m_margins.right += parent_width - el_width - shift;
 +                return shift;
 +            }
 +        }
      }
- 	return 0;
+     return 0_px;
  }
 diff --git a/src/render_table.cpp b/src/render_table.cpp
-index 97a8abf0..9eaf12f7 100644
+index 03a122c8..028e8fd8 100644
 --- a/src/render_table.cpp
 +++ b/src/render_table.cpp
-@@ -208,6 +208,16 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
-                 if (cell->rowspan <= 1)
+@@ -146,6 +146,20 @@ litehtml::pixel_t litehtml::render_item_table::_render(pixel_t x, pixel_t y,
+                 if(cell->rowspan <= 1)
                  {
-                     m_grid->row(row).height = std::max(m_grid->row(row).height, cell->el->height());
+                     m_grid->row(row).height = std::max(m_grid->row(row).height, cell_height(col, row));
 +                    // CSS 2.1 17.5.3: a row is at least as tall as the computed height of each of its cells;
 +                    // quirks mode: the height includes padding and borders (quirks spec 3.13)
 +                    const css_length& h = cell->el->src_el()->css().get_height();
-+                    if (!h.is_predefined() && h.units() != css_units_percentage)
++                    if(!h.is_predefined() && h.units() != css_units_percentage)
 +                    {
-+                        pixel_t computed = src_el()->get_document()->to_pixels(h, cell->el->src_el()->css().get_font_metrics(), 0);
-+                        if (cell->el->src_el()->css().get_box_sizing() == box_sizing_content_box && src_el()->get_document()->mode() != quirks_mode)
++                        pixel_t computed =
++                            src_el()->get_document()->to_pixels(h, cell->el->src_el()->css().get_font_metrics(), 0_px);
++                        if(cell->el->src_el()->css().get_box_sizing() == box_sizing_content_box &&
++                           src_el()->get_document()->mode() != quirks_mode)
++                        {
 +                            computed += cell->el->content_offset_height();
++                        }
 +                        m_grid->row(row).height = std::max(m_grid->row(row).height, computed);
 +                    }
-                 }
-                 else
+                 } else
                  {
+                     row_span_found = true;
 diff --git a/src/string_id.cpp b/src/string_id.cpp
-index d197d244..999968a0 100644
+index 3a6c0a94..17be19de 100644
 --- a/src/string_id.cpp
 +++ b/src/string_id.cpp
 @@ -1,6 +1,7 @@
@@ -251,37 +246,37 @@ index d197d244..999968a0 100644
 +#include <deque>
  
  #ifndef LITEHTML_NO_THREADS
- 	#include <mutex>
+ #include <mutex>
 @@ -14,7 +15,8 @@ namespace litehtml
  {
  
- static std::map<string, string_id> map;
--static std::vector<string> array;
-+// deque: _s() hands out references after unlocking; push_back must not move the strings
-+static std::deque<string> array;
+     static std::map<std::string, string_id> map;
+-    static std::vector<std::string>         array;
++    // deque: _s() hands out references after unlocking; push_back must not move the strings
++    static std::deque<std::string> array;
  
- static int init()
- {
+     static int init()
+     {
 diff --git a/src/table.cpp b/src/table.cpp
-index 7f5a71f8..8374b946 100644
+index cb321fdf..67699a4f 100644
 --- a/src/table.cpp
 +++ b/src/table.cpp
-@@ -291,6 +291,18 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bo
+@@ -312,6 +312,18 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
+ litehtml::pixel_t litehtml::table_grid::calc_table_width(std::optional<pixel_t> block_width, bool is_auto,
+                                                          pixel_t& min_table_width, pixel_t& max_table_width)
  {
- 	//pixel_t table_width = 0;
- 
-+	// css-tables-3: a column's percentage is at most 100% minus the percentages of the columns before it
-+	float percent_left = 100;
-+	for(int col = 0; col < m_cols_count; col++)
-+	{
-+		if(!m_columns[col].css_width.is_predefined() && m_columns[col].css_width.units() == css_units_percentage)
-+		{
-+			float p = std::min(m_columns[col].css_width.val(), percent_left);
-+			m_columns[col].css_width.set_value(p, css_units_percentage);
-+			percent_left -= p;
-+		}
-+	}
++    // css-tables-3: a column's percentage is at most 100% minus the percentages of the columns before it
++    float percent_left = 100;
++    for(int col = 0; col < m_cols_count; col++)
++    {
++        if(!m_columns[col].css_width.is_predefined() && m_columns[col].css_width.units() == css_units_percentage)
++        {
++            float p = std::min(m_columns[col].css_width.val(), percent_left);
++            m_columns[col].css_width.set_value(p, css_units_percentage);
++            percent_left -= p;
++        }
++    }
 +
- 	min_table_width = 0; // MIN
- 	max_table_width = 0; // MAX
- 
+     // Calculate the minimum content width (MCW) of each cell: the formatted content may span any number of lines but
+     // may not overflow the cell box. If the specified 'width' (W) of the cell is greater than MCW, W is the minimum
+     // cell width. A value of 'auto' means that MCW is the minimum cell width.

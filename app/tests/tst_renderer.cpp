@@ -437,6 +437,18 @@ private Q_SLOTS:
         QCOMPARE(gap(standards, "<td style=\"height:20%;padding:0\"></td>"), 0);   // % of an auto table: ignored
     }
 
+    // max-width on a table is honoured (litehtml before master ignored it: 600 px newsletters ran 1000 px wide)
+    void table_max_width_honoured()
+    {
+        const auto width = [&](const QString &style, const QString &text) {
+            const Rendered r = run(job(QStringLiteral("<!doctype html><body style=\"margin:0\"><table style=\"%1\" cellpadding=\"0\" "
+                "cellspacing=\"0\"><tr><td><a href=\"https://x.org/\" style=\"display:block\">%2</a></td></tr></table></body>").arg(style, text)));
+            return r.links.size() == 1 ? r.links.at(0).rect.width() : -1;
+        };
+        QCOMPARE(width("width:100%;max-width:600px", "Hg"), 600);
+        QCOMPARE(width("max-width:600px", QStringLiteral("Hg ").repeated(70)), 600);
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {

@@ -53,19 +53,25 @@ om_test(tst_highlight)
 target_sources(mailcore PRIVATE src/MailList.h src/MailList.cpp)
 om_test(tst_maillist)
 include(FetchContent)
-# UPDATE_DISCONNECTED keeps the sources patched once: after editing a patch delete build/_deps/qlitehtml-*
+# UPDATE_DISCONNECTED keeps the sources patched once: after editing a patch delete build/_deps/qlitehtml-* and build/_deps/litehtml-*
 set(QT_VERSION_MAJOR 6)
 set(QLITEHTML_LIBRARY_TYPE STATIC)
+set(LITEHTML_ENABLE_LINT OFF CACHE BOOL "litehtml's own clang-tidy run (warnings as errors) is not the window's")
+FetchContent_Declare(litehtml
+    GIT_REPOSITORY https://github.com/litehtml/litehtml.git
+    GIT_TAG a5ee957801d4aeb09ce7b365c7e2f9510e6272ff
+    PATCH_COMMAND git apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/third_party/litehtml.patch
+    UPDATE_DISCONNECTED ON
+    SYSTEM)
 FetchContent_Declare(qlitehtml
     GIT_REPOSITORY https://code.qt.io/playground/qlitehtml.git
     GIT_TAG 180e3ebb22bb8d82a9bfe88bba46da8c28c9f2a2
-    GIT_SUBMODULES src/3rdparty/litehtml
+    GIT_SUBMODULES ""
     PATCH_COMMAND git apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/third_party/qlitehtml.patch
-        COMMAND git -C src/3rdparty/litehtml apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/third_party/litehtml.patch
     UPDATE_DISCONNECTED ON
     SOURCE_SUBDIR src
     SYSTEM)
-FetchContent_MakeAvailable(qlitehtml)
+FetchContent_MakeAvailable(litehtml qlitehtml)
 target_link_libraries(mailcore PUBLIC qlitehtml Qt6::Widgets PRIVATE litehtml)
 target_sources(mailcore PRIVATE src/Renderer.h src/Renderer.cpp)
 om_test(tst_renderer)

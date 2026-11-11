@@ -1,5 +1,5 @@
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..8a1d8fb 100644
+index 6fa2c82..718758f 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,6 +20,7 @@
@@ -97,10 +97,71 @@ index 6fa2c82..8a1d8fb 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
+@@ -999,37 +1009,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
+     if (borders.top.style != litehtml::border_style_none
+         && borders.top.style != litehtml::border_style_hidden) {
+         painter->setPen(borderPen(borders.top));
+-        painter->drawLine(QPointF(left + r.top_left_x, top),
+-                          QPointF(right - r.top_right_x, top));
++        painter->drawLine(QPointF(left + r.top_left_x.value(), top),
++                          QPointF(right - r.top_right_x.value(), top));
+         painter->drawArc(QRectF(left, top, 2 * r.top_left_x, 2 * r.top_left_y),
+                          90 * 16, 90 * 16);
+-        painter->drawArc(QRectF(right - 2 * r.top_right_x, top,
++        painter->drawArc(QRectF(right - 2 * r.top_right_x.value(), top,
+                                 2 * r.top_right_x, 2 * r.top_right_y),
+                          0, 90 * 16);
+     }
+     if (borders.bottom.style != litehtml::border_style_none
+         && borders.bottom.style != litehtml::border_style_hidden) {
+         painter->setPen(borderPen(borders.bottom));
+-        painter->drawLine(QPointF(left + r.bottom_left_x, bottom),
+-                          QPointF(right - r.bottom_right_x, bottom));
+-        painter->drawArc(QRectF(left, bottom - 2 * r.bottom_left_y,
++        painter->drawLine(QPointF(left + r.bottom_left_x.value(), bottom),
++                          QPointF(right - r.bottom_right_x.value(), bottom));
++        painter->drawArc(QRectF(left, bottom - 2 * r.bottom_left_y.value(),
+                                 2 * r.bottom_left_x, 2 * r.bottom_left_y),
+                          180 * 16, 90 * 16);
+-        painter->drawArc(QRectF(right - 2 * r.bottom_right_x, bottom - 2 * r.bottom_right_y,
++        painter->drawArc(QRectF(right - 2 * r.bottom_right_x.value(), bottom - 2 * r.bottom_right_y.value(),
+                                 2 * r.bottom_right_x, 2 * r.bottom_right_y),
+                          270 * 16, 90 * 16);
+     }
+     if (borders.left.style != litehtml::border_style_none
+         && borders.left.style != litehtml::border_style_hidden) {
+         painter->setPen(borderPen(borders.left));
+-        painter->drawLine(QPointF(left, top + r.top_left_y),
+-                          QPointF(left, bottom - r.bottom_left_y));
++        painter->drawLine(QPointF(left, top + r.top_left_y.value()),
++                          QPointF(left, bottom - r.bottom_left_y.value()));
+     }
+     if (borders.right.style != litehtml::border_style_none
+         && borders.right.style != litehtml::border_style_hidden) {
+         painter->setPen(borderPen(borders.right));
+-        painter->drawLine(QPointF(right, top + r.top_right_y),
+-                          QPointF(right, bottom - r.bottom_right_y));
++        painter->drawLine(QPointF(right, top + r.top_right_y.value()),
++                          QPointF(right, bottom - r.bottom_right_y.value()));
+     }
+ }
+ 
+@@ -1065,7 +1075,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
+     m_cursorCallback(toQCursor(QString::fromUtf8(cursor)));
+ }
+ 
+-void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::text_transform tt)
++void DocumentContainerPrivate::transform_text(std::string &text, litehtml::text_transform tt)
+ {
+     // TODO
+     qWarning(log) << "transform_text not implemented";
 @@ -1073,15 +1083,50 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
      Q_UNUSED(tt)
  }
  
+-void DocumentContainerPrivate::import_css(litehtml::string &text,
+-                                          const litehtml::string &url,
+-                                          litehtml::string &baseurl)
 +// litehtml breaks a line between any two words that touch, never inside one: a word of more than 30
 +// characters (a URL, a key) goes out in pieces, joined the text stays the same — cut after / ? & = # - _ .
 +// and every 10 characters without one. ponytail: such a word breaks wherever the line ends, not only when it
@@ -110,7 +171,12 @@ index 6fa2c82..8a1d8fb 100644
 +void DocumentContainerPrivate::split_text(const char *text,
 +                                          const std::function<void(const char *)> &on_word,
 +                                          const std::function<void(const char *)> &on_space)
-+{
+ {
+-    const QUrl actualUrl = resolveUrl(QString::fromStdString(url), QString::fromStdString(baseurl));
+-    const QString urlString = actualUrl.toString(QUrl::None);
+-    const int lastSlash = urlString.lastIndexOf('/');
+-    baseurl = urlString.left(lastSlash).toStdString();
+-    text = QString::fromUtf8(m_dataCallback(actualUrl)).toStdString();
 +    const auto urlBreak = [](QChar c) { return QStringView(u"/?&=#-_.").contains(c); };
 +    litehtml::document_container::split_text(
 +        text,
@@ -137,15 +203,10 @@ index 6fa2c82..8a1d8fb 100644
 +        on_space);
 +}
 +
- void DocumentContainerPrivate::import_css(litehtml::string &text,
-                                           const litehtml::string &url,
-                                           litehtml::string &baseurl)
- {
--    const QUrl actualUrl = resolveUrl(QString::fromStdString(url), QString::fromStdString(baseurl));
--    const QString urlString = actualUrl.toString(QUrl::None);
--    const int lastSlash = urlString.lastIndexOf('/');
--    baseurl = urlString.left(lastSlash).toStdString();
--    text = QString::fromUtf8(m_dataCallback(actualUrl)).toStdString();
++void DocumentContainerPrivate::import_css(std::string &text,
++                                          const std::string &url,
++                                          std::string &baseurl)
++{
 +    // external stylesheets are never loaded: the network of a letter is its images only
 +    Q_UNUSED(text)
 +    Q_UNUSED(url)
@@ -168,6 +229,15 @@ index 6fa2c82..8a1d8fb 100644
  }
  
  void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+@@ -1129,7 +1179,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+     Q_UNUSED(event)
+ }
+ 
+-void DocumentContainerPrivate::get_language(litehtml::string &language, litehtml::string &culture) const
++void DocumentContainerPrivate::get_language(std::string &language, std::string &culture) const
+ {
+     // TODO
+     qWarning(log) << "get_language not implemented";
 @@ -1152,7 +1202,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
      d->m_pixmaps.clear();
      d->m_animations.clear();
@@ -178,7 +248,56 @@ index 6fa2c82..8a1d8fb 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
      d->buildIndex();
-@@ -1589,6 +1640,37 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1219,7 +1270,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+             return -1;
+     }
+     while (element) {
+-        if (element->get_placement().y > 0)
++        if (element->get_placement().y.value() > 0)
+             return qRound(element->get_placement().y);
+         element = element->parent();
+     }
+@@ -1275,7 +1326,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+     // post to litehtml
+     litehtml::position::vector redrawBoxes;
+     if (d->m_document->on_lbutton_down(
+-            documentPos.x(), documentPos.y(), viewportPos.x(), viewportPos.y(), redrawBoxes)) {
++            documentPos.x(), documentPos.y(), viewportPos.x(), viewportPos.y(),
++            [&](const litehtml::position &box) { redrawBoxes.push_back(box); })) {
+         for (const litehtml::position &box : redrawBoxes)
+             redrawRects.append(toQRect(box));
+     }
+@@ -1308,7 +1360,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+     }
+     litehtml::position::vector redrawBoxes;
+     if (d->m_document->on_mouse_over(
+-            documentPos.x(), documentPos.y(), viewportPos.x(), viewportPos.y(), redrawBoxes)) {
++            documentPos.x(), documentPos.y(), viewportPos.x(), viewportPos.y(),
++            [&](const litehtml::position &box) { redrawBoxes.push_back(box); })) {
+         for (const litehtml::position &box : redrawBoxes)
+             redrawRects.append(toQRect(box));
+     }
+@@ -1331,7 +1384,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+         d->clearSelection();
+     litehtml::position::vector redrawBoxes;
+     if (d->m_document->on_lbutton_up(
+-            documentPos.x(), documentPos.y(), viewportPos.x(), viewportPos.y(), redrawBoxes)) {
++            documentPos.x(), documentPos.y(), viewportPos.x(), viewportPos.y(),
++            [&](const litehtml::position &box) { redrawBoxes.push_back(box); })) {
+         for (const litehtml::position &box : redrawBoxes)
+             redrawRects.append(toQRect(box));
+     }
+@@ -1380,7 +1434,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+     if (!d->m_document)
+         return {};
+     litehtml::position::vector redrawBoxes;
+-    if (d->m_document->on_mouse_leave(redrawBoxes)) {
++    if (d->m_document->on_mouse_leave(
++            [&](const litehtml::position &box) { redrawBoxes.push_back(box); })) {
+         QVector<QRect> redrawRects;
+         for (const litehtml::position &box : redrawBoxes)
+             redrawRects.append(toQRect(box));
+@@ -1589,11 +1644,42 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -216,6 +335,12 @@ index 6fa2c82..8a1d8fb 100644
  static litehtml::element::ptr elementForY(int y, const litehtml::element::ptr &element)
  {
      if (!element)
+         return {};
+-    if (element->get_placement().y >= y)
++    if (element->get_placement().y.value() >= y)
+         return element;
+     for (const litehtml::element::ptr &child : element->children()) {
+         litehtml::element::ptr result = elementForY(y, child);
 diff --git a/src/container_qpainter.h b/src/container_qpainter.h
 index 0a7939e..e8885ea 100644
 --- a/src/container_qpainter.h
@@ -250,19 +375,32 @@ index 0a7939e..e8885ea 100644
      std::unique_ptr<DocumentContainerPrivate> d;
  };
 diff --git a/src/container_qpainter_p.h b/src/container_qpainter_p.h
-index b767a32..70ac62a 100644
+index b767a32..9c599ce 100644
 --- a/src/container_qpainter_p.h
 +++ b/src/container_qpainter_p.h
-@@ -137,6 +137,9 @@ public: // document_container API
+@@ -136,8 +136,11 @@ public: // document_container API
+     void on_anchor_click(const char *url, const litehtml::element::ptr &el) override;
      void on_mouse_event(const litehtml::element::ptr &el, litehtml::mouse_event event) override;
      void set_cursor(const char *cursor) override;
-     void transform_text(litehtml::string &text, litehtml::text_transform tt) override;
+-    void transform_text(litehtml::string &text, litehtml::text_transform tt) override;
+-    void import_css(litehtml::string &text, const litehtml::string &url, litehtml::string &baseurl) override;
++    void transform_text(std::string &text, litehtml::text_transform tt) override;
 +    void split_text(const char *text,
 +                    const std::function<void(const char *)> &on_word,
 +                    const std::function<void(const char *)> &on_space) override;
-     void import_css(litehtml::string &text, const litehtml::string &url, litehtml::string &baseurl) override;
++    void import_css(std::string &text, const std::string &url, std::string &baseurl) override;
      void set_clip(const litehtml::position &pos,
                    const litehtml::border_radiuses &bdr_radius) override;
+     void del_clip() override;
+@@ -147,7 +150,7 @@ public: // document_container API
+         const litehtml::string_map &attributes,
+         const std::shared_ptr<litehtml::document> &doc) override;
+     void get_media_features(litehtml::media_features &media) const override;
+-    void get_language(litehtml::string &language, litehtml::string &culture) const override;
++    void get_language(std::string &language, std::string &culture) const override;
+ 
+     QPixmap getPixmap(const QUrl &url);
+     QPixmap getPixmap(const QString &imageUrl, const QString &baseUrl);
 @@ -166,6 +169,8 @@ public: // document_container API
      QString sansSerifFont() const;
      QString monospaceFont() const;
