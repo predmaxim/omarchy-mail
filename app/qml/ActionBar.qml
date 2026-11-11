@@ -1,6 +1,6 @@
 import QtQuick
 
-// The line of commands on top (spec «Окно»): "Mail", Compose / Reply / Delete with their keys; on the right the
+// The line of commands on top (spec «Окно»): "Mail", Compose / Reply / Delete / Flag with their keys; on the right the
 // last note or the mailboxes' status, the Unread filter and the mailboxes page. The window cursor on the row
 // Actions lights the button `nav.col`; a button's `col` is App::pressAction's. On the mailboxes page: "Mail",
 // the note or status and the back arrow in the gear's place (rules §9).
@@ -31,6 +31,7 @@ Item {
         property string label
         property string key
         property bool current: false
+        objectName: "action" + col
         property int labelSize: theme.fontTitle
         readonly property bool hasCursor: (bar.main && nav.row === 0 && nav.col === col) || mouse.containsMouse
         anchors.verticalCenter: parent.verticalCenter   // in its Row: the gear's icon is taller than the labels
@@ -81,6 +82,7 @@ Item {
         ActionButton { col: 0; label: i18n.t("Compose"); key: "c"; visible: bar.main }
         ActionButton { col: 1; label: i18n.t("Reply"); key: "r"; visible: bar.main }
         ActionButton { col: 2; label: i18n.t("Delete"); key: "d"; visible: bar.main }
+        ActionButton { col: 3; label: i18n.t("Flag"); key: "f"; visible: bar.main }
     }
 
     Text {   // the service's words or ours: plain, they may quote a server
@@ -103,8 +105,8 @@ Item {
         anchors.rightMargin: theme.space(18)
         anchors.verticalCenter: commands.verticalCenter
         spacing: theme.space(8)
-        ActionButton { col: 3; label: i18n.t("Unread"); key: "Shift+U"; current: app.unreadOnly; visible: bar.main }
-        ActionButton { col: 4; label: bar.main ? "󰒓" : "󰁍"; labelSize: theme.iconLarge }   // the gear, the back arrow
+        ActionButton { col: 4; label: i18n.t("Unread"); key: "Shift+U"; current: app.unreadOnly; visible: bar.main }
+        ActionButton { col: 5; label: bar.main ? "󰒓" : "󰁍"; labelSize: theme.iconLarge }   // the gear, the back arrow
     }
 
     Rectangle {

@@ -8,7 +8,7 @@ namespace om {
 enum class Row { Actions, Search, Pickers, List, Outbox, Attachments, Links, Text };
 
 struct NavShape {
-    int actions = 5;
+    int actions = 6;
     int pickers = 2;
     int outbox = 0;
     int attachments = 0;

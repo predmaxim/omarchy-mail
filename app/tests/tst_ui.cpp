@@ -123,6 +123,17 @@ private Q_SLOTS:
         QTRY_COMPARE(h.sent("act").size(), 1);
         QCOMPARE(h.sent("act").at(0).value("op").toString(), QString("delete"));
     }
+    void action_buttons_run_left_to_right()   // Nav moves ←/→ by col: cols follow the screen
+    {
+        start();
+        qreal x = -1;
+        for (int col = 0; col < NavShape().actions; ++col) {
+            const qreal at = item(QByteArray("action" + QByteArray::number(col)).constData())->mapToScene(QPointF(0, 0)).x();
+            QVERIFY2(at > x, qPrintable(QString::number(col)));
+            x = at;
+        }
+        QCOMPARE(NavShape().actions, 6);
+    }
     void slash_focuses_search_and_typing_searches()
     {
         start();
@@ -761,7 +772,7 @@ private Q_SLOTS:
         });
         start();
         QVERIFY(!item("settingsPage")->isVisible());
-        s->app.pressAction(4);   // the gear
+        s->app.pressAction(5);   // the gear
         QTRY_VERIFY(item("settingsPage")->isVisible());
         for (const char *hidden : {"mailList", "searchField", "letterView", "folderPicker"})
             QVERIFY2(!item(hidden)->isVisible(), hidden);
@@ -796,7 +807,7 @@ private Q_SLOTS:
             h.d->on(cmd, [](const QJsonObject &) { return QJsonObject{}; });
         h.d->on("account_add", [](const QJsonObject &) { return QJsonObject{{"error", "AUTHENTICATIONFAILED"}}; });
         start();
-        s->app.pressAction(4);
+        s->app.pressAction(5);
         QQuickItem *rows = item("accountRows");
         QTRY_VERIFY(rows->hasActiveFocus());
         QTRY_VERIFY(s->app.accounts().value(1).toMap().value("authFailed").toBool());
@@ -869,7 +880,7 @@ private Q_SLOTS:
     {
         h.d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
         start();
-        s->app.pressAction(4);
+        s->app.pressAction(5);
         QQuickItem *rows = item("accountRows");
         QTRY_VERIFY(rows->hasActiveFocus());
         QTRY_COMPARE(rows->property("count").toInt(), 2);

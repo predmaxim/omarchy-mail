@@ -87,7 +87,7 @@ public:
     Q_INVOKABLE void composeNew();
     Q_INVOKABLE void copyText();
     Q_INVOKABLE void openOriginal();
-    Q_INVOKABLE void pressAction(int col);             // 0 Compose, 1 Reply, 2 Delete, 3 Unread, 4 Settings
+    Q_INVOKABLE void pressAction(int col);             // 0 Compose, 1 Reply, 2 Delete, 3 Flag, 4 Unread, 5 Settings
     Q_INVOKABLE void retryOutbox();                    // the open letter, if unsent
     Q_INVOKABLE void discardOutbox();
     Q_INVOKABLE void send();

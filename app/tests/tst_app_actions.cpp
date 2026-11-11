@@ -360,11 +360,15 @@ private Q_SLOTS:
     void action_bar_buttons()
     {
         bootList();
-        app->pressAction(3);
+        QTRY_COMPARE(letter->id(), 57);
+        app->pressAction(3);   // Flag: the letter under the cursor, as `f`
+        QTRY_COMPARE(acts("flag"), QList<QJsonObject>({act({57}, "flag")}));
+        QVERIFY(list->row(3).value("flagged").toBool());
+        app->pressAction(4);
         QVERIFY(app->unreadOnly());
         app->pressAction(0);
         QVERIFY(compose->isOpen());
-        app->pressAction(4);
+        app->pressAction(5);
         QCOMPARE(app->page(), QString("settings"));
     }
 
@@ -375,7 +379,7 @@ private Q_SLOTS:
         app->pressAction(0);
         QVERIFY(compose->isOpen());
         compose->setSubject("Draft");
-        for (int col : {0, 1, 2, 3})
+        for (int col : {0, 1, 2, 3, 4})
             app->pressAction(col);
         QVERIFY(compose->isOpen() && !compose->isReply());
         QCOMPARE(compose->subject(), QString("Draft"));
@@ -383,7 +387,8 @@ private Q_SLOTS:
         QCOMPARE(list->rowCount(), 50);
         barrier();
         QVERIFY(acts("delete").isEmpty());
-        app->pressAction(4);   // the gear: the form closes with its draft kept, the mailboxes page opens
+        QVERIFY(acts("flag").isEmpty());
+        app->pressAction(5);   // the gear: the form closes with its draft kept, the mailboxes page opens
         QVERIFY(!compose->isOpen());
         QCOMPARE(app->page(), QString("settings"));
         QVERIFY(QFile::exists(dir->filePath("drafts/new.json")));

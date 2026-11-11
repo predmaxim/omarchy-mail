@@ -37,7 +37,7 @@ private Q_SLOTS:
         QCOMPARE(st.col, 2);
         for (int i = 0; i < 9; ++i)
             n.press(kp(KeyAction::Right), s);
-        QCOMPARE(n.col(), 4);
+        QCOMPARE(n.col(), 5);
         n.press(kp(KeyAction::Down), s);
         QCOMPARE(n.press(kp(KeyAction::Enter), s).cmd, Cmd::FocusSearch);
         n.press(kp(KeyAction::Down), s);

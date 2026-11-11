@@ -708,14 +708,15 @@ void App::openOriginal() { m_letter->openOriginal(); }
 
 void App::pressAction(int col)
 {
-    if (m_compose->isOpen() && col != 4)
+    if (m_compose->isOpen() && col != 5)
         return;   // the list is only a backdrop under the form; the gear closes the form
     switch (col) {
     case 0: composeNew(); break;
     case 1: reply(); break;
     case 2: remove(); break;
-    case 3: toggleUnread(); break;
-    case 4: m_page == QLatin1String("main") ? openSettings() : closeSettings(); break;   // the gear, the back arrow
+    case 3: toggleFlag(); break;
+    case 4: toggleUnread(); break;
+    case 5: m_page == QLatin1String("main") ? openSettings() : closeSettings(); break;   // the gear, the back arrow
     }
 }
 
