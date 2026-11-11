@@ -1,4 +1,4 @@
-// App's mailboxes page: add, remove, retry the login, rename the sender.
+// App's mailboxes page: add, save a mailbox's settings, remove, retry the login, rename the sender.
 #include "App.h"
 #include "Client.h"
 #include "I18n.h"
@@ -64,13 +64,62 @@ void App::addAccount(const QVariantMap &form)
     });
 }
 
+// As addAccount: the request carries the password, which is never logged. One trial login at a time.
+void App::updateAccount(const QVariantMap &form)
+{
+    const QString email = form.value(QStringLiteral("email")).toString();
+    QString provider;
+    for (const QJsonValue &v : std::as_const(m_accounts))
+        if (v.toObject().value(QStringLiteral("email")).toString() == email)
+            provider = v.toObject().value(QStringLiteral("provider")).toString();
+    if (!m_saving.isEmpty() || provider.isEmpty())
+        return;
+    QJsonObject req{{"cmd", "account_update"}, {"email", email},
+                    {"name", form.value(QStringLiteral("name")).toString().trimmed()}};
+    const QString password = form.value(QStringLiteral("password")).toString();
+    if (!password.isEmpty())   // empty: unchanged
+        req.insert(QStringLiteral("password"), password);
+    if (provider == QLatin1String("imap")) {   // gmail and yandex: maild keeps their servers and login
+        const QJsonObject imap = server(form, QStringLiteral("imapHost"), QStringLiteral("imapPort"));
+        const QJsonObject smtp = server(form, QStringLiteral("smtpHost"), QStringLiteral("smtpPort"));
+        if (imap.isEmpty() || smtp.isEmpty()) {
+            m_saveErrors.insert(email, t("Fill in the server and port"));
+            Q_EMIT changed();
+            return;
+        }
+        req.insert(QStringLiteral("imap"), imap);
+        req.insert(QStringLiteral("smtp"), smtp);
+        // always sent: an empty login is the email again (absent would keep the old one)
+        req.insert(QStringLiteral("login"), form.value(QStringLiteral("login")).toString().trimmed());
+    }
+    m_saveErrors.remove(email);
+    m_saving = email;
+    Q_EMIT changed();
+    m_client->requestSlow(req, [self = QPointer<App>(this), email](const QJsonValue &, const QString &e) {   // up to ~70 s
+        if (!self)
+            return;
+        self->m_saving.clear();
+        if (!e.isEmpty())
+            self->m_saveErrors.insert(email, e);
+        else
+            self->m_client->request({{"cmd", "accounts"}}, self->ok([self](const QJsonValue &r) {
+                self->m_accounts = r.toArray();
+                Q_EMIT self->changed();
+            }));
+        Q_EMIT self->changed();
+    });
+}
+
 void App::removeAccount(const QString &email)
 {
     if (!m_confirm.press(QStringLiteral("remove ") + email, QDateTime::currentMSecsSinceEpoch())) {
         setNote(t("Press d again to remove %1 (mail on the server stays)").arg(email), false);
         return;
     }
-    m_client->request({{"cmd", "account_remove"}, {"email", email}}, ok([this](const QJsonValue &) { connectedChanged(); }));
+    m_client->request({{"cmd", "account_remove"}, {"email", email}}, ok([this, email](const QJsonValue &) {
+        m_saveErrors.remove(email);   // the same address added again starts clean
+        connectedChanged();
+    }));
 }
 
 void App::retryAccount(const QString &email)

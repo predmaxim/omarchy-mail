@@ -100,11 +100,20 @@ QVariantList App::accounts() const
         for (const QJsonValue &s : m_status)
             if (email(s) == email(a))
                 st = s.toObject();
+        const QJsonObject imap = a.value(QStringLiteral("imap")).toObject();
+        const QJsonObject smtp = a.value(QStringLiteral("smtp")).toObject();
         out << QVariantMap{{"email", email(a)},
                            {"name", a.value(QStringLiteral("name")).toString()},
                            {"provider", a.value(QStringLiteral("provider")).toString()},
+                           {"login", a.value(QStringLiteral("login")).toString()},
+                           {"imapHost", imap.value(QStringLiteral("host")).toString()},
+                           {"imapPort", imap.value(QStringLiteral("port")).toInt()},
+                           {"smtpHost", smtp.value(QStringLiteral("host")).toString()},
+                           {"smtpPort", smtp.value(QStringLiteral("port")).toInt()},
                            {"statusText", st.isEmpty() ? QString() : format::statusLine(true, QJsonArray{st}).text},
-                           {"authFailed", st.value(QStringLiteral("status")).toString() == QLatin1String("auth_failed")}};
+                           {"authFailed", st.value(QStringLiteral("status")).toString() == QLatin1String("auth_failed")},
+                           {"saving", m_saving == email(a)},
+                           {"saveError", m_saveErrors.value(email(a))}};
     }
     return out;
 }

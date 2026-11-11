@@ -1,7 +1,7 @@
 #pragma once
 // Window controller: mailboxes, folders, the mail list, search and maild events;
 // actions on the mail, their undo, auto-read and the window's keys (AppKeys.cpp);
-// the mailboxes page: add, remove, retry, rename (AppAccounts.cpp).
+// the mailboxes page: add, save, remove, retry, rename (AppAccounts.cpp).
 #include "Nav.h"
 #include <QHash>
 #include <QJsonArray>
@@ -47,7 +47,9 @@ public:
     void start(qint64 openId = 0);   // openId: the letter to show first (`--open`)
 
     QString page() const { return m_page; }            // "main" / "settings"
-    QVariantList accounts() const;                     // {email, name, provider, statusText, authFailed}
+    // {email, name, provider, login, imapHost, imapPort, smtpHost, smtpPort, statusText, authFailed, saving, saveError};
+    // never the password
+    QVariantList accounts() const;
     QVariantList accountChoices() const;               // "All mailboxes" + addresses; empty with one mailbox
     int accountIndex() const;                          // in `accounts`, -1: all mailboxes (accountChoices[accountIndex + 1])
     QVariantList folderChoices() const;                // {label, unread, separatorBefore}
@@ -98,6 +100,8 @@ public:
 
     // form: provider (gmail / yandex / imap), email, name, password; imap also login, imapHost, imapPort, smtpHost, smtpPort
     Q_INVOKABLE void addAccount(const QVariantMap &form);
+    // form: email, name, password (empty: unchanged); imap also login, imapHost, imapPort, smtpHost, smtpPort
+    Q_INVOKABLE void updateAccount(const QVariantMap &form);
     Q_INVOKABLE void removeAccount(const QString &email);   // the second call within 3 s removes
     Q_INVOKABLE void retryAccount(const QString &email);
     Q_INVOKABLE void renameAccount(const QString &email, const QString &name);
@@ -188,6 +192,8 @@ private:
 
     bool m_adding = false;
     QString m_addError;
+    QString m_saving;                      // the mailbox whose account_update's trial login is on its way
+    QHash<QString, QString> m_saveErrors;  // mailbox -> its last failed save
     bool m_listPreview;          // window.json "listPreview", read in the ctor
 };
 

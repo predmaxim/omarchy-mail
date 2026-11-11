@@ -4,9 +4,12 @@
 using namespace om;
 using namespace om::test;
 
-// App part 3: the mailboxes page — add (on its own connection), remove, retry, rename.
+// App part 3: the mailboxes page — add and save (on their own connection), remove, retry, rename.
 class TstAppAccounts : public QObject, AppHarness {
     Q_OBJECT
+
+    bool saving(int i) const { return app->accounts().at(i).toMap().value("saving").toBool(); }
+    QString saveError(int i) const { return app->accounts().at(i).toMap().value("saveError").toString(); }
 
     static QVariantMap gmail()
     {
@@ -144,6 +147,72 @@ private Q_SLOTS:
         QCOMPARE(body(sent("account_update").at(0)),
                  QJsonObject({{"cmd", "account_update"}, {"email", "me@gmail.com"}, {"name", "Max Petrov"}}));
         QTRY_VERIFY(sent("accounts").size() > accountsBefore);   // the page shows the new name
+    }
+
+    void update_request_shape()
+    {
+        d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
+        bootList();
+        const auto accountsBefore = sent("accounts").size();
+        QVariantMap form{{"email", "me@gmail.com"}, {"name", " Max P "}, {"password", ""}, {"login", "x"},
+                         {"imapHost", "h"}, {"imapPort", "1"}, {"smtpHost", "h"}, {"smtpPort", "1"}};
+        app->updateAccount(form);
+        QVERIFY(saving(0));
+        QTRY_COMPARE(sent("account_update").size(), 1);
+        const QJsonObject r = sent("account_update").at(0);
+        // gmail sends no servers or login; an empty password is not sent
+        QCOMPARE(body(r), QJsonObject({{"cmd", "account_update"}, {"email", "me@gmail.com"}, {"name", "Max P"}}));
+        QVERIFY(r.value("conn") != sent("subscribe").at(0).value("conn"));   // a trial login never blocks the list
+        QTRY_VERIFY(sent("accounts").size() > accountsBefore);
+        QVERIFY(!saving(0));
+        form["password"] = "new pw";
+        app->updateAccount(form);
+        QTRY_COMPARE(sent("account_update").size(), 2);
+        QCOMPARE(sent("account_update").at(1).value("password").toString(), QString("new pw"));
+    }
+
+    void update_imap_request_shape()
+    {
+        d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
+        accounts.append(QJsonObject{{"email", "me@example.org"}, {"name", "Max"}, {"provider", "imap"}, {"login", "me"},
+                                    {"imap", QJsonObject{{"host", "mail.example.org"}, {"port", 993}}},
+                                    {"smtp", QJsonObject{{"host", "mail.example.org"}, {"port", 465}}},
+                                    {"append_sent", true}});
+        bootList();
+        QVariantMap form{{"email", "me@example.org"}, {"name", "Max"}, {"password", ""}, {"login", " me2 "},
+                         {"imapHost", "imap.example.org"}, {"imapPort", "143"}, {"smtpHost", "smtp.example.org"},
+                         {"smtpPort", "587"}};
+        app->updateAccount(form);
+        QTRY_COMPARE(sent("account_update").size(), 1);
+        QCOMPARE(body(sent("account_update").at(0)),
+                 QJsonObject({{"cmd", "account_update"}, {"email", "me@example.org"}, {"name", "Max"}, {"login", "me2"},
+                              {"imap", QJsonObject{{"host", "imap.example.org"}, {"port", 143}}},
+                              {"smtp", QJsonObject{{"host", "smtp.example.org"}, {"port", 587}}}}));
+        QTRY_VERIFY(!saving(2));
+        form["imapPort"] = "x";
+        app->updateAccount(form);
+        QCOMPARE(saveError(2), QString("Fill in the server and port"));
+        QVERIFY(!saving(2));
+        app->updateAccount({{"email", "nobody@example.org"}, {"name", "Max"}, {"password", "pw"}});   // unknown: nothing
+        barrier();
+        QCOMPARE(sent("account_update").size(), 1);
+    }
+
+    void update_error_stays_with_its_mailbox()
+    {
+        d->on("account_update", [](const QJsonObject &) { return QJsonObject{{"error", "AUTHENTICATIONFAILED"}, {"delay", 50}}; });
+        bootList();
+        const QVariantMap bad{{"email", "me@gmail.com"}, {"name", "Max"}, {"password", "bad"}};
+        app->updateAccount(bad);
+        app->updateAccount({{"email", "me@yandex.ru"}, {"name", "Max"}, {"password", "pw"}});   // one trial login at a time
+        QVERIFY(saving(0));
+        QVERIFY(!saving(1));
+        QTRY_VERIFY(!saving(0));
+        QCOMPARE(sent("account_update").size(), 1);
+        QCOMPARE(saveError(0), QString("AUTHENTICATIONFAILED"));
+        QCOMPARE(saveError(1), QString());
+        app->updateAccount(bad);   // the next save starts clean
+        QCOMPARE(saveError(0), QString());
     }
 };
 

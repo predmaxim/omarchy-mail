@@ -59,6 +59,12 @@ private Q_SLOTS:
         const QVariantMap a = app->accounts().at(1).toMap();
         QCOMPARE(a.value("email").toString(), QString("me@yandex.ru"));
         QCOMPARE(a.value("provider").toString(), QString("yandex"));
+        QCOMPARE(a.value("login").toString(), QString("me@yandex.ru"));
+        QCOMPARE(a.value("imapHost").toString(), QString("imap.yandex.ru"));
+        QCOMPARE(a.value("imapPort").toInt(), 993);
+        QCOMPARE(a.value("smtpHost").toString(), QString("smtp.yandex.ru"));
+        QCOMPARE(a.value("smtpPort").toInt(), 465);
+        QVERIFY(!a.contains("password"));
         QCOMPARE(a.value("authFailed").toBool(), false);
         QCOMPARE(app->statusText(), QString());
     }
