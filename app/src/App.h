@@ -102,7 +102,6 @@ public:
 Q_SIGNALS:
     void changed();
     void raiseRequested();
-    void closeRequested();
     void focusSearch();
     void leaveSearch();                    // the search field gives the keys back to the window
     void openPicker(const QString &which); // "account" / "folder"

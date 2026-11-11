@@ -454,7 +454,6 @@ private Q_SLOTS:
         d->on("search", [this](const QJsonObject &) {
             return QJsonObject{{"result", QJsonObject{{"local", QJsonArray{rows.at(0), rows.at(5)}}, {"token", 7}}}};
         });
-        QSignalSpy closed(app, &App::closeRequested);
         app->setQuery("ozon");
         QTRY_COMPARE(list->rowCount(), 2);
         QVERIFY(press(Qt::Key_A, 38, Qt::ControlModifier));
@@ -473,20 +472,35 @@ private Q_SLOTS:
         QCOMPARE(app->query(), QString());
         QTRY_COMPARE(sent("list").size(), lists + 1);
         QCOMPARE(body(sent("list").last()), inboxList(0, 50));
-        QCOMPARE(closed.size(), 0);
+        QTRY_COMPARE(list->rowCount(), 50);
+        const int cursor = list->cursor();
+        QVERIFY(press(Qt::Key_Escape));   // the list: up to the pickers
+        QCOMPARE(nav->row(), int(Row::Pickers));
+        QVERIFY(press(Qt::Key_Escape));   // the pickers: nothing, the window stays
+        QCOMPARE(nav->row(), int(Row::Pickers));
+        QVERIFY(press(Qt::Key_Down));     // back to the same letter
+        QCOMPARE(nav->row(), int(Row::List));
+        QCOMPARE(list->cursor(), cursor);
+        nav->reset(Row::Actions);
+        QVERIFY(press(Qt::Key_Escape));   // the line of commands: to the pickers
+        QCOMPARE(nav->row(), int(Row::Pickers));
+        app->setQuery("ozon");
+        QTRY_COMPARE(list->rowCount(), 2);
+        nav->reset(Row::Search);
+        QVERIFY(press(Qt::Key_Escape));   // the search line, as the field: the query first
+        QVERIFY(!app->searching());
+        QCOMPARE(nav->row(), int(Row::Search));
         QVERIFY(press(Qt::Key_Escape));
-        QCOMPARE(closed.size(), 1);
+        QCOMPARE(nav->row(), int(Row::Pickers));
     }
 
-    void esc_closes_settings_first()
+    void esc_leaves_settings()
     {
         bootList();
-        QSignalSpy closed(app, &App::closeRequested);
         app->openSettings();
         QVERIFY(!press(Qt::Key_D, 40));   // the mailbox page's own keys
         QVERIFY(press(Qt::Key_Escape));
         QCOMPARE(app->page(), QString("main"));
-        QCOMPARE(closed.size(), 0);
     }
 
     void unread_filter_shift_u()
@@ -548,8 +562,8 @@ private Q_SLOTS:
         QVERIFY(press(Qt::Key_Up));
         QVERIFY(press(Qt::Key_Return, 36));
         QCOMPARE(search.size(), 1);
-        QVERIFY(press(Qt::Key_Escape));
-        QCOMPARE(nav->row(), int(Row::List));
+        QVERIFY(press(Qt::Key_Escape));   // the search line, no search: up to the pickers
+        QCOMPARE(nav->row(), int(Row::Pickers));
         QVERIFY(press(Qt::Key_Period, 61));   // `/` in the Russian layout
         QCOMPARE(search.size(), 2);
         QCOMPARE(nav->row(), int(Row::Search));
@@ -667,6 +681,7 @@ private Q_SLOTS:
         QCOMPARE(left.size(), 0);   // the field keeps the keys
         QVERIFY(press(Qt::Key_Escape, 9, Qt::NoModifier, "search"));   // empty: leave the field
         QCOMPARE(left.size(), 1);
+        QCOMPARE(nav->row(), int(Row::Pickers));
         QVERIFY(!press(Qt::Key_D, 40, Qt::NoModifier, "search"));   // typed into the field
         list->setCursor(5);
         QVERIFY(press(Qt::Key_Down, 0, Qt::NoModifier, "search"));

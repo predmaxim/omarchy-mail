@@ -100,7 +100,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | `/` | search; typing goes into the field |
 | Ctrl+Z | undo the last action |
 | Ctrl + / Ctrl − / Ctrl 0 | letter zoom: larger / smaller / back to GNOME's text size (Ctrl+wheel too); the list keeps Omarchy's size; remembered in `~/.config/omarchy-mail/window.json` |
-| Esc | one step back: clear the selection, leave search / form / settings, then close the window |
+| Esc | one step back: from the message to the list; in the list clear the selection, leave search, then up to the mailbox and folder pickers; in the search field clear it, then up to the pickers; leave the form or settings. Esc never closes the window: close it with Hyprland. |
 | Ctrl+Enter, Ctrl+V, Ctrl+O | in the form: send, paste a screenshot, attach a file |
 | Ctrl+D | in the form: discard the draft; press twice |
 
@@ -114,6 +114,7 @@ Selecting several messages works as in a file manager:
 | plain Up / Down | clear the selection |
 | Ctrl+A | all shown messages: the loaded rows of the folder or of the search results |
 | Ctrl+click, Shift+click | one message, a range |
+| Esc | clear the selection |
 
 `d`, `u`, `f` act on all selected messages and Ctrl+Z undoes the whole batch; without a selection they act, as `r`, `o`, `y` do, on the open message.
 

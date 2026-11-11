@@ -77,7 +77,7 @@ bool App::windowKey(const KeyPress &k, bool repeat)
     return true;
 }
 
-// The field keeps typing and moving in it; ↓ and Enter go to the first row, Esc clears, then leaves.
+// The field keeps typing and moving in it; ↓ and Enter go to the first row, Esc clears, then leaves for the pickers.
 bool App::searchKey(const KeyPress &k, bool repeat)
 {
     using A = KeyAction;
@@ -93,6 +93,8 @@ bool App::searchKey(const KeyPress &k, bool repeat)
         m_list->setCursor(0);
         m_nav->reset(Row::List);
         m_readTimer.start();   // the user went to the results: the letter on row 0 is theirs now
+    } else {
+        m_nav->reset(Row::Pickers);
     }
     Q_EMIT leaveSearch();
     return true;
@@ -120,17 +122,33 @@ bool App::composeKey(const KeyPress &k, bool repeat)
     return true;
 }
 
-// Esc, one step at a time (an open picker list closes itself in QML).
+// Esc, one step at a time, down to the pickers; it never closes the window (an open picker list closes itself in QML).
 void App::back()
 {
-    if (Row(m_nav->row()) != Row::List)
+    switch (Row(m_nav->row())) {
+    case Row::Pickers:
+        break;   // the last step: the key is eaten
+    case Row::Actions:
+        m_nav->reset(Row::Pickers);
+        break;
+    case Row::Search:   // the line, the field not focused: like the field, the query first
+        if (m_searching)
+            setQuery({});
+        else
+            m_nav->reset(Row::Pickers);
+        break;
+    case Row::List:
+        if (m_list->selectedCount() > 0)
+            m_list->clearSelection();
+        else if (m_searching)
+            setQuery({});
+        else
+            m_nav->reset(Row::Pickers);   // ↓ comes back to the same letter
+        break;
+    default:   // the letter's rows
         m_nav->reset(Row::List);
-    else if (m_list->selectedCount() > 0)
-        m_list->clearSelection();
-    else if (m_searching)
-        setQuery({});
-    else
-        Q_EMIT closeRequested();
+        break;
+    }
 }
 
 NavShape App::shape() const

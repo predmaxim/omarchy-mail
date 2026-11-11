@@ -20,7 +20,6 @@ Window {
             win.raise()
             win.requestActivate()
         }
-        function onCloseRequested() { win.close() }
         function onFocusSearch() { search.forceActiveFocus() }
         function onLeaveSearch() { root.forceActiveFocus() }
         function onOpenPicker(which) { (which === "account" ? accountPicker : folderPicker).open() }
