@@ -13,9 +13,9 @@ window and `maild ctl`. Only this file defines it.
   inside a message; compact JSON never has them. Blank lines are ignored.
 - A request line longer than 1 MiB (1 048 576 bytes) gets an error and the connection is closed.
 - One connection carries any number of requests. They are answered one at a time, in the order
-  sent. A slow request delays the requests behind it on the same connection; `account_add`
-  waits for a trial login (up to about 70 s). Run slow requests on a second connection if that
-  matters.
+  sent. A slow request delays the requests behind it on the same connection; `account_add`,
+  and `account_update` with a new password, login or IMAP server, wait for a trial login (up to
+  about 70 s). Run slow requests on a second connection if that matters.
 - After `subscribe`, events arrive on the same connection, between responses. A response has
   `id` and `ok`; an event has `event`.
 - A client that does not read, so that a write to it blocks for 10 s, is disconnected. It can
@@ -63,7 +63,7 @@ Failure:
 | `accounts` | — | `Account[]` |
 | `account_add` | `provider, email, name?, password, login?, imap?, smtp?` | `Account` |
 | `account_remove` | `email` | — |
-| `account_update` | `email, name` | — |
+| `account_update` | `email, name, password?, login?, imap?, smtp?` | — |
 | `folders` | `account?` | `FolderInfo[]` |
 | `list` | `account?, role?, folder?, unread_only?, offset?, limit?` | `Summary[]` |
 | `message` | `message` (message id; negative: an outbox message) | `Full` |
@@ -179,14 +179,29 @@ live in the keyring only.
 
 ```json
 → {"id": 7, "cmd": "account_update", "email": "me@gmail.com", "name": "Max Petrov"}
+→ {"id": 8, "cmd": "account_update", "email": "me@example.org", "name": "Max", "password": "…",
+   "login": "me", "imap": {"host": "mail.example.org", "port": 993},
+   "smtp": {"host": "mail.example.org", "port": 587}}
 ← {"id": 7, "ok": true}
 ```
 
-- Sets the sender name ("From") of the account in `accounts.toml`; leading and trailing spaces
-  are dropped, it may be empty. Nothing else of the account changes, nothing restarts.
-- The next `send` of the account goes out with the new name.
-- An unknown `email` is an error.
-- A `status` event follows, with the statuses as they were, so other clients can reload `accounts`.
+- `email` picks the account; it and `provider` never change. An unknown `email` is an error.
+- `name` is required: the sender name ("From"). Leading and trailing spaces are dropped; it may
+  be empty. The next `send` of the account goes out with the new name.
+- Absent fields are unchanged; so is an empty `password`.
+- `gmail` and `yandex` ignore `login`, `imap` and `smtp`, as in `account_add`. For `imap`, an
+  empty `login` means the email, and a given `imap` or `smtp` needs a host and a port.
+- Order of work:
+  1. Validate the fields.
+  2. A new password, login or IMAP server: trial IMAP login, with the new password or else the
+     stored one. On failure the server's error comes back, and nothing is stored, not even the name.
+  3. Store a new password in the keyring.
+  4. Write the account to `accounts.toml`.
+  5. A new login or IMAP server restarts the account's threads. A new password alone is a
+     "sync now" for the account. SMTP is read per send and needs nothing. The account's mail,
+     queued actions and outbox stay.
+- The password is never written to a log or into any response.
+- A `status` event follows, so other clients can reload `accounts`.
 
 ### `folders`
 
@@ -440,7 +455,7 @@ They go to subscribed connections only, one JSON object per line.
 | `event` | Fields | When |
 |---|---|---|
 | `changed` | `folders: bool, ids: [i64]` | Mail changed. `ids` are added or re-fetched messages; the list may be empty (flags changed, messages deleted, an account removed). `folders: true` means unread counts may have changed: reload `folders`. Reload the visible list in both cases. |
-| `status` | `accounts: [{email, status}]` | An account's `Status` changed, an account was removed or renamed (`account_update`). Carries every account; for `queued`, call `status`. |
+| `status` | `accounts: [{email, status}]` | An account's `Status` changed, an account was removed or edited (`account_update`). Carries every account; for `queued`, call `status`. |
 | `open` | `id: i64` | A new-mail notification (its toast or its notification center entry) was clicked while a window is subscribed: show message `id` and raise the window. |
 | `search_remote` | `token: u64, hits: Summary[], error?: string` | Server search hits of one mailbox. `error` only when its search failed. |
 | `action_failed` | `batch: i64, error: string` | A server refused an action of `batch` (see `act`). The database is already back to the previous state. |

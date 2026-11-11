@@ -68,7 +68,7 @@ enum Req {
     Accounts,
     AccountAdd(NewAccount),
     AccountRemove { email: String },
-    AccountUpdate { email: String, name: String },
+    AccountUpdate(AccountEdit),
     Folders { account: Option<String> },
     List(ListQuery),
     Message { message: i64 },
@@ -96,6 +96,20 @@ struct NewAccount {
     /// `imap` only; defaults to the email.
     login: Option<String>,
     /// `imap` only; gmail and yandex use the presets.
+    imap: Option<Server>,
+    smtp: Option<Server>,
+}
+
+/// No `Debug`: it holds the password.
+#[derive(Deserialize)]
+struct AccountEdit {
+    email: String,
+    /// Required, as before: an old window still works.
+    name: String,
+    /// None or empty: unchanged.
+    password: Option<String>,
+    /// This and below: `imap` accounts only; None: unchanged. An empty login means the email.
+    login: Option<String>,
     imap: Option<Server>,
     smtp: Option<Server>,
 }
@@ -144,7 +158,7 @@ fn handle(st: &mut State, req: Req) -> Result<Value, String> {
         Req::Accounts => val(config::load(&st.paths.config)?),
         Req::AccountAdd(n) => account_add(st, n),
         Req::AccountRemove { email } => account_remove(st, &email),
-        Req::AccountUpdate { email, name } => account_update(st, &email, &name),
+        Req::AccountUpdate(e) => account_update(st, e),
         Req::Folders { account } => val(st.db.folder_list(account.as_deref())?),
         Req::List(q) => val(st.db.list(&q)?),
         Req::Message { message } => message_full(st, message),
@@ -274,7 +288,7 @@ fn new_account(n: &NewAccount) -> Result<Account, String> {
     if n.password.is_empty() {
         return Err(tr("empty password", "пустой пароль"));
     }
-    let ok = |s: &Option<Server>| s.as_ref().filter(|s| !s.host.trim().is_empty() && s.port != 0).cloned();
+    let ok = |s: &Option<Server>| s.as_ref().filter(|s| server_ok(s)).cloned();
     let (imap, smtp, append_sent, login) = match (config::preset(n.provider), ok(&n.imap), ok(&n.smtp)) {
         (Some((i, s, a)), _, _) => (i, s, a, email.to_string()),
         // Most servers do not keep a copy of what SMTP sent, so it is appended to Sent.
@@ -282,6 +296,30 @@ fn new_account(n: &NewAccount) -> Result<Account, String> {
         _ => return Err(tr("IMAP and SMTP servers are required", "нужны серверы IMAP и SMTP")),
     };
     Ok(Account { email: email.into(), name: n.name.trim().into(), provider: n.provider, login, imap, smtp, append_sent })
+}
+
+fn server_ok(s: &Server) -> bool {
+    !s.host.trim().is_empty() && s.port != 0
+}
+
+/// The account after `e` and whether its IMAP side changed (login or server), which needs a trial
+/// login and a restart of its threads. Gmail and Yandex keep their preset servers and login, as in `account_add`.
+fn edited_account(old: &Account, e: &AccountEdit) -> Result<(Account, bool), String> {
+    let mut acc = Account { name: e.name.trim().into(), ..old.clone() };
+    if old.provider == Provider::Imap {
+        let server = |new: &Option<Server>, old: &Server| match new {
+            None => Ok(old.clone()),
+            Some(s) if server_ok(s) => Ok(s.clone()),
+            Some(_) => Err(tr("IMAP and SMTP servers are required", "нужны серверы IMAP и SMTP")),
+        };
+        acc.imap = server(&e.imap, &old.imap)?;
+        acc.smtp = server(&e.smtp, &old.smtp)?;
+        if let Some(l) = &e.login {
+            acc.login = if l.trim().is_empty() { old.email.clone() } else { l.trim().into() };
+        }
+    }
+    let restart = acc.login != old.login || acc.imap != old.imap;
+    Ok((acc, restart))
 }
 
 /// Trial login first: a wrong password never reaches the keyring or accounts.toml.
@@ -314,13 +352,35 @@ fn account_remove(st: &State, email: &str) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
-/// Only accounts.toml changes: `send` reads the account from it per mail, so the next "From" has
-/// the new name; no thread keeps the name.
-fn account_update(st: &State, email: &str, name: &str) -> Result<Value, String> {
+/// As `account_add`: a new password, login or IMAP server is tried first, and a failed login stores
+/// nothing. `send` reads the name and SMTP from accounts.toml per mail, so they need no restart.
+/// The account's mail, queued actions and outbox stay.
+fn account_update(st: &State, e: AccountEdit) -> Result<Value, String> {
     let _one = lock(&CONFIG);
     let mut all = config::load(&st.paths.config)?;
-    all.iter_mut().find(|a| a.email == email).ok_or_else(no_account)?.name = name.trim().into();
+    let slot = all.iter_mut().find(|a| a.email == e.email).ok_or_else(no_account)?;
+    let (acc, restart) = edited_account(slot, &e)?;
+    let password = e.password.as_deref().filter(|p| !p.is_empty());
+    if password.is_some() || restart {
+        let pw = match password {
+            Some(p) => p.to_string(),
+            None => secret::lookup(&acc.email)?,
+        };
+        drop(Conn::connect(&acc, &pw)?);
+    }
+    if let Some(p) = password {
+        secret::store(&acc.email, p)?;
+    }
+    *slot = acc.clone();
     config::save(&st.paths.config, &all)?;
+    if restart {
+        // Its threads read the login and IMAP server only at start.
+        st.hub.remove_handle(&acc.email);
+        st.hub.add_handle(account::spawn(acc, st.paths.clone(), st.hub.clone()));
+    } else if password.is_some() {
+        // The connector reads the keyring on every connect: "sync now" is enough.
+        st.hub.handles().iter().filter(|h| h.email == acc.email).for_each(Handle::retry);
+    }
     st.hub.emit_status();
     Ok(Value::Null)
 }
@@ -780,6 +840,47 @@ mod tests {
         let mut st = state("rename-unknown");
         assert_eq!(call(&mut st, json!({"id": 1, "cmd": "account_update", "email": "no@x", "name": "N"}))["ok"], false);
         assert!(!st.paths.config.exists(), "no accounts.toml written for an unknown mailbox");
+    }
+
+    #[test]
+    fn account_update_fields_by_provider() {
+        let srv = |h: &str, p| Server { host: h.into(), port: p };
+        let e = |extra: Value| {
+            let mut v = json!({"email": "a@x.org", "name": "Old"});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<AccountEdit>(v).unwrap()
+        };
+        let (imap, smtp, append_sent) = config::preset(Provider::Gmail).unwrap();
+        let gmail = Account { email: "a@x.org".into(), name: "Old".into(), provider: Provider::Gmail, login: "a@x.org".into(), imap, smtp, append_sent };
+        let (a, restart) = edited_account(&gmail, &e(json!({"name": " New ", "login": "z", "imap": {"host": "h", "port": 1}, "smtp": {"host": "h", "port": 1}}))).unwrap();
+        assert_eq!((a, restart), (Account { name: "New".into(), ..gmail.clone() }, false));   // presets ignore servers and login
+        let other = Account { provider: Provider::Imap, login: "me".into(), imap: srv("i.x.org", 993), smtp: srv("s.x.org", 465), ..gmail };
+        let (a, restart) = edited_account(&other, &e(json!({"smtp": {"host": "s2.x.org", "port": 587}}))).unwrap();
+        assert_eq!((a.smtp, restart), (srv("s2.x.org", 587), false));                       // SMTP is read per send
+        assert!(edited_account(&other, &e(json!({"login": "me2"}))).unwrap().1);
+        assert!(edited_account(&other, &e(json!({"imap": {"host": "i2.x.org", "port": 993}}))).unwrap().1);
+        assert!(!edited_account(&other, &e(json!({"login": "me", "imap": {"host": "i.x.org", "port": 993}}))).unwrap().1);   // same values
+        assert_eq!(edited_account(&other, &e(json!({"login": " "}))).unwrap().0.login, "a@x.org");
+        assert!(edited_account(&other, &e(json!({"imap": {"host": " ", "port": 993}}))).is_err());
+        assert!(edited_account(&other, &e(json!({"smtp": {"host": "s", "port": 0}}))).is_err());
+    }
+
+    #[test]
+    fn account_update_failed_login_saves_nothing() {
+        let mut st = state("update-login");
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();   // dropped: refuses
+        let a = Account { email: "a@x.org".into(), name: "Old".into(), provider: Provider::Imap, login: "me".into(),
+            imap: Server { host: "127.0.0.1".into(), port: closed }, smtp: Server { host: "s.x.org".into(), port: 465 }, append_sent: true };
+        config::save(&st.paths.config, &[a]).unwrap();
+        let before = std::fs::read(&st.paths.config).unwrap();
+        let up = |st: &mut State, extra: Value| { let mut r = json!({"id": 1, "cmd": "account_update", "email": "a@x.org", "name": "New"}); r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); call(st, r) };
+        assert_eq!(up(&mut st, json!({"password": "pw2"}))["ok"], false, "a new password: trial login first");
+        assert_eq!(up(&mut st, json!({"password": "pw2", "login": "me2"}))["ok"], false);
+        assert_eq!(std::fs::read(&st.paths.config).unwrap(), before, "nothing stored, the name neither");
+        assert_eq!(up(&mut st, json!({"smtp": {"host": "s2.x.org", "port": 587}})), json!({"id": 1, "ok": true}));   // no login: no network
+        let all = config::load(&st.paths.config).unwrap();
+        assert_eq!((all[0].name.as_str(), all[0].smtp.port, all[0].imap.port), ("New", 587, closed));
+        let _ = std::fs::remove_dir_all(st.paths.config.parent().unwrap());
     }
 
     fn read_line(r: &mut BufReader<UnixStream>) -> String {

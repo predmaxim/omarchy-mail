@@ -90,7 +90,7 @@ impl Hub {
         self.emit(Event::Status { accounts: v.clone() });
     }
 
-    /// `Status` with every account as it is (a renamed account); under the lock, in order with `set_status`.
+    /// `Status` with every account as it is (an edited account); under the lock, in order with `set_status`.
     pub fn emit_status(&self) {
         let v = lock(&self.accounts);
         self.emit(Event::Status { accounts: v.clone() });
