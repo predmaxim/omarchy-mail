@@ -538,6 +538,23 @@ private Q_SLOTS:
         QCOMPARE(list->rowCount(), 50);
     }
 
+    void home_end_in_the_list()
+    {
+        bootList();
+        QTRY_COMPARE(list->cursor(), 3);
+        QVERIFY(press(Qt::Key_End));      // the last loaded row; the letter opens at once
+        QCOMPARE(list->cursor(), 49);
+        QTRY_COMPARE(letter->id(), 11);
+        QTRY_COMPARE(list->rowCount(), 60);   // near the end: the next page came, the cursor stays
+        QCOMPARE(list->cursor(), 49);
+        QVERIFY(press(Qt::Key_Home));
+        QCOMPARE(list->cursor(), 0);
+        QTRY_COMPARE(letter->id(), 60);
+        QVERIFY(press(Qt::Key_End, 0, Qt::ShiftModifier));   // a range, as Shift+Down
+        QCOMPARE(list->cursor(), 59);
+        QCOMPARE(list->selectedCount(), 60);
+    }
+
     void nav_commands()
     {
         bootList();

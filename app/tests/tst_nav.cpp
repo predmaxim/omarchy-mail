@@ -62,6 +62,19 @@ private Q_SLOTS:
         st = n.press(kp(KeyAction::Down), s);
         QCOMPARE(st.dir, 1);
     }
+    void list_home_end_go_to_the_edges()
+    {
+        Nav n;
+        NavShape s;
+        Step st = n.press(kp(KeyAction::Home), s);
+        QCOMPARE(st.cmd, Cmd::ListEdge);
+        QCOMPARE(st.dir, -1);
+        st = n.press(kp(KeyAction::End, false, true), s);
+        QCOMPARE(st.cmd, Cmd::ListEdge);
+        QCOMPARE(st.dir, 1);
+        QVERIFY(st.shift);
+        QCOMPARE(n.row(), int(Row::List));
+    }
     void pickers_single_list()
     {
         Nav n;

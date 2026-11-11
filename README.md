@@ -85,7 +85,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | Right / Left | into the message / back to the list; inside a row, between buttons, attachments, links |
 | Enter | on a message in the list: into the message, as Right; press the button; open the attachment or link |
 | PgUp / PgDn | scroll the message by a page, from the list too |
-| Home / End | in the message text: to its top / its end |
+| Home / End | in the list: the first / last loaded message, it opens at once; in the message text: to its top / its end |
 | `d`, Del | delete (to Trash), cursor to the next one; in Trash and Spam it deletes forever, on the second press only |
 | `r` | reply |
 | `c` | compose |
@@ -111,6 +111,7 @@ Selecting several messages works as in a file manager:
 | Ctrl+Up / Down | move the cursor, selection stays |
 | Ctrl+Space | mark / unmark the message under the cursor |
 | Shift+Up / Down | range from the anchor to the cursor |
+| Shift+Home / End, Ctrl+Home / End | as Shift / Ctrl with Up / Down, to the first / last loaded message |
 | plain Up / Down | clear the selection |
 | Ctrl+A | all shown messages: the loaded rows of the folder or of the search results |
 | Ctrl+click, Shift+click | one message, a range |

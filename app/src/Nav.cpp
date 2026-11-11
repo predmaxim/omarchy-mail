@@ -75,6 +75,8 @@ Step Nav::press(const KeyPress &k, const NavShape &s)
         }
         if (a == A::Up || a == A::Down)
             return {Cmd::ListMove, 0, dir, k.ctrl, k.shift};
+        if (a == A::Home || a == A::End)
+            return {Cmd::ListEdge, 0, a == A::Home ? -1 : 1, k.ctrl, k.shift};
         if (a == A::Right || a == A::Enter) {
             Row r = neighbour(Row::Outbox, 1, s);
             if (count(Row::Outbox, s) > 0)

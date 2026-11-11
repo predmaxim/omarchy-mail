@@ -169,6 +169,9 @@ void App::run(const Step &st, bool repeat)
     case Cmd::ListMove:
         m_list->move(st.dir, st.ctrl, st.shift);
         return;
+    case Cmd::ListEdge:
+        m_list->move(st.dir * m_list->rowCount(), st.ctrl, st.shift);   // move clamps to the first / last loaded row
+        return;
     case Cmd::ScrollLines:
     case Cmd::ScrollPages:
     case Cmd::ScrollTop:

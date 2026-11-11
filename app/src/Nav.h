@@ -20,7 +20,7 @@ struct NavShape {
 enum class Cmd {
     None, FocusSearch, OpenPicker, PressAction, ListMove, EnterLetter, OpenAttachment,
     PreviewAttachment, SaveAttachment, OpenLink, PressOutbox, ScrollLines, ScrollPages,
-    ScrollTop, ScrollEnd
+    ScrollTop, ScrollEnd, ListEdge
 };
 
 struct Step {
