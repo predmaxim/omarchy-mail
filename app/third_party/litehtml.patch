@@ -221,7 +221,7 @@ index 0099ec97..9755fe79 100644
          m_intrinsic_min_size.width = 0_px;
      }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
-index e2a8344b..ac4a7582 100644
+index e2a8344b..27d04a87 100644
 --- a/src/render_item.cpp
 +++ b/src/render_item.cpp
 @@ -48,6 +48,11 @@ void litehtml::render_item::update_intrinsic_size()
@@ -276,7 +276,23 @@ index e2a8344b..ac4a7582 100644
          }
          if(!css().get_min_height().is_predefined() && css().get_min_height().units() != css_units_percentage)
          {
-@@ -207,6 +213,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
+@@ -169,6 +175,15 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
+     m_margins.top    = m_element->css().get_margins().top.calc_percent(parent_width);
+     m_margins.bottom = m_element->css().get_margins().bottom.calc_percent(parent_width);
+ 
++    // CSS 2.1 8.3: margins apply to all elements except those with table display types other than table-caption,
++    // table and inline-table
++    if(is_one_of(m_element->css().get_display(), display_table_cell, display_table_row, display_table_row_group,
++                 display_table_header_group, display_table_footer_group, display_table_column,
++                 display_table_column_group))
++    {
++        m_margins = margins();
++    }
++
+     m_padding.top    = m_element->css().get_padding().top.calc_percent(parent_width);
+     m_padding.bottom = m_element->css().get_padding().bottom.calc_percent(parent_width);
+ }
+@@ -207,6 +222,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
              m_margins.right = parent_width - el_width;
              m_margins.right = std::max<pixel_t>(m_margins.right, 0_px);
          }
@@ -296,7 +312,7 @@ index e2a8344b..ac4a7582 100644
      }
      return 0_px;
  }
-@@ -1710,6 +1729,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+@@ -1710,6 +1738,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
  
      calc_cb_length(src_el()->css().get_min_width(), cb_context.width, ret.min_width);
      calc_cb_length(src_el()->css().get_max_width(), cb_context.width, ret.max_width);
@@ -315,7 +331,7 @@ index e2a8344b..ac4a7582 100644
  
      calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
      calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
-@@ -1737,13 +1768,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+@@ -1737,13 +1777,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
  
      ret.unclamped_render_width = ret.render_width.value;
  

@@ -553,6 +553,20 @@ private Q_SLOTS:
                        + a + "</td>").value(0), 100);
     }
 
+    // CSS 2.1 §8.3: margins do not apply to table cells (litehtml indented and pushed down a cell by its margin; with
+    // the narrower columns of litehtml master a card row with margin:36px no longer fitted and wrapped)
+    void cells_have_no_margins()
+    {
+        const Rendered r = run(job(QStringLiteral(
+            "<!doctype html><body style=\"margin:0\"><table style=\"border-spacing:0\"><tr><td style=\"margin:36px;padding:0\">"
+            "<a href=\"https://x.org/1\" style=\"display:block;width:200px\">Hg</a></td><td style=\"padding:0\">"
+            "<a href=\"https://x.org/2\" style=\"display:block\">Xy</a></td></tr></table></body>")));
+        QList<QPoint> v;
+        for (const DocumentContainer::Link &l : r.links)
+            v << l.rect.topLeft();
+        QCOMPARE(v, (QList<QPoint>{QPoint(0, 0), QPoint(200, 0)}));
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {
