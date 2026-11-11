@@ -186,6 +186,22 @@ index 48f79487..ba085243 100644
          {
              if(line_height.has_value())
              {
+diff --git a/src/render_image.cpp b/src/render_image.cpp
+index 0099ec97..f8078246 100644
+--- a/src/render_image.cpp
++++ b/src/render_image.cpp
+@@ -156,8 +156,9 @@ void litehtml::render_item_image::calc_intrinsic_size()
+     src_el()->get_content_size(sz, 0_px);
+ 
+     m_intrinsic_min_size.width = m_intrinsic_max_size.width = sz.width;
+-    // Compressible replaced element: a percentage width contributes 0 to the min-content size
+-    if(!css().get_width().is_predefined() && css().get_width().units() == css_units_percentage)
++    // Compressible replaced element: a percentage width or max-width contributes 0 to the min-content size
++    if((!css().get_width().is_predefined() && css().get_width().units() == css_units_percentage) ||
++       (!css().get_max_width().is_predefined() && css().get_max_width().units() == css_units_percentage))
+     {
+         m_intrinsic_min_size.width = 0_px;
+     }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
 index e2a8344b..30920a91 100644
 --- a/src/render_item.cpp

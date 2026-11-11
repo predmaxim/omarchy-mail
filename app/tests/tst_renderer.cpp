@@ -2,6 +2,7 @@
 #include "Letter.h"
 #include "Recolor.h"
 
+#include <QBuffer>
 #include <QCryptographicHash>
 #include <QFile>
 #include <QImage>
@@ -51,6 +52,18 @@ static int redPixels(const QImage &img)
         for (int x = 0; x < img.width(); ++x)
             n += isRed(img.pixel(x, y));
     return n;
+}
+
+// a 300x60 red picture as a data: URL
+static QString widePicture()
+{
+    QImage wide(300, 60, QImage::Format_RGB32);
+    wide.fill(Qt::red);
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    wide.save(&buf, "PNG");
+    return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
 }
 
 class TstRenderer : public QObject
@@ -450,6 +463,19 @@ private Q_SLOTS:
         };
         QCOMPARE(width("width:100%;max-width:600px", "Hg"), 600);
         QCOMPARE(width("max-width:600px", QStringLiteral("Hg ").repeated(70)), 600);
+    }
+
+    // css-sizing-3 §5.2.1: a picture's percentage max-width counts as zero in its min-content contribution, so
+    // it shrinks to a fixed-width cell or table (litehtml master widened the column to the picture's own width)
+    void picture_max_width_fits_its_cell()
+    {
+        const QString img = QStringLiteral("<img src=\"%1\" style=\"max-width:100%;display:block\">").arg(widePicture());
+        const auto size = [&](const QString &table) {
+            const Rendered r = run(job(QStringLiteral("<!doctype html><body style=\"margin:0\">%1</body>").arg(table.arg(img))));
+            return r.doc ? r.doc->boxes(QStringLiteral("img")).value(0).size() : QSize();
+        };
+        QCOMPARE(size("<table cellspacing=\"0\"><tr><td style=\"width:120px;padding:0\">%1</td></tr></table>"), QSize(120, 24));
+        QCOMPARE(size("<table cellspacing=\"0\" style=\"width:120px\"><tr><td style=\"padding:0\">%1</td></tr></table>"), QSize(120, 24));
     }
 
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
