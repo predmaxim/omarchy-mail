@@ -124,11 +124,14 @@ The mailboxes page (the gear) has keys of its own:
 
 | Key | Action |
 |---|---|
-| Up / Down | from the "Letter text in the list" switch to the mailboxes, then down into the form that adds one |
-| Enter, Space, Left / Right | on the switch: show or hide the letter text under the subjects in the list (a click too) |
-| Enter | on a mailbox: edit the sender name; on a mailbox whose login failed: try again |
+| Up / Down | the "Letter text in the list" switch, the mailboxes and "Add a mailbox"; the form below shows the row under the cursor |
+| Enter | on the switch: flip it; on a row: go into the form; in the form's last field: Save (Add) |
+| Space, Left / Right | flip the switch (a click too): show or hide the letter text under the subjects in the list |
+| Up / Down, Tab | between the form's fields |
 | `d`, Del | remove the mailbox, on the second press only |
-| Esc | back to the mail |
+| Esc | from the form back to its row, from the list back to the mail |
+
+The form of a mailbox shows its address and type, and edits the sender name and a new app password (empty: unchanged); Other IMAP also its login and servers. Save tries a new password, login or IMAP server with a trial login first and stores nothing if it fails; the mailbox's mail, queued actions and outbox stay. A refused login shows here with "Retry login". Edits not saved are dropped when the cursor moves to another row.
 
 Files of the window:
 

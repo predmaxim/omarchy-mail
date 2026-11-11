@@ -4,7 +4,7 @@
 using namespace om;
 using namespace om::test;
 
-// App part 3: the mailboxes page — add and save (on their own connection), remove, retry, rename.
+// App part 3: the mailboxes page — add and save (on their own connection), remove, retry.
 class TstAppAccounts : public QObject, AppHarness {
     Q_OBJECT
 
@@ -135,18 +135,6 @@ private Q_SLOTS:
         app->retryAccount("me@yandex.ru");
         QTRY_COMPARE(sent("sync").size(), before + 1);
         QCOMPARE(body(sent("sync").last()), QJsonObject({{"cmd", "sync"}, {"account", "me@yandex.ru"}}));
-    }
-
-    void rename_request_shape()
-    {
-        d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
-        bootList();
-        const auto accountsBefore = sent("accounts").size();
-        app->renameAccount("me@gmail.com", "Max Petrov");
-        QTRY_COMPARE(sent("account_update").size(), 1);
-        QCOMPARE(body(sent("account_update").at(0)),
-                 QJsonObject({{"cmd", "account_update"}, {"email", "me@gmail.com"}, {"name", "Max Petrov"}}));
-        QTRY_VERIFY(sent("accounts").size() > accountsBefore);   // the page shows the new name
     }
 
     void update_request_shape()

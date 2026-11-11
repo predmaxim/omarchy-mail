@@ -1,7 +1,7 @@
 #pragma once
 // Window controller: mailboxes, folders, the mail list, search and maild events;
 // actions on the mail, their undo, auto-read and the window's keys (AppKeys.cpp);
-// the mailboxes page: add, save, remove, retry, rename (AppAccounts.cpp).
+// the mailboxes page: add, save, remove, retry (AppAccounts.cpp).
 #include "Nav.h"
 #include <QHash>
 #include <QJsonArray>
@@ -104,7 +104,6 @@ public:
     Q_INVOKABLE void updateAccount(const QVariantMap &form);
     Q_INVOKABLE void removeAccount(const QString &email);   // the second call within 3 s removes
     Q_INVOKABLE void retryAccount(const QString &email);
-    Q_INVOKABLE void renameAccount(const QString &email, const QString &name);
 
 Q_SIGNALS:
     void changed();

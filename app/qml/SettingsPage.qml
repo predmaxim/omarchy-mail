@@ -1,32 +1,53 @@
 import QtQuick
 
-// The mailboxes page (spec «Ящики и вход»; rules §9: no tabs, Esc — back): the «List» switch, the mailboxes with
-// their state, then "Add a mailbox". ↑/↓ walk the switch, the mailboxes and the form; on a mailbox d / Del removes it
-// (twice), Enter logs in again after a refused login, else edits its sender name. Addresses, names and service words
-// are plain text.
+// The mailboxes page (spec «Ящики и вход», round 2 §4; rules §9: no tabs, Esc — back): the «List» switch, the
+// mailboxes with their state, then «Add a mailbox»; the form below shows the row under the cursor. ↑/↓ walk the
+// switch, the rows and the form; Enter on a row goes into the form; on a mailbox d / Del removes it (twice). Esc: from
+// the form back to the row, from the list back to the mail. Addresses, names and service words are plain text.
 FocusScope {
     id: page
-    property string provider: "gmail"
-    property string renaming: ""   // the mailbox whose sender name is being edited
+    property string provider: "gmail"   // the one chosen on «Add a mailbox»
+    readonly property var acc: app.accounts[rows.currentIndex]   // the mailbox under the cursor; undefined on «Add»
+    readonly property bool onMailbox: acc !== undefined
+    readonly property string formProvider: onMailbox ? acc.provider : provider
+    // another row: its own form, typed edits go; a status event rebuilds `acc` but keeps the address, and the typing
+    readonly property string formEmail: acc ? acc.email : ""
+    onFormEmailChanged: fill()
     readonly property var providers: [{id: "gmail", label: "Gmail"}, {id: "yandex", label: "Yandex"},
                                       {id: "imap", label: i18n.t("Other IMAP")}]
     readonly property string helpUrl: ({gmail: "https://myaccount.google.com/apppasswords",
-                                        yandex: "https://id.yandex.ru/security/app-passwords"})[provider] || ""
-    readonly property var fields: provider === "imap" ? [email, name, password, login, imapHost, imapPort, smtpHost, smtpPort]
-                                                      : [email, name, password]
+                                        yandex: "https://id.yandex.ru/security/app-passwords"})[formProvider] || ""
+    readonly property var fields: (onMailbox ? [name, password] : [email, name, password])
+                                  .concat(formProvider === "imap" ? [login, imapHost, imapPort, smtpHost, smtpPort] : [])
     readonly property Item focused: Window.activeFocusItem
     readonly property int labelWidth: theme.space(170)
 
-    function focusFirst() { (rows.count > 0 ? rows : providerRow).forceActiveFocus() }
+    function focusFirst() { (app.accounts.length > 0 ? rows : providerRow).forceActiveFocus() }
+    function fill() {   // the form from the row under the cursor: a mailbox's settings, or empty to add one
+        const a = acc || {}
+        email.text = ""
+        name.text = a.name || ""
+        password.text = ""
+        login.text = a.login || ""
+        imapHost.text = a.imapHost || ""
+        imapPort.text = String(a.imapPort || 993)
+        smtpHost.text = a.smtpHost || ""
+        smtpPort.text = String(a.smtpPort || 465)
+    }
     function submit() {
         app.addAccount({provider: provider, email: email.text, name: name.text, password: password.text, login: login.text,
                         imapHost: imapHost.text, imapPort: imapPort.text, smtpHost: smtpHost.text, smtpPort: smtpPort.text})
         password.text = ""   // after every attempt
     }
-    function enter(field) {   // Enter: the next field; in the last one, Add
+    function save() {   // an empty password: unchanged
+        app.updateAccount({email: acc.email, name: name.text, password: password.text, login: login.text,
+                           imapHost: imapHost.text, imapPort: imapPort.text, smtpHost: smtpHost.text, smtpPort: smtpPort.text})
+        password.text = ""   // after every attempt
+    }
+    function enter(field) {   // Enter: the next field; in the last one, Save or Add
         const i = fields.indexOf(field)
         if (i === fields.length - 1)
-            submit()
+            onMailbox ? save() : submit()
         else
             fields[i + 1].forceActiveFocus()
     }
@@ -43,16 +64,16 @@ FocusScope {
             flick.contentY = Math.min(flick.contentHeight - flick.height, bottom - flick.height + theme.space(8))
     }
     onFocusedChanged: reveal(focused === rows ? rows.currentItem : focused)
-    Keys.onEscapePressed: app.closeSettings()
-    onVisibleChanged: if (!visible) password.text = ""   // a typed password doesn't wait in a hidden page
+    // the list's keys are on its current row, so `activeFocus`, not `focused === rows`
+    Keys.onEscapePressed: rows.activeFocus || previewRow.activeFocus ? app.closeSettings() : rows.forceActiveFocus()
+    onVisibleChanged: if (!visible) fill()   // typed edits and a password don't wait in a hidden page
 
     Connections {
         target: app
+        // the list grows by one: an int model puts its cursor on the first row, and the add form goes
         function onAccountAdded() {
-            for (const f of [email, name, login, imapHost, smtpHost])
-                f.text = ""
-            imapPort.text = "993"
-            smtpPort.text = "465"
+            page.fill()
+            rows.forceActiveFocus()
         }
     }
 
@@ -107,6 +128,59 @@ FocusScope {
                 inputMethodHints: echoMode === TextInput.Password ? Qt.ImhSensitiveData | Qt.ImhNoPredictiveText : Qt.ImhNone
                 onAccepted: page.enter(field)
             }
+        }
+    }
+
+    component Info: Item {   // a read-only line of the form: a label and plain text, no keys
+        id: info
+        property string label
+        property string value
+        width: parent.width
+        height: infoText.implicitHeight + 2 * theme.space(6)
+        Caption {
+            anchors.verticalCenter: parent.verticalCenter
+            width: page.labelWidth - theme.space(12)
+            elide: Text.ElideRight
+            text: info.label
+        }
+        Text {
+            id: infoText
+            x: page.labelWidth + theme.space(12)
+            width: parent.width - x
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: info.value
+            color: theme.foreground
+            font.pixelSize: theme.fontTitle
+        }
+    }
+
+    component Button: Rectangle {   // a framed command: Enter or a click
+        id: button
+        property string text
+        signal clicked()
+        readonly property bool hasCursor: activeFocus || buttonMouse.containsMouse
+        implicitWidth: buttonText.implicitWidth + 2 * theme.space(14)
+        implicitHeight: buttonText.implicitHeight + 2 * theme.space(6)
+        radius: theme.space(8)
+        color: hasCursor ? theme.hoverFill : "transparent"
+        border.width: 1
+        border.color: hasCursor ? theme.cursorBorder : theme.muted
+        Keys.onReturnPressed: clicked()
+        Keys.onEnterPressed: clicked()
+        Text {
+            id: buttonText
+            anchors.centerIn: parent
+            text: button.text
+            color: theme.foreground
+            font.pixelSize: theme.fontTitle
+        }
+        MouseArea {
+            id: buttonMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: button.clicked()
         }
     }
 
@@ -230,7 +304,6 @@ FocusScope {
             }
 
             Caption {
-                visible: rows.count > 0
                 topPadding: theme.space(14)
                 text: i18n.t("Mailboxes")
             }
@@ -239,29 +312,25 @@ FocusScope {
                 objectName: "accountRows"
                 width: parent.width
                 height: contentHeight
-                visible: count > 0
                 interactive: false
                 keyNavigationEnabled: true
-                model: app.accounts.length   // a count: new status texts don't rebuild the rows or move the cursor
+                // a count: new status texts don't rebuild the rows or move the cursor; the last row is «Add a mailbox»
+                model: app.accounts.length + 1
                 spacing: theme.space(2)
                 onCurrentIndexChanged: if (activeFocus) page.reveal(currentItem)
                 KeyNavigation.up: previewRow
-                KeyNavigation.down: providerRow
+                KeyNavigation.down: providerRow   // only from the last row, «Add a mailbox»
                 KeyNavigation.priority: KeyNavigation.AfterItem   // the list moves first, ↑/↓ at its ends leave it
                 Keys.onPressed: e => {
-                    const acc = app.accounts[currentIndex]
-                    if (!acc || (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)))
+                    if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
                         return
                     const latin = e.key >= Qt.Key_A && e.key <= Qt.Key_Z
-                    if (e.key === Qt.Key_Delete || (latin ? e.key === Qt.Key_D : e.nativeScanCode === 40)) {
-                        if (!e.isAutoRepeat)   // a held d is not the second press
-                            app.removeAccount(acc.email)
+                    if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
+                        (page.onMailbox ? name : providerRow).forceActiveFocus()
                         e.accepted = true
-                    } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
-                        if (acc.authFailed)
-                            app.retryAccount(acc.email)
-                        else
-                            currentItem.rename()
+                    } else if (page.onMailbox && (e.key === Qt.Key_Delete || (latin ? e.key === Qt.Key_D : e.nativeScanCode === 40))) {
+                        if (!e.isAutoRepeat)   // a held d is not the second press
+                            app.removeAccount(page.acc.email)
                         e.accepted = true
                     }
                 }
@@ -269,20 +338,9 @@ FocusScope {
                 delegate: Rectangle {
                     id: mailbox
                     required property int index
+                    readonly property bool adder: index === app.accounts.length   // the last row: «Add a mailbox»
                     readonly property var acc: app.accounts[index] || ({})
-                    readonly property bool editing: page.renaming !== "" && page.renaming === acc.email
                     readonly property bool hasCursor: (rows.activeFocus && ListView.isCurrentItem) || mouse.containsMouse
-                    // however the edit ends: else the list, a focus scope, would hand the keys back to the hidden field
-                    onEditingChanged: if (!editing) renameField.focus = false
-                    function rename() {
-                        renameField.text = acc.name
-                        page.renaming = acc.email
-                        renameField.forceActiveFocus()
-                    }
-                    function stopRenaming() {
-                        page.renaming = ""
-                        rows.forceActiveFocus()
-                    }
                     width: rows.width
                     height: lines.implicitHeight + 2 * theme.space(8)
                     radius: theme.space(8)
@@ -291,12 +349,11 @@ FocusScope {
                     border.color: hasCursor ? theme.cursorBorder : "transparent"
                     Behavior on color { ColorAnimation { duration: 60 } }
 
-                    MouseArea {   // under the name field: a click there types in it
+                    MouseArea {
                         id: mouse
                         anchors.fill: parent
                         hoverEnabled: true
                         onClicked: {
-                            page.renaming = ""   // a click on a row ends an edit
                             rows.currentIndex = mailbox.index
                             rows.forceActiveFocus()
                         }
@@ -317,7 +374,7 @@ FocusScope {
                                 anchors.rightMargin: theme.space(12)
                                 elide: Text.ElideRight
                                 textFormat: Text.PlainText
-                                text: mailbox.acc.email || ""
+                                text: mailbox.adder ? i18n.t("Add a mailbox") : mailbox.acc.email || ""
                                 color: theme.foreground
                                 font.pixelSize: theme.fontHeading
                             }
@@ -335,7 +392,7 @@ FocusScope {
                         }
                         Text {
                             width: parent.width
-                            visible: !mailbox.editing
+                            visible: !mailbox.adder
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                             text: [mailbox.acc.name, ({gmail: "Gmail", yandex: "Yandex", imap: "IMAP"})[mailbox.acc.provider]]
@@ -343,59 +400,41 @@ FocusScope {
                             color: theme.dim
                             font.pixelSize: theme.fontBody
                         }
-                        Item {
-                            width: parent.width
-                            height: nameFrame.height
-                            visible: mailbox.editing
-                            Caption {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: page.labelWidth - theme.space(24)
-                                elide: Text.ElideRight
-                                text: i18n.t("Sender name")
-                            }
-                            Frame {
-                                id: nameFrame
-                                x: page.labelWidth - theme.space(12)
-                                width: parent.width - x
-                                height: renameField.implicitHeight + 2 * theme.space(6)
-                                lit: renameField.activeFocus
-                                TextInput {
-                                    id: renameField
-                                    objectName: "renameField"
-                                    anchors.fill: parent
-                                    anchors.leftMargin: theme.space(12)
-                                    anchors.rightMargin: theme.space(12)
-                                    verticalAlignment: TextInput.AlignVCenter
-                                    clip: true
-                                    color: theme.foreground
-                                    selectionColor: theme.selection
-                                    selectedTextColor: theme.foreground
-                                    font.pixelSize: theme.fontTitle
-                                    function save() {
-                                        app.renameAccount(mailbox.acc.email, text)
-                                        mailbox.stopRenaming()
-                                    }
-                                    Keys.onReturnPressed: save()   // accepted here: TextInput would pass Enter on to the list
-                                    Keys.onEnterPressed: save()
-                                    // the keys went elsewhere in the window: the edit ends; another window: it waits
-                                    onActiveFocusChanged: if (!activeFocus && mailbox.editing && Window.active) page.renaming = ""
-                                    Keys.onEscapePressed: mailbox.stopRenaming()
-                                    Keys.onUpPressed: {}     // eaten: the list's cursor stays on the row being edited
-                                    Keys.onDownPressed: {}
-                                }
-                            }
-                        }
                     }
                 }
             }
 
-            Caption {
-                topPadding: theme.space(14)
-                text: i18n.t("Add a mailbox")
+            Item {   // the list, then its form: a gap as above a caption
+                width: 1
+                height: theme.space(6)
+            }
+            Info {
+                objectName: "infoEmail"
+                visible: page.onMailbox
+                label: i18n.t("Email")
+                value: page.formEmail
+            }
+            Info {
+                objectName: "infoType"
+                visible: page.onMailbox
+                label: i18n.t("Type")
+                value: page.providers.find(p => p.id === page.formProvider)?.label ?? ""
+            }
+            Text {   // why the last login failed; «Retry login» stands next to Save
+                objectName: "loginState"
+                x: page.labelWidth + theme.space(12)
+                width: parent.width - x
+                visible: page.onMailbox && page.acc.authFailed
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: page.acc?.statusText ?? ""
+                color: theme.urgent
+                font.pixelSize: theme.fontBody
             }
             Row {
                 id: providerRow
                 objectName: "providerRow"
+                visible: !page.onMailbox
                 spacing: theme.space(8)
                 KeyNavigation.up: rows
                 KeyNavigation.down: email
@@ -419,6 +458,7 @@ FocusScope {
             Field {
                 id: email
                 objectName: "emailField"
+                visible: !page.onMailbox
                 label: i18n.t("Email")
                 KeyNavigation.up: providerRow
                 KeyNavigation.down: name
@@ -433,7 +473,7 @@ FocusScope {
             Field {
                 id: password
                 objectName: "passwordField"
-                label: i18n.t("App password")
+                label: page.onMailbox ? i18n.t("New app password") : i18n.t("App password")
                 echoMode: TextInput.Password
                 KeyNavigation.up: name
                 KeyNavigation.down: help
@@ -485,7 +525,7 @@ FocusScope {
             Field {
                 id: login
                 objectName: "loginField"
-                visible: page.provider === "imap"
+                visible: page.formProvider === "imap"
                 label: i18n.t("Login")
                 KeyNavigation.up: password
                 KeyNavigation.down: imapHost
@@ -493,14 +533,14 @@ FocusScope {
             Field {
                 id: imapHost
                 objectName: "imapHostField"
-                visible: page.provider === "imap"
+                visible: page.formProvider === "imap"
                 label: i18n.t("IMAP server")
                 KeyNavigation.up: login
                 KeyNavigation.down: imapPort
             }
             Field {
                 id: imapPort
-                visible: page.provider === "imap"
+                visible: page.formProvider === "imap"
                 label: i18n.t("IMAP port")
                 text: "993"
                 input.maximumLength: 5
@@ -509,65 +549,70 @@ FocusScope {
             }
             Field {
                 id: smtpHost
-                visible: page.provider === "imap"
+                visible: page.formProvider === "imap"
                 label: i18n.t("SMTP server")
                 KeyNavigation.up: imapPort
                 KeyNavigation.down: smtpPort
             }
             Field {
                 id: smtpPort
-                visible: page.provider === "imap"
+                visible: page.formProvider === "imap"
                 label: i18n.t("SMTP port")
                 text: "465"
                 input.maximumLength: 5
                 KeyNavigation.up: smtpHost
-                KeyNavigation.down: addButton
+                KeyNavigation.down: page.onMailbox ? saveButton : addButton
             }
             Item {
                 width: parent.width
-                height: addButton.height + theme.space(6)
-                Rectangle {
-                    id: addButton
-                    objectName: "addButton"
-                    readonly property bool hasCursor: activeFocus || addMouse.containsMouse
+                height: buttons.height + theme.space(6)
+                Row {   // ←/→ between Save and Retry login
+                    id: buttons
                     x: page.labelWidth
                     y: theme.space(6)
-                    implicitWidth: addText.implicitWidth + 2 * theme.space(14)
-                    implicitHeight: addText.implicitHeight + 2 * theme.space(6)
-                    radius: theme.space(8)
-                    color: hasCursor ? theme.hoverFill : "transparent"
-                    border.width: 1
-                    border.color: hasCursor ? theme.cursorBorder : theme.muted
-                    KeyNavigation.up: page.provider === "imap" ? smtpPort : help
-                    Keys.onReturnPressed: page.submit()
-                    Keys.onEnterPressed: page.submit()
-                    Text {
-                        id: addText
-                        anchors.centerIn: parent
+                    spacing: theme.space(8)
+                    Button {
+                        id: addButton
+                        objectName: "addButton"
+                        visible: !page.onMailbox
                         text: app.adding ? i18n.t("Checking the login…") : i18n.t("Add")
-                        color: theme.foreground
-                        font.pixelSize: theme.fontTitle
-                    }
-                    MouseArea {
-                        id: addMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
+                        KeyNavigation.up: page.formProvider === "imap" ? smtpPort : help
                         onClicked: page.submit()
+                    }
+                    Button {
+                        id: saveButton
+                        objectName: "saveButton"
+                        visible: page.onMailbox
+                        text: page.acc?.saving ? i18n.t("Checking the login…") : i18n.t("Save")
+                        KeyNavigation.up: page.formProvider === "imap" ? smtpPort : help
+                        KeyNavigation.right: retryButton
+                        onClicked: page.save()
+                    }
+                    Button {
+                        id: retryButton
+                        objectName: "retryButton"
+                        visible: page.onMailbox && page.acc.authFailed
+                        text: i18n.t("Retry login")
+                        KeyNavigation.up: page.formProvider === "imap" ? smtpPort : help
+                        KeyNavigation.left: saveButton
+                        onClicked: app.retryAccount(page.acc.email)
+                        // the login works again: Qt would leave the keys on the hidden button
+                        onVisibleChanged: if (!visible && activeFocus) saveButton.forceActiveFocus()
                     }
                 }
             }
             Text {
-                id: addError
-                objectName: "addError"
+                id: formError
+                objectName: "formError"
                 x: page.labelWidth
                 width: parent.width - x
                 visible: text !== ""
                 wrapMode: Text.Wrap
                 textFormat: Text.PlainText
-                text: app.addError
+                text: page.onMailbox ? page.acc.saveError || "" : app.addError
                 color: theme.urgent
                 font.pixelSize: theme.fontBody
-                onTextChanged: if (addError.text !== "") page.reveal(addError)
+                onTextChanged: if (formError.text !== "") page.reveal(formError)
             }
         }
     }

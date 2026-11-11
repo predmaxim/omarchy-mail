@@ -1,4 +1,4 @@
-// App's mailboxes page: add, save a mailbox's settings, remove, retry the login, rename the sender.
+// App's mailboxes page: add, save a mailbox's settings, remove, retry the login.
 #include "App.h"
 #include "Client.h"
 #include "I18n.h"
@@ -125,16 +125,6 @@ void App::removeAccount(const QString &email)
 void App::retryAccount(const QString &email)
 {
     m_client->request({{"cmd", "sync"}, {"account", email}}, ok([](const QJsonValue &) {}));
-}
-
-void App::renameAccount(const QString &email, const QString &name)
-{
-    m_client->request({{"cmd", "account_update"}, {"email", email}, {"name", name}}, ok([this](const QJsonValue &) {
-        m_client->request({{"cmd", "accounts"}}, ok([this](const QJsonValue &r) {
-            m_accounts = r.toArray();
-            Q_EMIT changed();
-        }));
-    }));
 }
 
 } // namespace om

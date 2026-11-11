@@ -841,7 +841,7 @@ private Q_SLOTS:
         QTRY_VERIFY(item("settingsPage")->isVisible());
         for (const char *hidden : {"mailList", "searchField", "letterView", "folderPicker"})
             QVERIFY2(!item(hidden)->isVisible(), hidden);
-        QTRY_COMPARE(item("accountRows")->property("count").toInt(), 2);
+        QTRY_COMPARE(item("accountRows")->property("count").toInt(), 3);   // the mailboxes and «Add a mailbox»
         QTRY_VERIFY(item("accountRows")->hasActiveFocus());
         if (const QString shot = qEnvironmentVariable("OM_SHOT_SETTINGS"); !shot.isEmpty())
             QVERIFY(win->grabWindow().save(shot));
@@ -858,63 +858,155 @@ private Q_SLOTS:
         s->start(0);
         QTRY_VERIFY(item("settingsPage")->isVisible());
         QVERIFY(!item("mailList")->isVisible());
-        QCOMPARE(item("accountRows")->property("count").toInt(), 0);
+        QCOMPARE(item("accountRows")->property("count").toInt(), 1);   // «Add a mailbox» only
         QTRY_VERIFY(item("providerRow")->hasActiveFocus());   // the first mailbox: the form has the keys
-        QTest::keyClick(win, Qt::Key_Up);   // past the empty list: the switch
+        QTest::keyClick(win, Qt::Key_Up);   // the «Add a mailbox» row
+        QVERIFY(item("accountRows")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Up);   // the switch
         QVERIFY(item("previewRow")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);
         QTest::keyClick(win, Qt::Key_Down);
         QVERIFY(item("providerRow")->hasActiveFocus());
     }
-    void settings_keys_rows_and_form()
+    void settings_form_follows_the_cursor()
     {
-        h.d->on("status", [](const QJsonObject &) {
+        auto down = std::make_shared<bool>(false), fixed = std::make_shared<bool>(false);
+        h.d->on("status", [down, fixed](const QJsonObject &) {
+            const QJsonValue gmail = *down ? QJsonValue(QJsonObject{{"offline", "no route"}}) : QJsonValue("online");
             return QJsonObject{{"result", QJsonObject{{"accounts", QJsonArray{
-                QJsonObject{{"email", "me@gmail.com"}, {"status", "online"}, {"queued", 0}},
-                QJsonObject{{"email", "me@yandex.ru"}, {"status", "auth_failed"}, {"queued", 0}}}}}}};
+                QJsonObject{{"email", "me@gmail.com"}, {"status", gmail}, {"queued", 0}},
+                QJsonObject{{"email", "me@yandex.ru"}, {"status", *fixed ? "online" : "auth_failed"}, {"queued", 0}}}}}}};
         });
         for (const char *cmd : {"account_remove", "account_update"})
             h.d->on(cmd, [](const QJsonObject &) { return QJsonObject{}; });
-        h.d->on("account_add", [](const QJsonObject &) { return QJsonObject{{"error", "AUTHENTICATIONFAILED"}}; });
         start();
-        s->app.pressAction(5);
+        s->app.openSettings();
         QQuickItem *rows = item("accountRows");
         QTRY_VERIFY(rows->hasActiveFocus());
         QTRY_VERIFY(s->app.accounts().value(1).toMap().value("authFailed").toBool());
+        QTRY_COMPARE(h.sent("sync").size(), 1);
+        const qsizetype syncs = 1;
         const int cursor = s->list.cursor();
+
+        QCOMPARE(rows->property("currentIndex").toInt(), 0);   // the form shows the first mailbox
+        QCOMPARE(item("infoEmail")->property("value").toString(), QString("me@gmail.com"));
+        QCOMPARE(item("infoType")->property("value").toString(), QString("Gmail"));
+        QQuickItem *name = item("nameField");
+        QCOMPARE(name->property("text").toString(), QString("Max"));
+        for (const char *hidden : {"emailField", "providerRow", "imapHostField", "addButton", "retryButton", "loginState"})
+            QVERIFY2(!item(hidden)->isVisible(), hidden);
+        QVERIFY(item("saveButton")->isVisible());
+        QTest::keyClick(win, Qt::Key_Return);   // into the form
+        QVERIFY(name->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_End);
+        type(" P");
+        *down = true;   // status churn while typing: the typed name stays
+        h.d->emitEvent({{"event", "status"}, {"accounts", QJsonArray()}});
+        QTRY_COMPARE(s->app.accounts().value(0).toMap().value("statusText").toString(), QString("offline"));
+        QCOMPARE(name->property("text").toString(), QString("Max P"));
+        QTest::keyClick(win, Qt::Key_Escape);   // back to the row, still on the page
+        QVERIFY(rows->hasActiveFocus());
+        QCOMPARE(s->app.page(), QString("settings"));
+        QCOMPARE(name->property("text").toString(), QString("Max P"));   // kept until the cursor leaves the row
 
         QTest::keyClick(win, Qt::Key_Down);
         QCOMPARE(rows->property("currentIndex").toInt(), 1);
         QCOMPARE(s->list.cursor(), cursor);   // the page's own cursor, not the mail list's
-        QTest::keyClick(win, Qt::Key_Return);   // a refused login: try again
-        QTRY_COMPARE(body(h.sent("sync").last()), QJsonObject({{"cmd", "sync"}, {"account", "me@yandex.ru"}}));
-
+        QCOMPARE(item("infoEmail")->property("value").toString(), QString("me@yandex.ru"));
+        QVERIFY(item("loginState")->isVisible());
+        QCOMPARE(item("loginState")->property("text").toString(), QString("me@yandex.ru: login rejected"));
+        QVERIFY(item("retryButton")->isVisible());
         QTest::keyClick(win, Qt::Key_Up);
-        QTest::keyClick(win, Qt::Key_Return);   // the sender name
-        QQuickItem *rename = itemAt(rows, 0)->findChild<QQuickItem *>("renameField");
-        QVERIFY(rename && rename->hasActiveFocus());
-        QCOMPARE(rename->property("text").toString(), QString("Max"));
-        QTest::keyClick(win, Qt::Key_End);
-        type(" P");
-        QTest::keyClick(win, Qt::Key_Escape);   // cancelled, still on the page
-        QCOMPARE(win->activeFocusItem(), rows);
-        QCOMPARE(s->app.page(), QString("settings"));
-        QTest::keyClick(win, Qt::Key_Return);
-        QTest::keyClick(win, Qt::Key_End);
-        type(" P");
-        QTest::keyClick(win, Qt::Key_Return);
-        QTRY_COMPARE(h.sent("account_update").size(), 1);
-        QCOMPARE(body(h.sent("account_update").at(0)),
-                 QJsonObject({{"cmd", "account_update"}, {"email", "me@gmail.com"}, {"name", "Max P"}}));
-        QCOMPARE(win->activeFocusItem(), rows);
+        QCOMPARE(name->property("text").toString(), QString("Max"));   // the edit was dropped
 
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Return);   // a refused login: the form, not a retry
+        QVERIFY(name->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);
+        QQuickItem *password = item("passwordField");
+        QVERIFY(password->hasActiveFocus());
+        QCOMPARE(password->property("label").toString(), QString("New app password"));
+        type("new pw");
+        QTest::keyClick(win, Qt::Key_Return);   // the last field: Save
+        QTRY_COMPARE(h.sent("account_update").size(), 1);
+        QCOMPARE(body(h.sent("account_update").at(0)), QJsonObject({{"cmd", "account_update"}, {"email", "me@yandex.ru"},
+                                                                   {"name", "Max"}, {"password", "new pw"}}));
+        QCOMPARE(password->property("text").toString(), QString());
+        QCOMPARE(h.sent("sync").size(), syncs);
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("helpLink")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("saveButton")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Right);
+        QVERIFY(item("retryButton")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Return);
+        QTRY_COMPARE(h.sent("sync").size(), syncs + 1);
+        QCOMPARE(body(h.sent("sync").last()), QJsonObject({{"cmd", "sync"}, {"account", "me@yandex.ru"}}));
+        *fixed = true;   // the login works again: the button goes, its keys to Save
+        h.d->emitEvent({{"event", "status"}, {"accounts", QJsonArray()}});
+        QTRY_VERIFY(!item("retryButton")->isVisible());
+        QVERIFY(item("saveButton")->hasActiveFocus());
+        QVERIFY(!item("loginState")->isVisible());
+
+        QTest::keyClick(win, Qt::Key_Escape);
+        QVERIFY(rows->hasActiveFocus());
         QTest::keyClick(win, Qt::Key_D);
         QTest::keyClick(win, Qt::Key_D);
         QTRY_COMPARE(h.sent("account_remove").size(), 1);
-        QCOMPARE(h.sent("account_remove").at(0).value("email").toString(), QString("me@gmail.com"));
+        QCOMPARE(h.sent("account_remove").at(0).value("email").toString(), QString("me@yandex.ru"));
         QVERIFY(h.sent("act").isEmpty());
-
+        QTest::keyClick(win, Qt::Key_Escape);
+        QCOMPARE(s->app.page(), QString("main"));
+    }
+    void settings_form_of_an_imap_mailbox()
+    {
+        h.accounts.append(QJsonObject{{"email", "me@example.org"}, {"name", "Max"}, {"provider", "imap"}, {"login", "me"},
+                                      {"imap", QJsonObject{{"host", "mail.example.org"}, {"port", 993}}},
+                                      {"smtp", QJsonObject{{"host", "mail.example.org"}, {"port", 465}}},
+                                      {"append_sent", true}});
+        h.d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
+        start();
+        s->app.openSettings();
+        QQuickItem *rows = item("accountRows");
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QTRY_COMPARE(rows->property("count").toInt(), 4);
         QTest::keyClick(win, Qt::Key_Down);
-        QTest::keyClick(win, Qt::Key_Down);   // past the last mailbox: the providers
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(item("infoEmail")->property("value").toString(), QString("me@example.org"));
+        QCOMPARE(item("infoType")->property("value").toString(), QString("Other IMAP"));
+        QCOMPARE(item("loginField")->property("text").toString(), QString("me"));
+        QVERIFY(item("imapHostField")->isVisible());
+        QCOMPARE(item("imapHostField")->property("text").toString(), QString("mail.example.org"));
+        QVERIFY(!item("helpLink")->isVisible());
+        QTest::keyClick(win, Qt::Key_Return);
+        for (int i = 0; i < 6; ++i)   // to the SMTP port: the hidden help is skipped
+            QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Return);   // the last field: Save
+        QTRY_COMPARE(h.sent("account_update").size(), 1);
+        QCOMPARE(body(h.sent("account_update").at(0)),
+                 QJsonObject({{"cmd", "account_update"}, {"email", "me@example.org"}, {"name", "Max"}, {"login", "me"},
+                              {"imap", QJsonObject{{"host", "mail.example.org"}, {"port", 993}}},
+                              {"smtp", QJsonObject{{"host", "mail.example.org"}, {"port", 465}}}}));
+    }
+    void settings_add_row_and_form()
+    {
+        h.d->on("account_add", [](const QJsonObject &) { return QJsonObject{{"error", "AUTHENTICATIONFAILED"}}; });
+        start();
+        s->app.openSettings();
+        QQuickItem *rows = item("accountRows");
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QTRY_COMPARE(rows->property("count").toInt(), 3);
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Down);   // the last row: «Add a mailbox»
+        QCOMPARE(rows->property("currentIndex").toInt(), 2);
+        for (const char *shown : {"providerRow", "emailField", "addButton"})
+            QVERIFY2(item(shown)->isVisible(), shown);
+        for (const char *hidden : {"infoEmail", "saveButton"})
+            QVERIFY2(!item(hidden)->isVisible(), hidden);
+        QTest::keyClick(win, Qt::Key_D);
+        QTest::keyClick(win, Qt::Key_D);      // no mailbox here: nothing to remove
+
+        QTest::keyClick(win, Qt::Key_Down);   // past the last row: the providers
         QVERIFY(item("providerRow")->hasActiveFocus());
         QVERIFY(!item("imapHostField")->isVisible());
         QTest::keyClick(win, Qt::Key_Right);
@@ -930,58 +1022,29 @@ private Q_SLOTS:
         QVERIFY(item("nameField")->hasActiveFocus());
         QTest::keyClick(win, Qt::Key_Down);
         QVERIFY(item("passwordField")->hasActiveFocus());
+        QCOMPARE(item("passwordField")->property("label").toString(), QString("App password"));
         type("secret");
         QTest::keyClick(win, Qt::Key_Return);   // the last field: Add
         QTRY_COMPARE(h.sent("account_add").size(), 1);
         QCOMPARE(body(h.sent("account_add").at(0)), QJsonObject({{"cmd", "account_add"}, {"provider", "gmail"},
                                                                 {"email", "new@gmail.com"}, {"name", ""}, {"password", "secret"}}));
         QCOMPARE(item("passwordField")->property("text").toString(), QString());   // cleared after every attempt
-        QTRY_COMPARE(item("addError")->property("text").toString(), QString("AUTHENTICATIONFAILED"));
+        QTRY_COMPARE(item("formError")->property("text").toString(), QString("AUTHENTICATIONFAILED"));
         QCOMPARE(item("emailField")->property("text").toString(), QString("new@gmail.com"));
         QTest::keyClick(win, Qt::Key_Down);
         QVERIFY(item("helpLink")->hasActiveFocus());
         QTest::keyClick(win, Qt::Key_Down);
         QVERIFY(item("addButton")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Escape);   // back to the row, still on the page
+        QVERIFY(rows->hasActiveFocus());
+        QCOMPARE(s->app.page(), QString("settings"));
+        QTest::keyClick(win, Qt::Key_Up);
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(item("emailField")->property("text").toString(), QString());   // the cursor left the row: dropped
+        QVERIFY(h.sent("account_remove").isEmpty());
+        QVERIFY(h.sent("act").isEmpty());
         QTest::keyClick(win, Qt::Key_Escape);
         QCOMPARE(s->app.page(), QString("main"));
-    }
-    void rename_ends_when_the_keys_leave_it()
-    {
-        h.d->on("account_update", [](const QJsonObject &) { return QJsonObject{}; });
-        start();
-        s->app.pressAction(5);
-        QQuickItem *rows = item("accountRows");
-        QTRY_VERIFY(rows->hasActiveFocus());
-        QTRY_COMPARE(rows->property("count").toInt(), 2);
-        QTest::keyClick(win, Qt::Key_Return);   // the sender name of me@gmail.com
-        QQuickItem *rename = itemAt(rows, 0)->findChild<QQuickItem *>("renameField");
-        QCOMPARE(win->activeFocusItem(), rename);
-        type(" X");
-
-        QWindow other;   // another window and back: the edit stays, with the keys
-        other.resize(100, 100);
-        other.show();
-        other.requestActivate();
-        QTRY_VERIFY(!win->isActive());
-        win->requestActivate();
-        QVERIFY(QTest::qWaitForWindowActive(win));
-        QCOMPARE(win->activeFocusItem(), rename);
-        QVERIFY(rename->isVisible());
-
-        QMetaObject::invokeMethod(item("emailField"), "forceActiveFocus");   // a click on the form: the edit ends
-        QVERIFY(!rename->isVisible());
-        QTest::keyClick(win, Qt::Key_Up);
-        QTest::keyClick(win, Qt::Key_Up);
-        QVERIFY(rows->hasActiveFocus());   // the list's keys, not the hidden field's
-        QVERIFY(!rename->hasActiveFocus());
-        QTest::keyClick(win, Qt::Key_Return);     // a new edit of the row, nothing saved
-        QCOMPARE(win->activeFocusItem(), rename);
-        QCOMPARE(rename->property("text").toString(), QString("Max"));
-        QTest::keyClick(win, Qt::Key_Escape);
-        QVERIFY(rows->hasActiveFocus());
-        QVERIFY(!rename->hasActiveFocus());
-        QTest::qWait(100);
-        QVERIFY(h.sent("account_update").isEmpty());
     }
     void list_preview_switch()
     {
