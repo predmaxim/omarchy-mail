@@ -410,6 +410,30 @@ private Q_SLOTS:
                  (QList<int>{0, 360, 360, 240}));
     }
 
+    // CSS 2.1 §17.5.3: a row is at least as tall as each cell's computed height (litehtml ignored it, so empty
+    // spacer cells collapsed). In quirks mode that height includes the padding (quirks spec §3.13), not in others
+    void cell_height_holds_its_row()
+    {
+        const auto gap = [&](const QString &doctype, const QString &cells) {
+            const Rendered r = run(job(QStringLiteral(
+                "%1<html><body style=\"margin:0\"><a href=\"https://x.org/1\" style=\"display:block;line-height:20px\">above</a>"
+                "<table style=\"width:100%;border-collapse:collapse\"><tr>%2</tr></table>"
+                "<a href=\"https://x.org/2\" style=\"display:block;line-height:20px\">below</a></body></html>").arg(doctype, cells)));
+            return r.links.size() == 2 ? r.links.at(1).rect.top() - r.links.at(0).rect.bottom() - 1 : -1;
+        };
+        const QString standards = QStringLiteral("<!DOCTYPE html>"), quirks;
+        const QString xhtml = QStringLiteral("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" "
+                                             "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">");
+        const QString padded = QStringLiteral("<td style=\"height:40px;padding:10px 0\"></td>");
+        QCOMPARE(gap(standards, padded), 60);
+        QCOMPARE(gap(quirks, padded), 40);
+        QCOMPARE(gap(xhtml, padded), 60);   // not quirks mode: the quirk is quirks-only
+        QCOMPARE(gap(standards, "<td height=\"60\" style=\"padding:0\"></td>"), 60);
+        QCOMPARE(gap(standards, "<td style=\"height:40px;padding:10px 0;box-sizing:border-box\"></td>"), 40);
+        QCOMPARE(gap(standards, "<td style=\"height:30px;padding:0\"></td><td style=\"height:50px;padding:0\"></td>"), 50);
+        QCOMPARE(gap(standards, "<td style=\"height:20%;padding:0\"></td>"), 0);   // % of an auto table: ignored
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {

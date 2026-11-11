@@ -196,6 +196,27 @@ index b2109e71..957284e6 100644
      }
  	return 0;
  }
+diff --git a/src/render_table.cpp b/src/render_table.cpp
+index 97a8abf0..9eaf12f7 100644
+--- a/src/render_table.cpp
++++ b/src/render_table.cpp
+@@ -208,6 +208,16 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
+                 if (cell->rowspan <= 1)
+                 {
+                     m_grid->row(row).height = std::max(m_grid->row(row).height, cell->el->height());
++                    // CSS 2.1 17.5.3: a row is at least as tall as the computed height of each of its cells;
++                    // quirks mode: the height includes padding and borders (quirks spec 3.13)
++                    const css_length& h = cell->el->src_el()->css().get_height();
++                    if (!h.is_predefined() && h.units() != css_units_percentage)
++                    {
++                        pixel_t computed = src_el()->get_document()->to_pixels(h, cell->el->src_el()->css().get_font_metrics(), 0);
++                        if (cell->el->src_el()->css().get_box_sizing() == box_sizing_content_box && src_el()->get_document()->mode() != quirks_mode)
++                            computed += cell->el->content_offset_height();
++                        m_grid->row(row).height = std::max(m_grid->row(row).height, computed);
++                    }
+                 }
+                 else
+                 {
 diff --git a/src/string_id.cpp b/src/string_id.cpp
 index d197d244..999968a0 100644
 --- a/src/string_id.cpp
