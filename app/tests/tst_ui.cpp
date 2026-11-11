@@ -219,6 +219,21 @@ private Q_SLOTS:
         QTest::keyClick(win, Qt::Key_D);
         QTRY_COMPARE(h.sent("act").size(), 1);
     }
+    void picker_keys_open_the_lists_and_show_on_them()
+    {
+        start();
+        QTRY_VERIFY(item("accountPicker")->isVisible());
+        for (const auto &[name, key] : {std::pair{"accountPicker", "a"}, std::pair{"folderPicker", "g"}}) {
+            auto *cap = item(name)->findChild<QQuickItem *>("pickerKey");
+            QVERIFY2(cap && cap->isVisible(), name);
+            QCOMPARE(cap->property("text").toString(), QString(key));
+        }
+        QTest::keyClick(win, Qt::Key_G);
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Return);
+        QTRY_COMPARE(body(h.sent("list").last()), QJsonObject({{"cmd", "list"}, {"role", "flagged"}, {"unread_only", false},
+                                                              {"offset", 0}, {"limit", 50}}));
+    }
     void cursor_row_stays_in_view_after_reload()
     {
         start();

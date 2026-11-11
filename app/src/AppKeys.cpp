@@ -67,6 +67,11 @@ bool App::windowKey(const KeyPress &k, bool repeat)
         m_nav->reset(Row::Search);
         Q_EMIT focusSearch();
         break;
+    case A::PickAccount:   // one mailbox: no mailbox picker
+        if (!accountChoices().isEmpty())
+            Q_EMIT openPicker(QStringLiteral("account"));
+        break;
+    case A::PickFolder: Q_EMIT openPicker(QStringLiteral("folder")); break;
     case A::UnreadFilter: toggleUnread(); break;
     case A::Undo: undo(); break;
     case A::SelectAll: m_list->selectAll(); break;

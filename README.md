@@ -98,6 +98,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | `s` | save the attachment to Downloads |
 | Space | preview the attachment in `omarchy-quicklook`; scroll the message |
 | `/` | search; typing goes into the field |
+| `a` / `g` | open the mailbox / folder list (not in the search field or the form); `a` only with two mailboxes or more |
 | Ctrl+Z | undo the last action |
 | Ctrl + / Ctrl − / Ctrl 0 | letter zoom: larger / smaller / back to GNOME's text size (Ctrl+wheel too); the list keeps Omarchy's size; remembered in `~/.config/omarchy-mail/window.json` |
 | Esc | one step back: from the message to the list; in the list clear the selection, leave search, then up to the mailbox and folder pickers; in the search field clear it, then up to the pickers; leave the form or settings. Esc never closes the window: close it with Hyprland. |

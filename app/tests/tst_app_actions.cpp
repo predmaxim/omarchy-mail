@@ -494,6 +494,34 @@ private Q_SLOTS:
         QCOMPARE(nav->row(), int(Row::Pickers));
     }
 
+    void picker_keys()
+    {
+        bootList();
+        QSignalSpy picker(app, &App::openPicker);
+        QVERIFY(press(Qt::Key_A, 38));
+        QVERIFY(press(0x041F, 42));   // П: `g` in the Russian layout
+        QCOMPARE(picker.size(), 2);
+        QCOMPARE(picker.at(0).at(0).toString(), QString("account"));
+        QCOMPARE(picker.at(1).at(0).toString(), QString("folder"));
+        QCOMPARE(nav->row(), int(Row::List));
+        QVERIFY(!press(Qt::Key_G, 42, Qt::NoModifier, "search"));    // typed into the field
+        QVERIFY(!press(Qt::Key_A, 38, Qt::NoModifier, "compose"));   // typed into the form
+        app->openSettings();
+        QVERIFY(!press(Qt::Key_G, 42));   // the mailboxes page
+        QCOMPARE(picker.size(), 2);
+    }
+
+    void a_with_one_mailbox_does_nothing()
+    {
+        accounts = QJsonArray{accounts.at(0)};
+        bootList();
+        QSignalSpy picker(app, &App::openPicker);
+        QVERIFY(press(Qt::Key_A, 38));
+        QCOMPARE(picker.size(), 0);
+        QVERIFY(press(Qt::Key_G, 42));
+        QCOMPARE(picker.size(), 1);
+    }
+
     void esc_leaves_settings()
     {
         bootList();

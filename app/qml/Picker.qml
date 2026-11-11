@@ -10,6 +10,7 @@ Rectangle {
     property int current: -1
     property bool hasCursor: false   // the window cursor (`nav`) is on it
     property var beforeKeys: null   // (key event) -> bool: the owner's keys first (the compose form's)
+    property string key: ""   // its key, shown in a frame (the window's pickers)
     signal picked(int index)
 
     function open() { popup.open() }
@@ -36,7 +37,7 @@ Rectangle {
     Text {
         id: label
         anchors.left: parent.left
-        anchors.right: arrow.left
+        anchors.right: tail.left
         anchors.leftMargin: theme.space(12)
         anchors.rightMargin: theme.space(6)
         anchors.verticalCenter: parent.verticalCenter
@@ -46,14 +47,24 @@ Rectangle {
         color: theme.foreground
         font.pixelSize: theme.fontBody
     }
-    Text {
-        id: arrow
+    Row {
+        id: tail
         anchors.right: parent.right
         anchors.rightMargin: theme.space(12)
         anchors.verticalCenter: parent.verticalCenter
-        text: "▾"
-        color: theme.dim
-        font.pixelSize: theme.fontBody
+        spacing: theme.space(6)
+        ActionBar.KeyCap {
+            objectName: "pickerKey"
+            anchors.verticalCenter: parent.verticalCenter
+            visible: picker.key !== ""
+            text: picker.key
+        }
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "▾"
+            color: theme.dim
+            font.pixelSize: theme.fontBody
+        }
     }
     MouseArea {
         id: mouse

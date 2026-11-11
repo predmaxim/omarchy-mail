@@ -19,7 +19,10 @@ private Q_SLOTS:
         QCOMPARE(act(Qt::Key_Y), KeyAction::Copy);
         QCOMPARE(act(Qt::Key_S), KeyAction::Save);
         QCOMPARE(act(Qt::Key_Slash), KeyAction::Search);
-        QCOMPARE(act(Qt::Key_A), KeyAction::None);
+        QCOMPARE(act(Qt::Key_A), KeyAction::PickAccount);
+        QCOMPARE(act(Qt::Key_G), KeyAction::PickFolder);
+        QCOMPARE(act(Qt::Key_B), KeyAction::None);
+        QCOMPARE(act(Qt::Key_G, 0, Qt::ShiftModifier), KeyAction::None);
         QCOMPARE(act(Qt::Key_U, 0, Qt::ShiftModifier), KeyAction::UnreadFilter);
         QCOMPARE(act(Qt::Key_C, 0, Qt::ShiftModifier), KeyAction::None);
     }
@@ -33,6 +36,8 @@ private Q_SLOTS:
         QCOMPARE(act(0x0429, 32), KeyAction::Original);
         QCOMPARE(act(0x041D, 29), KeyAction::Copy);
         QCOMPARE(act(0x042B, 39), KeyAction::Save);
+        QCOMPARE(act(0x0424, 38), KeyAction::PickAccount);   // Ф
+        QCOMPARE(act(0x041F, 42), KeyAction::PickFolder);    // П
         QCOMPARE(act(0x0413, 30, Qt::ShiftModifier), KeyAction::UnreadFilter);
     }
     void ctrl_combos_both_layouts()

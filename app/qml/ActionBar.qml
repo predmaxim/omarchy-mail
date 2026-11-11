@@ -9,7 +9,7 @@ Item {
     implicitHeight: Math.max(commands.implicitHeight, toggles.implicitHeight) + 2 * theme.space(8) + 1
     readonly property bool main: app.page === "main"
 
-    component KeyCap: Rectangle {   // a key in a frame; Main uses it for the search field's key
+    component KeyCap: Rectangle {   // a key in a frame; Main uses it for the search field's key, Picker for its own
         property alias text: keyText.text
         implicitWidth: keyText.implicitWidth + 2 * theme.space(4)
         implicitHeight: keyText.implicitHeight

@@ -22,6 +22,7 @@ char letter(int key, quint32 sc)
     case 39: return 's';
     case 52: return 'z';
     case 38: return 'a';
+    case 42: return 'g';
     case 55: return 'v';
     }
     return 0;
@@ -93,6 +94,8 @@ KeyPress mapKey(int key, quint32 sc, Qt::KeyboardModifiers mods)
     case 'o': return {KeyAction::Original};
     case 'y': return {KeyAction::Copy};
     case 's': return {KeyAction::Save};
+    case 'a': return {KeyAction::PickAccount};
+    case 'g': return {KeyAction::PickFolder};
     }
     return {};
 }

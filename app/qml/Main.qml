@@ -140,6 +140,7 @@ Window {
                     Picker {
                         id: accountPicker
                         objectName: "accountPicker"
+                        key: "a"
                         visible: app.accountChoices.length > 0
                         width: (pickers.width - pickers.spacing) / 2
                         choices: app.accountChoices
@@ -150,6 +151,7 @@ Window {
                     Picker {
                         id: folderPicker
                         objectName: "folderPicker"
+                        key: "g"
                         width: accountPicker.visible ? accountPicker.width : pickers.width
                         choices: app.folderChoices
                         current: app.folderIndex
