@@ -8,6 +8,7 @@
 ],
 "me@gmail.com": [
  {"account": "me@gmail.com", "id": 1, "path": "INBOX", "name": "INBOX", "role": "inbox", "unread": 7},
+ {"account": "me@gmail.com", "id": null, "path": "flagged", "name": "flagged", "role": "flagged", "unread": 0},
  {"account": "me@gmail.com", "id": 2, "path": "[Gmail]/Sent Mail", "name": "Sent Mail", "role": "sent", "unread": 0},
  {"account": "me@gmail.com", "id": 5, "path": "[Gmail]/Trash", "name": "Trash", "role": "trash", "unread": 0},
  {"account": "me@gmail.com", "id": 6, "path": "[Gmail]/Spam", "name": "Spam", "role": "junk", "unread": 2},
@@ -16,6 +17,7 @@
 ],
 "me@yandex.ru": [
  {"account": "me@yandex.ru", "id": 3, "path": "INBOX", "name": "INBOX", "role": "inbox", "unread": 5},
+ {"account": "me@yandex.ru", "id": null, "path": "flagged", "name": "flagged", "role": "flagged", "unread": 0},
  {"account": "me@yandex.ru", "id": 4, "path": "&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-", "name": "Отправленные", "role": "sent", "unread": 0},
  {"account": "me@yandex.ru", "id": 8, "path": "Spam", "name": "Спам", "role": "junk", "unread": 2}
 ]

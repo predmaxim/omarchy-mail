@@ -73,19 +73,26 @@ private Q_SLOTS:
                  QJsonObject({{"cmd", "list"}, {"folder", 1}, {"unread_only", false}, {"offset", 0}, {"limit", 50}}));
         QVERIFY(app->accountChoices().isEmpty());
         QCOMPARE(app->accountIndex(), 0);
-        QCOMPARE(folderLabels(), QStringList({"Inbox", "Sent", "Trash", "Junk", "Work", "All Mail"}));
-        QVERIFY(app->folderChoices().at(3).toMap().value("separatorBefore").toBool());
+        QCOMPARE(folderLabels(), QStringList({"Inbox", "Flagged", "Sent", "Trash", "Junk", "Work", "All Mail"}));
+        QVERIFY(app->folderChoices().at(4).toMap().value("separatorBefore").toBool());
         QTRY_COMPARE(list->rowCount(), 50);
         QCOMPARE(place(0), QString());   // one mailbox: no place under the rows
 
-        app->pickFolder(4);   // Work
+        app->pickFolder(1);   // Flagged: no folder id, so no sync
+        QTRY_COMPARE(body(sent("list").last()), QJsonObject({{"cmd", "list"}, {"role", "flagged"}, {"account", "me@gmail.com"},
+                                                            {"unread_only", false}, {"offset", 0}, {"limit", 50}}));
+        barrier();
+        QCOMPARE(sent("sync").size(), 1);
+        QCOMPARE(app->folderIndex(), 1);
+
+        app->pickFolder(5);   // Work
         QTRY_COMPARE(sent("sync").size(), 2);
         QCOMPARE(body(sent("list").last()),
                  QJsonObject({{"cmd", "list"}, {"folder", 7}, {"unread_only", false}, {"offset", 0}, {"limit", 50}}));
         QCOMPARE(body(sent("sync").last()), QJsonObject({{"cmd", "sync"}, {"folder", 7}}));
-        QCOMPARE(app->folderIndex(), 4);
+        QCOMPARE(app->folderIndex(), 5);
         QVERIFY(!app->trashView());
-        app->pickFolder(2);
+        app->pickFolder(3);
         QVERIFY(app->trashView());
     }
 
@@ -95,7 +102,7 @@ private Q_SLOTS:
         QTRY_COMPARE(list->rowCount(), 50);
         app->pickAccount(1);   // me@yandex.ru
         QCOMPARE(app->accountIndex(), 1);
-        QTRY_COMPARE(folderLabels(), QStringList({"Inbox", "Sent", "Junk"}));
+        QTRY_COMPARE(folderLabels(), QStringList({"Inbox", "Flagged", "Sent", "Junk"}));
         QTRY_COMPARE(body(sent("list").last()),
                      QJsonObject({{"cmd", "list"}, {"folder", 3}, {"unread_only", false}, {"offset", 0}, {"limit", 50}}));
         QTRY_COMPARE(place(0), QString());
@@ -480,10 +487,10 @@ private Q_SLOTS:
         accounts = QJsonArray{accounts.at(0)};
         boot();
         QTRY_COMPARE(list->rowCount(), 50);
-        app->pickFolder(4);   // Work
+        app->pickFolder(5);   // Work
         QTRY_COMPARE(body(sent("list").last()).value("folder").toInt(), 7);
         QJsonArray gmail = folders.value("me@gmail.com").toArray();
-        gmail.removeAt(4);
+        gmail.removeAt(5);
         folders["me@gmail.com"] = gmail;
         d->emitEvent({{"event", "changed"}, {"folders", true}, {"ids", QJsonArray()}});
         QTRY_COMPARE(app->folderIndex(), 0);

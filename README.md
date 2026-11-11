@@ -73,6 +73,8 @@ Bare web addresses (`https://…`, `www.…`) and e-mail addresses in a letter's
 
 A `mailto:` link never goes into an unfinished new message: it gets a letter of its own, which `c` opens until it is sent or discarded. The author's dotfiles bind the window to `Super+Shift+M`. There is one window per system: a second launch hands its arguments to the open window and exits.
 
+The folder picker has Flagged across all mailboxes and in each mailbox, right after its Inbox.
+
 One cursor moves through the whole window; the letters work in the Russian layout too (they are matched by key code).
 
 | Key | Action |
