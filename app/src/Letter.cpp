@@ -5,16 +5,13 @@
 #include "I18n.h"
 #include "Images.h"
 #include "Launch.h"
+#include "Prefs.h"
 #include "Theme.h"
 #include <QClipboard>
-#include <QDir>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QPointer>
 #include <QRegularExpression>
-#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTextDocumentFragment>
 #include <QtConcurrentRun>
@@ -242,18 +239,6 @@ void Letter::setWidth(int px)
         layout();
 }
 
-// $XDG_CONFIG_HOME/omarchy-mail/window.json: the window's own settings.
-static QString windowFile()
-{
-    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/omarchy-mail/window.json");
-}
-
-static QJsonObject readWindowFile()
-{
-    QFile f(windowFile());
-    return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
-}
-
 void Letter::setZoom(qreal z)
 {
     z = qBound(0.5, z, 3.0);
@@ -269,7 +254,7 @@ void Letter::setZoom(qreal z)
 void Letter::loadZoom(qreal gnome)
 {
     m_gnomeZoom = gnome;
-    const double saved = readWindowFile().value(QStringLiteral("letterZoom")).toDouble();
+    const double saved = prefs::read().value(QStringLiteral("letterZoom")).toDouble();
     m_ownZoom = saved > 0;
     setZoom(m_ownZoom ? saved : gnome);
 }
@@ -285,21 +270,7 @@ void Letter::zoomBy(int steps)
 void Letter::saveZoom()
 {
     m_saveTimer.stop();
-    QJsonObject o = readWindowFile();
-    if (m_ownZoom)
-        o.insert(QStringLiteral("letterZoom"), m_zoom);
-    else
-        o.remove(QStringLiteral("letterZoom"));
-    const QString path = windowFile(), dir = QFileInfo(path).path();
-    QDir().mkpath(dir);
-    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
-    QSaveFile f(path);
-    f.setDirectWriteFallback(false);
-    if (f.open(QIODevice::WriteOnly)) {
-        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        f.write(QJsonDocument(o).toJson());
-        f.commit();   // a zoom that isn't saved is still the zoom of this window
-    }
+    prefs::write(QStringLiteral("letterZoom"), m_ownZoom ? QJsonValue(m_zoom) : QJsonValue());
 }
 
 void Letter::setWords(const QStringList &words)
