@@ -89,7 +89,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | `c` | compose |
 | `u` | read / unread |
 | Shift+`u` | unread filter |
-| `f` | flag / unflag |
+| `f` | flag / unflag; in Flagged an unflagged message stays until the cursor leaves it |
 | `o` | open the original in the browser |
 | `y` | copy the message text |
 | Ctrl+C | copy the text selected in the message or its header |

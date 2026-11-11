@@ -224,6 +224,54 @@ private Q_SLOTS:
         QCOMPARE(letter->id(), 50);
     }
 
+    void flagged_view_keeps_the_unflagged_letter()
+    {
+        // as maild does: `act unflag` changes the row, `changed` follows, Flagged drops unflagged mail
+        for (int i : {0, 5}) {   // 60, 55
+            QJsonObject o = rows.at(i).toObject();
+            o["flagged"] = true;
+            rows[i] = o;
+        }
+        d->on("list", [this](const QJsonObject &r) {
+            if (r.value("role").toString() != "flagged")
+                return QJsonObject{{"result", slice(r)}};
+            QJsonArray out;
+            for (const QJsonValue &v : std::as_const(rows))
+                if (v.toObject().value("flagged").toBool())
+                    out << v;
+            return QJsonObject{{"result", out}};
+        });
+        d->on("act", [this](const QJsonObject &r) {
+            const QJsonArray ids = r.value("ids").toArray();
+            const QString op = r.value("op").toString();
+            for (int i = 0; i < rows.size(); ++i)
+                if ((op == "flag" || op == "unflag") && ids.contains(rows.at(i).toObject().value("id"))) {
+                    QJsonObject o = rows.at(i).toObject();
+                    o["flagged"] = op == "flag";
+                    rows[i] = o;
+                }
+            QTimer::singleShot(0, d, [this, ids] { d->emitEvent({{"event", "changed"}, {"folders", true}, {"ids", ids}}); });
+            return QJsonObject{{"result", QJsonObject{{"batch", 5}}}};
+        });
+        bootList();
+        app->pickFolder(1);   // Flagged, all mailboxes
+        QTRY_COMPARE(list->rowCount(), 2);
+        QTRY_COMPARE(letter->id(), 60);
+        const auto lists = sent("list").size();
+        QVERIFY(press(Qt::Key_F, 41));
+        QTRY_COMPARE(acts("unflag"), QList<QJsonObject>({act({60}, "unflag")}));
+        QTRY_COMPARE(sent("list").size(), lists + 1);   // `changed` reloads: 60 is not in Flagged now
+        barrier();
+        QCOMPARE(list->rowCount(), 2);
+        QCOMPARE(list->cursorRow().value("id").toInteger(), 60);
+        QVERIFY(!list->cursorRow().value("flagged").toBool());
+        QVERIFY(press(Qt::Key_Down));   // the cursor leaves 60 for 55
+        QVERIFY(press(Qt::Key_F, 41));  // the next reload drops 60, keeps 55 under the cursor
+        QTRY_COMPARE(acts("unflag").size(), 2);
+        QTRY_COMPARE(list->rowCount(), 1);
+        QCOMPARE(list->cursorRow().value("id").toInteger(), 55);
+    }
+
     void search_results_are_not_auto_read()
     {
         bootList();

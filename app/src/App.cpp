@@ -331,7 +331,7 @@ void App::loadList(bool fresh, qint64 target)
         m_freshPending = false;
         QJsonArray rows = r.toArray();
         m_end = rows.size() < limit;
-        if (!fresh && m_unreadOnly)
+        if (!fresh && (m_unreadOnly || m_folder.value(QStringLiteral("role")).toString() == QLatin1String("flagged")))
             keepCursorRow(rows);
         const QScopedValueRollback<bool> placed(m_byUser, fresh);   // a new view's letter is one the user went to
         int at = -1;
@@ -352,8 +352,8 @@ void App::loadList(bool fresh, qint64 target)
     }));
 }
 
-// The unread-only view: a letter just read stays where it was while the cursor is on it, instead of
-// the next unread sliding under the reader. It goes with the first reload after the cursor leaves.
+// The unread-only view and Flagged: a letter just read or unflagged stays where it was while the cursor is on it,
+// instead of the next one sliding under the reader. It goes with the first reload after the cursor leaves.
 // ponytail: while it stays, the next page's offset counts it, so one row may wait for the next reload
 void App::keepCursorRow(QJsonArray &rows) const
 {
@@ -369,7 +369,7 @@ void App::keepCursorRow(QJsonArray &rows) const
     int pos = int(rows.size());   // before the first row below it that is still there, else last
     for (int i = m_list->cursor() + 1; i < m_list->rowCount() && pos == rows.size(); ++i)
         pos = at.value(m_list->row(i).value(QStringLiteral("id")).toInteger(), pos);
-    rows.insert(pos, cur);   // with its flags as the list has them: read
+    rows.insert(pos, cur);   // with its flags as the list has them: read, or unflagged
 }
 
 void App::loadMore()
