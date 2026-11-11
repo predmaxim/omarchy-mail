@@ -478,6 +478,23 @@ private Q_SLOTS:
         QCOMPARE(size("<table cellspacing=\"0\" style=\"width:120px\"><tr><td style=\"padding:0\">%1</td></tr></table>"), QSize(120, 24));
     }
 
+    // a picture with only a height (or max-height) is as wide as that height gives by its aspect ratio, also when
+    // a cell is sized around it (litehtml master took its natural width: the next cell moved 200 px right)
+    void picture_height_sets_its_width_in_a_cell()
+    {
+        const auto left = [&](const QString &style) {
+            const Rendered r = run(job(QStringLiteral(
+                "<!doctype html><body style=\"margin:0\"><table cellspacing=\"0\" cellpadding=\"0\"><tr><td><img src=\"%1\" %2>"
+                "</td><td><a href=\"https://x.org/\" style=\"display:block\">Xy</a></td></tr></table></body>").arg(widePicture(), style)));
+            return r.links.size() == 1 ? r.links.at(0).rect.left() : -1;
+        };
+        QCOMPARE(left("height=\"20\""), 100);
+        QCOMPARE(left("style=\"height:20px;width:auto;display:block\""), 100);
+        QCOMPARE(left("style=\"max-height:20px;display:block\""), 100);
+        QCOMPARE(left("style=\"height:20px;max-height:10px;display:block\""), 50);
+        QCOMPARE(left("width=\"100\""), 100);
+    }
+
     // a cell sized around a table or a box-sizing:border-box block takes its width with the padding inside, and a
     // table is never narrower than its content (litehtml master added the padding again, or took the table's width
     // as is: the next cell moved 480 px right, or onto the table)
