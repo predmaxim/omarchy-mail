@@ -535,6 +535,24 @@ private Q_SLOTS:
         QCOMPARE(r.links.value(0).rect.width(), 568);
     }
 
+    // a cell's max-width caps its column's width, not the width the table gives the cell (litehtml master clamped
+    // the cell's content to it: two 262 px cards in a 100 % cell with max-width:300px stacked)
+    void cell_max_width_caps_its_column_only()
+    {
+        const auto boxes = [&](const QString &table, const QString &row) {
+            const Rendered r = run(job(QStringLiteral("<!doctype html><body style=\"margin:0\"><table style=\"%1;border-spacing:0\">"
+                                                      "<tr>%2</tr></table></body>").arg(table, row)));
+            QList<int> v;
+            for (const DocumentContainer::Link &l : r.links)
+                v << l.rect.left() << l.rect.width();
+            return v;
+        };
+        const QString a = QStringLiteral("<a href=\"https://x.org/\" style=\"display:block\">Xy</a>");
+        QCOMPARE(boxes("width:100%", "<td style=\"max-width:300px;padding:0\">" + a + "</td>"), (QList<int>{0, 760}));
+        QCOMPARE(boxes("", "<td style=\"max-width:100px;padding:0\">" + QStringLiteral("Hg ").repeated(16) + "</td><td style=\"padding:0\">"
+                       + a + "</td>").value(0), 100);
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {

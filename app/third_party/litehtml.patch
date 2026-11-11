@@ -221,7 +221,7 @@ index 0099ec97..9755fe79 100644
          m_intrinsic_min_size.width = 0_px;
      }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
-index e2a8344b..fce75305 100644
+index e2a8344b..ac4a7582 100644
 --- a/src/render_item.cpp
 +++ b/src/render_item.cpp
 @@ -48,6 +48,11 @@ void litehtml::render_item::update_intrinsic_size()
@@ -315,6 +315,26 @@ index e2a8344b..fce75305 100644
  
      calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
      calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
+@@ -1737,13 +1768,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+ 
+     ret.unclamped_render_width = ret.render_width.value;
+ 
+-    if(is_one_of(ret.min_width.type, containing_block_context::cbc_value_type_percentage,
+-                 containing_block_context::cbc_value_type_absolute))
++    // A cell's min-width and max-width bound its column's width; the cell takes the width the table gives it
++    const bool cell = src_el()->css().get_display() == display_table_cell;
++    if(!cell && is_one_of(ret.min_width.type, containing_block_context::cbc_value_type_percentage,
++                          containing_block_context::cbc_value_type_absolute))
+     {
+         ret.width.value = ret.render_width.value = std::max(ret.render_width.value, ret.min_width.value);
+     }
+-    if(is_one_of(ret.max_width.type, containing_block_context::cbc_value_type_percentage,
+-                 containing_block_context::cbc_value_type_absolute))
++    if(!cell && is_one_of(ret.max_width.type, containing_block_context::cbc_value_type_percentage,
++                          containing_block_context::cbc_value_type_absolute))
+     {
+         ret.width.value = ret.render_width.value = std::min(ret.render_width.value, ret.max_width.value);
+     }
 diff --git a/src/render_table.cpp b/src/render_table.cpp
 index 03a122c8..206aa65e 100644
 --- a/src/render_table.cpp
