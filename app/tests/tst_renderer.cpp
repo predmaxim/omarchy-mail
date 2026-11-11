@@ -478,6 +478,46 @@ private Q_SLOTS:
         QCOMPARE(size("<table cellspacing=\"0\" style=\"width:120px\"><tr><td style=\"padding:0\">%1</td></tr></table>"), QSize(120, 24));
     }
 
+    // a cell sized around a table or a box-sizing:border-box block takes its width with the padding inside, and a
+    // table is never narrower than its content (litehtml master added the padding again, or took the table's width
+    // as is: the next cell moved 480 px right, or onto the table)
+    void border_box_widths_size_their_cell()
+    {
+        const auto lefts = [&](const QString &inner) {
+            const Rendered r = run(job(QStringLiteral(
+                "<!doctype html><body style=\"margin:0\"><table cellspacing=\"0\" cellpadding=\"0\"><tr><td>%1</td>"
+                "<td><a href=\"https://x.org/2\" style=\"display:block\">Xy</a></td></tr></table></body>").arg(inner)));
+            return r.links.size() == 2 ? QList<int>{r.links.at(0).rect.left(), r.links.at(1).rect.left()} : QList<int>();
+        };
+        const QString a = QStringLiteral("<a href=\"https://x.org/1\" style=\"display:block\">Hg</a>");
+        QCOMPARE(lefts("<table cellspacing=\"0\" cellpadding=\"0\" style=\"width:600px;padding:0 240px\"><tr><td>" + a
+                       + "</td></tr></table>"), (QList<int>{240, 600}));
+        QCOMPARE(lefts("<div style=\"width:600px;padding:0 240px;box-sizing:border-box\">" + a + "</div>"), (QList<int>{240, 600}));
+        QCOMPARE(lefts("<div style=\"width:600px;padding:0 240px\">" + a + "</div>"), (QList<int>{240, 1080}));
+        QCOMPARE(lefts("<table cellspacing=\"0\" cellpadding=\"0\" style=\"width:100px\"><tr><td><div style=\"width:300px\">" + a
+                       + "</div></td></tr></table>"), (QList<int>{0, 300}));
+    }
+
+    // like its width, a table's min-width and max-width hold its padding and borders (litehtml master added them
+    // again: a 16 px padded table with width and min-width 600px came out 632 px wide)
+    void table_min_max_width_hold_padding()
+    {
+        const QString table = QStringLiteral("<table cellspacing=\"0\" cellpadding=\"0\" style=\"padding:16px;%1\"><tr><td>"
+                                             "<a href=\"https://x.org/1\" style=\"display:block\">%2</a></td></tr></table>");
+        const auto boxes = [&](const QString &style, const QString &text) {
+            const Rendered r = run(job(QStringLiteral(
+                "<!doctype html><body style=\"margin:0\"><table cellspacing=\"0\" cellpadding=\"0\"><tr><td>%1</td>"
+                "<td><a href=\"https://x.org/2\" style=\"display:block\">Xy</a></td></tr></table></body>").arg(table.arg(style, text))));
+            return r.links.size() == 2
+                ? QList<int>{r.links.at(0).rect.left(), r.links.at(0).rect.width(), r.links.at(1).rect.left()} : QList<int>();
+        };
+        const QString many = QStringLiteral("Hg ").repeated(50);
+        QCOMPARE(boxes("width:600px;min-width:600px", "Hg"), (QList<int>{16, 568, 600}));
+        QCOMPARE(boxes("max-width:300px", many), (QList<int>{16, 268, 300}));
+        const Rendered r = run(job("<!doctype html><body style=\"margin:0\">" + table.arg("width:600px;min-width:600px", "Hg")));
+        QCOMPARE(r.links.value(0).rect.width(), 568);
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {

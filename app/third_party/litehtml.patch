@@ -203,10 +203,62 @@ index 0099ec97..f8078246 100644
          m_intrinsic_min_size.width = 0_px;
      }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
-index e2a8344b..30920a91 100644
+index e2a8344b..fce75305 100644
 --- a/src/render_item.cpp
 +++ b/src/render_item.cpp
-@@ -207,6 +207,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
+@@ -48,6 +48,11 @@ void litehtml::render_item::update_intrinsic_size()
+     calc_outlines(0_px);
+     calc_intrinsic_size();
+ 
++    // What a specified width does not hold: a table's width, min-width and max-width hold its padding and borders,
++    // like those of a box-sizing:border-box element
++    const pixel_t width_offset =
++        css().get_display() == display_table ? 0_px : content_offset_width() - box_sizing_width();
++
+     // Flex items have their intrisict size calculated based on the flex container, so we skip this step for them
+     // We also skip this step for text elements, because they have their intrisict size calculated based on the text
+     // content
+@@ -56,14 +61,15 @@ void litehtml::render_item::update_intrinsic_size()
+         if(!css().get_width().is_predefined() && css().get_width().units() != css_units_percentage)
+         {
+             auto w = doc->to_pixels(css().get_width(), fm, 0_px);
+-            if(css().get_display() == display_table_cell)
++            if(is_one_of(css().get_display(), display_table_cell, display_table))
+             {
+                 // Table column width is applied to the whole cell box, including padding and borders.
++                // So is a table's width, and a table is never narrower than its content.
+                 m_intrinsic_max_size.width = m_intrinsic_min_size.width = std::max(w, m_intrinsic_min_size.width);
+             } else
+             {
+                 // If width is defined and not percentage, then we can set the intrisict size to that value
+-                m_intrinsic_max_size.width = m_intrinsic_min_size.width = w + content_offset_width();
++                m_intrinsic_max_size.width = m_intrinsic_min_size.width = w + width_offset;
+             }
+         } else if(css().get_overflow() > overflow_visible &&
+                   !is_one_of(css().get_display(), display_table_cell, display_table))
+@@ -91,8 +97,8 @@ void litehtml::render_item::update_intrinsic_size()
+     {
+         if(!css().get_max_width().is_predefined() && css().get_max_width().units() != css_units_percentage)
+         {
+-            m_intrinsic_max_size.width = std::min(
+-                m_intrinsic_max_size.width, doc->to_pixels(css().get_max_width(), fm, 0_px) + content_offset_width());
++            m_intrinsic_max_size.width =
++                std::min(m_intrinsic_max_size.width, doc->to_pixels(css().get_max_width(), fm, 0_px) + width_offset);
+             // A table can't be narrower than its minimum content width.
+             if(css().get_display() == display_table)
+             {
+@@ -108,8 +114,8 @@ void litehtml::render_item::update_intrinsic_size()
+ 
+         if(!css().get_min_width().is_predefined() && css().get_min_width().units() != css_units_percentage)
+         {
+-            m_intrinsic_min_size.width = std::max(
+-                m_intrinsic_min_size.width, doc->to_pixels(css().get_min_width(), fm, 0_px) + content_offset_width());
++            m_intrinsic_min_size.width =
++                std::max(m_intrinsic_min_size.width, doc->to_pixels(css().get_min_width(), fm, 0_px) + width_offset);
+         }
+         if(!css().get_min_height().is_predefined() && css().get_min_height().units() != css_units_percentage)
+         {
+@@ -207,6 +213,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
              m_margins.right = parent_width - el_width;
              m_margins.right = std::max<pixel_t>(m_margins.right, 0_px);
          }
@@ -226,6 +278,25 @@ index e2a8344b..30920a91 100644
      }
      return 0_px;
  }
+@@ -1710,6 +1729,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+ 
+     calc_cb_length(src_el()->css().get_min_width(), cb_context.width, ret.min_width);
+     calc_cb_length(src_el()->css().get_max_width(), cb_context.width, ret.max_width);
++    // Like its width above, a table's min-width and max-width hold its padding and borders
++    if(src_el()->css().get_display() == display_table)
++    {
++        if(ret.min_width.type != containing_block_context::cbc_value_type_none)
++        {
++            ret.min_width.value -= content_offset_width();
++        }
++        if(ret.max_width.type != containing_block_context::cbc_value_type_none)
++        {
++            ret.max_width.value -= content_offset_width();
++        }
++    }
+ 
+     calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
+     calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
 diff --git a/src/render_table.cpp b/src/render_table.cpp
 index 03a122c8..206aa65e 100644
 --- a/src/render_table.cpp
