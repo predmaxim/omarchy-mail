@@ -509,6 +509,7 @@ mod tests {
         assert_eq!((r["result"][0]["unread"].clone(), r["result"][0]["id"].clone()), (json!(1), Value::Null));
         let r = call(&mut st, json!({"id": 2, "cmd": "folders", "account": "a@x"}));
         assert_eq!(r["result"][0]["id"], f);
+        assert_eq!((r["result"][1]["role"].clone(), r["result"][1]["id"].clone(), r["result"][1]["account"].clone()), (json!("flagged"), Value::Null, json!("a@x")));
     }
 
     #[test]

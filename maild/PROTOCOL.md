@@ -201,6 +201,7 @@ live in the keyring only.
 → {"id": 8, "cmd": "folders", "account": "me@yandex.ru"}
 ← {"id": 8, "ok": true, "result": [
      {"account": "me@yandex.ru", "id": 3, "path": "INBOX", "name": "INBOX", "role": "inbox", "unread": 5},
+     {"account": "me@yandex.ru", "id": null, "path": "flagged", "name": "flagged", "role": "flagged", "unread": 0},
      {"account": "me@yandex.ru", "id": 4, "path": "&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-", "name": "Отправленные", "role": "sent", "unread": 0}]}
 ```
 
@@ -208,13 +209,15 @@ live in the keyring only.
   five entries in this order: Inbox, Flagged, Sent, Trash, Junk. `id` and `account` are `null`;
   `path` and `name` are the role name, and the window translates it. Open such an entry with
   `list {role}`.
-- With `account` the result is that mailbox's folders from the server, in discovery order.
-  Open one with `list {folder: id}`. The `remote` folders (opened server search hits) are not
+- With `account` the result is that mailbox's folders from the server, in discovery order,
+  plus one virtual Flagged entry (`id` null, `path` and `name` `flagged`) right after its Inbox,
+  last if it has none. Open a server folder with `list {folder: id}`, the Flagged entry with
+  `list {role: "flagged", account}`. The `remote` folders (opened server search hits) are not
   listed.
   - `name` is for display: the decoded last part of the path.
   - `path` is the raw IMAP name. Never show it, and never decode it yourself.
 - `unread` counts unread messages. For `flagged` it counts unread flagged messages outside
-  Trash and Junk.
+  Trash, Junk and opened server search hits (`remote`).
 
 ### `list`
 
@@ -226,7 +229,8 @@ live in the keyring only.
 
 - `account` limits the list to one mailbox.
 - `role` takes precedence over `folder`.
-  - `role: "flagged"` lists flagged messages of every folder except Trash and Junk.
+  - `role: "flagged"` lists flagged messages outside Trash, Junk and opened server search hits
+    (`remote`).
   - Any other role lists the folders with that role.
 - `folder` is a folder id from `folders {account}`.
 - With neither `role` nor `folder`, the list holds every message except opened server search
@@ -465,7 +469,7 @@ They go to subscribed connections only, one JSON object per line.
 
 `Role`: `inbox`, `sent`, `trash`, `junk`, `flagged`, `other`, `remote`.
 - `remote` holds server search hits opened with `open_remote`.
-- `flagged` only names the unified "Flagged" entry and filter.
+- `flagged` only names the virtual Flagged entries (all mailboxes, each mailbox) and their filter.
 
 `Addr`: `{name: string, addr: string}`. `name` may be empty.
 

@@ -46,6 +46,9 @@ pub struct Summary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Remote { pub account: String, pub folder_path: String, pub uid: u32 }
 
+/// The only Flagged filter. Opened server search hits (`remote`) keep a flag that is never refreshed and take no actions.
+const FLAGGED: &str = "m.flagged = 1 AND f.role NOT IN ('trash','junk','remote')";
+
 /// Also the `list` request: absent fields take the defaults.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -278,7 +281,7 @@ impl Db {
         let mut args: Vec<Value> = vec![];
         if let Some(a) = &q.account { conds.push("f.account = ?".into()); args.push(a.clone().into()); }
         match (q.role, q.folder) {
-            (Some(Role::Flagged), _) => conds.push("m.flagged = 1 AND f.role NOT IN ('trash','junk')".into()),
+            (Some(Role::Flagged), _) => conds.push(FLAGGED.into()),
             (Some(r), _) => { conds.push("f.role = ?".into()); args.push(r.as_str().to_string().into()); }
             (None, Some(f)) => { conds.push("f.id = ?".into()); args.push(f.into()); }
             _ => conds.push("f.role <> 'remote'".into()),
@@ -320,14 +323,17 @@ impl Db {
         };
         if let Some(a) = account {
             let mut st = self.c.prepare("SELECT id, path, role, (SELECT COUNT(*) FROM messages WHERE folder = folders.id AND seen = 0) FROM folders WHERE account = ?1 AND role <> 'remote' ORDER BY id").map_err(e)?;
-            return st.query_map([a], |r| {
+            let mut out: Vec<FolderInfo> = st.query_map([a], |r| {
                 let path: String = r.get(1)?;
                 Ok(FolderInfo { account: Some(a.to_string()), id: Some(r.get(0)?), name: display_name(&path), path, role: Role::from_db(&r.get::<_, String>(2)?), unread: r.get(3)? })
-            }).map_err(e)?.collect::<Result<_, _>>().map_err(e);
+            }).map_err(e)?.collect::<Result<_, _>>().map_err(e)?;
+            let at = out.iter().position(|f| f.role == Role::Inbox).map_or(out.len(), |i| i + 1);
+            out.insert(at, FolderInfo { account: Some(a.to_string()), id: None, path: "flagged".into(), name: "flagged".into(), role: Role::Flagged, unread: unread(FLAGGED, Some(a))? });
+            return Ok(out);
         }
         [Role::Inbox, Role::Flagged, Role::Sent, Role::Trash, Role::Junk].into_iter().map(|role| {
             let cond = match role {
-                Role::Flagged => "m.flagged = 1 AND f.role NOT IN ('trash','junk')".to_string(),
+                Role::Flagged => FLAGGED.to_string(),
                 r => format!("f.role = '{}'", r.as_str()),
             };
             Ok(FolderInfo { account: None, id: None, path: role.as_str().into(), name: role.as_str().into(), role, unread: unread(&cond, None)? })
@@ -540,6 +546,40 @@ mod tests {
         let l = db.list(&q(Some(Role::Flagged))).unwrap();
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].subject, "keep");
+    }
+
+    #[test]
+    fn flagged_per_mailbox_after_its_inbox() {
+        let db = Db::memory();
+        let s = db.upsert_folder("a@x", "Sent", Role::Sent).unwrap();   // discovered before INBOX, as on Yandex
+        let i = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let w = db.upsert_folder("a@x", "Work", Role::Other).unwrap();
+        let b = db.upsert_folder("b@x", "INBOX", Role::Inbox).unwrap();
+        db.insert_message(i, 1, false, true, 1, &p("in", 5, "t"), true).unwrap();
+        db.insert_message(s, 1, false, true, 1, &p("sent", 5, "t"), true).unwrap();
+        db.insert_message(w, 1, true, true, 1, &p("work", 5, "t"), true).unwrap();
+        db.insert_message(b, 1, false, true, 1, &p("other", 5, "t"), true).unwrap();
+        let fl = db.folder_list(Some("a@x")).unwrap();
+        assert_eq!(fl.iter().map(|f| f.role).collect::<Vec<_>>(), [Role::Sent, Role::Inbox, Role::Flagged, Role::Other]);
+        let f = &fl[2];
+        assert_eq!((f.account.as_deref(), f.id, f.path.as_str(), f.name.as_str(), f.unread), (Some("a@x"), None, "flagged", "flagged", 2));
+        let l = db.list(&ListQuery { account: Some("a@x".into()), role: Some(Role::Flagged), limit: 50, ..Default::default() }).unwrap();
+        assert_eq!(l.len(), 3);
+        db.upsert_folder("c@x", "Sent", Role::Sent).unwrap();   // no Inbox yet: Flagged last
+        assert_eq!(db.folder_list(Some("c@x")).unwrap().iter().map(|f| f.role).collect::<Vec<_>>(), [Role::Sent, Role::Flagged]);
+    }
+
+    #[test]
+    fn flagged_excludes_remote() {
+        let db = Db::memory();
+        let i = db.upsert_folder("a@x", "INBOX", Role::Inbox).unwrap();
+        let r = db.upsert_folder("a@x", "@remote/[Gmail]/All Mail", Role::Remote).unwrap();
+        db.insert_message(i, 1, true, true, 1, &p("keep", 5, "t"), true).unwrap();
+        db.insert_message(r, 1, false, true, 1, &p("hit", 5, "t"), true).unwrap();
+        let l = db.list(&q(Some(Role::Flagged))).unwrap();
+        assert_eq!(l.iter().map(|s| s.subject.as_str()).collect::<Vec<_>>(), ["keep"]);
+        assert_eq!(db.folder_list(None).unwrap()[1].unread, 0);
+        assert_eq!(db.folder_list(Some("a@x")).unwrap()[1].unread, 0);
     }
 
     #[test]
