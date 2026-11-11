@@ -999,6 +999,50 @@ private Q_SLOTS:
         QCOMPARE(rows->property("currentIndex").toInt(), 0);
         QCOMPARE(name->property("text").toString(), QString("Max P"));   // the saved name, not the one from before
     }
+    void settings_form_takes_a_save_that_lands_under_it()
+    {
+        h.d->on("account_update", [this](const QJsonObject &r) {   // a slow trial login
+            QJsonObject a = h.accounts.at(0).toObject();
+            a["name"] = r.value("name");
+            h.accounts.replace(0, a);
+            return QJsonObject{{"delay", 300}};
+        });
+        start();
+        s->app.openSettings();
+        QQuickItem *rows = item("accountRows");
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QQuickItem *name = item("nameField");
+        auto first = [this] { return s->app.accounts().value(0).toMap(); };
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_End);
+        type(" P");
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_Return);   // Save
+        QTRY_COMPARE(h.sent("account_update").size(), 1);
+        // away and back while the login is tried: the form is refilled from the name before the save
+        QTest::keyClick(win, Qt::Key_Escape);
+        QTest::keyClick(win, Qt::Key_Down);
+        QTest::keyClick(win, Qt::Key_Up);
+        QVERIFY(first().value("saving").toBool());
+        QCOMPARE(name->property("text").toString(), QString("Max"));
+        QTRY_COMPARE(first().value("name").toString(), QString("Max P"));
+        QCOMPARE(name->property("text").toString(), QString("Max P"));   // the save lands in the untouched field
+
+        // typed while the next save is tried: the landing keeps it
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_End);
+        type(" Q");
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_Return);   // Save
+        QTRY_COMPARE(h.sent("account_update").size(), 2);
+        QCOMPARE(body(h.sent("account_update").at(1)).value("name").toString(), QString("Max P Q"));
+        QTest::keyClick(win, Qt::Key_Up);
+        QTest::keyClick(win, Qt::Key_End);
+        type("!");
+        QVERIFY(first().value("saving").toBool());
+        QTRY_COMPARE(first().value("name").toString(), QString("Max P Q"));
+        QCOMPARE(name->property("text").toString(), QString("Max P Q!"));
+    }
     void settings_form_of_an_imap_mailbox()
     {
         h.accounts.append(QJsonObject{{"email", "me@example.org"}, {"name", "Max"}, {"provider", "imap"}, {"login", "me"},

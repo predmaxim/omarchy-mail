@@ -25,15 +25,8 @@ FocusScope {
 
     function focusFirst() { (app.accounts.length > 0 ? rows : providerRow).forceActiveFocus() }
     function fill() {   // the form from the row under the cursor: a mailbox's settings, or empty to add one
-        const a = acc || {}
-        email.text = ""
-        name.text = a.name || ""
-        password.text = ""
-        login.text = a.login || ""
-        imapHost.text = a.imapHost || ""
-        imapPort.text = String(a.imapPort || 993)
-        smtpHost.text = a.smtpHost || ""
-        smtpPort.text = String(a.smtpPort || 465)
+        for (const f of [email, name, password, login, imapHost, imapPort, smtpHost, smtpPort])
+            f.reset()
     }
     function submit() {
         app.addAccount({provider: provider, email: email.text, name: name.text, password: password.text, login: login.text,
@@ -99,11 +92,24 @@ FocusScope {
     component Field: FocusScope {   // a label on the left, the framed input on the right
         id: field
         property string label
+        // the row's value, which fill() puts in. A save that lands while the form shows the value from before it (the
+        // cursor left and came back) changes it: a field not typed over since takes it, a typed one keeps the typing.
+        property string base
+        property string held   // the base the text was last given
         property alias text: input.text
         property alias echoMode: input.echoMode
         property alias input: input
         width: parent.width
         height: frame.height
+        function reset() {
+            text = base
+            held = base
+        }
+        onBaseChanged: {
+            if (text === held)
+                text = base
+            held = base
+        }
         Caption {
             anchors.verticalCenter: parent.verticalCenter
             width: page.labelWidth - theme.space(12)
@@ -471,6 +477,7 @@ FocusScope {
                 id: name
                 objectName: "nameField"
                 label: i18n.t("Sender name")
+                base: page.acc?.name ?? ""
                 KeyNavigation.up: email
                 KeyNavigation.down: password
             }
@@ -531,6 +538,7 @@ FocusScope {
                 objectName: "loginField"
                 visible: page.formProvider === "imap"
                 label: i18n.t("Login")
+                base: page.acc?.login ?? ""
                 KeyNavigation.up: password
                 KeyNavigation.down: imapHost
             }
@@ -539,6 +547,7 @@ FocusScope {
                 objectName: "imapHostField"
                 visible: page.formProvider === "imap"
                 label: i18n.t("IMAP server")
+                base: page.acc?.imapHost ?? ""
                 KeyNavigation.up: login
                 KeyNavigation.down: imapPort
             }
@@ -546,6 +555,7 @@ FocusScope {
                 id: imapPort
                 visible: page.formProvider === "imap"
                 label: i18n.t("IMAP port")
+                base: String(page.acc?.imapPort || 993)
                 text: "993"
                 input.maximumLength: 5
                 KeyNavigation.up: imapHost
@@ -555,6 +565,7 @@ FocusScope {
                 id: smtpHost
                 visible: page.formProvider === "imap"
                 label: i18n.t("SMTP server")
+                base: page.acc?.smtpHost ?? ""
                 KeyNavigation.up: imapPort
                 KeyNavigation.down: smtpPort
             }
@@ -562,6 +573,7 @@ FocusScope {
                 id: smtpPort
                 visible: page.formProvider === "imap"
                 label: i18n.t("SMTP port")
+                base: String(page.acc?.smtpPort || 465)
                 text: "465"
                 input.maximumLength: 5
                 KeyNavigation.up: smtpHost
