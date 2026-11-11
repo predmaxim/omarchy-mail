@@ -145,7 +145,7 @@ The window talks to the network only to load the images of the open message (`ht
 
 ### Licenses
 
-The window renders HTML mail with [qlitehtml](https://code.qt.io/cgit/playground/qlitehtml.git) (GPL-3.0 WITH Qt-GPL-exception-1.0) and [litehtml](https://github.com/litehtml/litehtml) (BSD). Both are built from `code.qt.io` at pinned commits with two patches, `app/third_party/qlitehtml.patch` and `app/third_party/litehtml.patch`. Besides the window's own changes, `litehtml.patch` fixes table bugs still present upstream: column percentages that add up to more than 100 % (later columns get only what is left, as in css-tables-3), and a table cell's `height`, which litehtml ignored (border-box in quirks mode, as in browsers).
+The window renders HTML mail with [qlitehtml](https://code.qt.io/cgit/playground/qlitehtml.git) (GPL-3.0 WITH Qt-GPL-exception-1.0) and [litehtml](https://github.com/litehtml/litehtml) (BSD). Both are built from `code.qt.io` at pinned commits with two patches, `app/third_party/qlitehtml.patch` and `app/third_party/litehtml.patch`. Besides the window's own changes, `litehtml.patch` fixes table bugs still present upstream: column percentages that add up to more than 100 % (later columns get only what is left, as in css-tables-3), and a table cell's `height`, which litehtml ignored (border-box in quirks mode, as in browsers). It also backports litehtml master's doctype check: the pinned one put a page with an HTML 4.0 Transitional doctype in standards mode, where browsers use quirks mode.
 
 ## Where things live
 

@@ -125,6 +125,29 @@ index 78c53f4e..fd77fd7e 100644
  	}
  	str = get_attr("valign");
  	if(str)
+diff --git a/src/gumbo/parser.c b/src/gumbo/parser.c
+index 0ab3f920..5f094110 100644
+--- a/src/gumbo/parser.c
++++ b/src/gumbo/parser.c
+@@ -538,13 +538,14 @@ static GumboNode* get_adjusted_current_node(GumboParser* parser) {
+ // Returns true if the given needle is in the given array of literal
+ // GumboStringPieces.  If exact_match is true, this requires that they match
+ // exactly; otherwise, this performs a prefix match to check if any of the
+-// elements in haystack start with needle.  This always performs a
+-// case-insensitive match.
++// elements in haystack are the start of needle.  This always performs a
++// case-insensitive match (litehtml master's fix, backported).
+ static bool is_in_static_list(
+     const char* needle, const GumboStringPiece* haystack, bool exact_match) {
+   for (unsigned int i = 0; haystack[i].length > 0; ++i) {
+-    if ((exact_match && !strcmp(needle, haystack[i].data)) ||
+-        (!exact_match && !strcasecmp(needle, haystack[i].data))) {
++    if ((exact_match && !strcasecmp(needle, haystack[i].data)) ||
++        (!exact_match &&
++            !strncasecmp(needle, haystack[i].data, haystack[i].length))) {
+       return true;
+     }
+   }
 diff --git a/src/line_box.cpp b/src/line_box.cpp
 index 091a96c0..d159dd38 100644
 --- a/src/line_box.cpp

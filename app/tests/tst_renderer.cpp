@@ -428,6 +428,9 @@ private Q_SLOTS:
         QCOMPARE(gap(standards, padded), 60);
         QCOMPARE(gap(quirks, padded), 40);
         QCOMPARE(gap(xhtml, padded), 60);   // not quirks mode: the quirk is quirks-only
+        // quirks by a public id prefix, compared case-insensitively (HTML, "initial" insertion mode), as in Chromium
+        QCOMPARE(gap("<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">", padded), 40);
+        QCOMPARE(gap("<!doctype html public \"-//w3o//dtd w3 html strict 3.0//en//\">", padded), 40);
         QCOMPARE(gap(standards, "<td height=\"60\" style=\"padding:0\"></td>"), 60);
         QCOMPARE(gap(standards, "<td style=\"height:40px;padding:10px 0;box-sizing:border-box\"></td>"), 40);
         QCOMPARE(gap(standards, "<td style=\"height:30px;padding:0\"></td><td style=\"height:50px;padding:0\"></td>"), 50);
