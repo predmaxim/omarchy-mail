@@ -390,6 +390,26 @@ private Q_SLOTS:
         QVERIFY(height("Hg " + img.arg("")) > block);   // text keeps its line
     }
 
+    // css-tables-3: a column's percentage is at most what the columns before it left of 100 %. litehtml scaled
+    // them all, so a Foundation/Ink shell (100 % content cell + empty 100 % td.expander) got half the width
+    void table_percentages_over_100()
+    {
+        const QString a = QStringLiteral("<a href=\"https://x.org/\" style=\"display:block\">Hg</a>");
+        const auto boxes = [&](const QString &table) {
+            const Rendered r = run(job(QStringLiteral("<!doctype html><body style=\"margin:0\">%1</body>").arg(table)));
+            QList<int> v;
+            for (const DocumentContainer::Link &l : r.links)
+                v << l.rect.left() << l.rect.width();
+            return v;
+        };
+        QCOMPARE(boxes(QStringLiteral("<table style=\"width:580px;border-collapse:collapse\"><tr><td style=\"width:100%;"
+                                      "padding:0 20px\">%1</td><td style=\"width:100%;padding:0\"></td></tr></table>").arg(a)),
+                 (QList<int>{20, 540}));
+        QCOMPARE(boxes(QStringLiteral("<table style=\"width:600px;border-collapse:collapse\"><tr><td style=\"width:60%;"
+                                      "padding:0\">%1</td><td style=\"width:60%;padding:0\">%1</td></tr></table>").arg(a)),
+                 (QList<int>{0, 360, 360, 240}));
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {

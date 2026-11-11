@@ -218,3 +218,26 @@ index d197d244..999968a0 100644
  
  static int init()
  {
+diff --git a/src/table.cpp b/src/table.cpp
+index 7f5a71f8..8374b946 100644
+--- a/src/table.cpp
++++ b/src/table.cpp
+@@ -291,6 +291,18 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(pixel_t block_width, bo
+ {
+ 	//pixel_t table_width = 0;
+ 
++	// css-tables-3: a column's percentage is at most 100% minus the percentages of the columns before it
++	float percent_left = 100;
++	for(int col = 0; col < m_cols_count; col++)
++	{
++		if(!m_columns[col].css_width.is_predefined() && m_columns[col].css_width.units() == css_units_percentage)
++		{
++			float p = std::min(m_columns[col].css_width.val(), percent_left);
++			m_columns[col].css_width.set_value(p, css_units_percentage);
++			percent_left -= p;
++		}
++	}
++
+ 	min_table_width = 0; // MIN
+ 	max_table_width = 0; // MAX
+ 
