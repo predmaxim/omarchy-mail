@@ -23,6 +23,7 @@ Window {
         function onFocusSearch() { search.forceActiveFocus() }
         function onLeaveSearch() { root.forceActiveFocus() }
         function onOpenPicker(which) { (which === "account" ? accountPicker : folderPicker).open() }
+        function onListPreviewChanged() { mailList.resized = true }
         function onScroll(cmd, dir) {   // int(om::Cmd): ScrollLines 11, ScrollPages 12, ScrollTop 13, ScrollEnd 14
             if (cmd === 11)
                 pane.view.scrollLines(dir)
@@ -186,6 +187,15 @@ Window {
                 boundsBehavior: Flickable.StopAtBounds
                 keyNavigationEnabled: false   // the cursor is MailList's, moved through app.key / app.clickRow only
                 property real keptY: 0        // contentY before a reset
+                property bool resized: false  // the switch changed the rows' height while the list was hidden
+                onVisibleChanged: {   // shown again: the rows already have their new height (MailRow), the cursor row in sight
+                    if (visible && resized && list.cursor >= 0) {
+                        forceLayout()
+                        positionViewAtIndex(list.cursor, ListView.Contain)
+                    }
+                    if (visible)
+                        resized = false
+                }
                 model: list
                 delegate: MailRow {
                     onClicked: modifiers => {

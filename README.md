@@ -124,7 +124,8 @@ The mailboxes page (the gear) has keys of its own:
 
 | Key | Action |
 |---|---|
-| Up / Down | between the mailboxes, then down into the form that adds one |
+| Up / Down | from the "Letter text in the list" switch to the mailboxes, then down into the form that adds one |
+| Enter, Space, Left / Right | on the switch: show or hide the letter text under the subjects in the list (a click too) |
 | Enter | on a mailbox: edit the sender name; on a mailbox whose login failed: try again |
 | `d`, Del | remove the mailbox, on the second press only |
 | Esc | back to the mail |
@@ -135,6 +136,7 @@ Files of the window:
 |---|---|
 | Drafts | `$XDG_DATA_HOME/omarchy-mail/drafts/` (`~/.local/share/omarchy-mail/drafts/`) |
 | Window cache (images, originals for the browser) | `$XDG_CACHE_HOME/omarchy-mail/window/` (`~/.cache/omarchy-mail/window/`) |
+| Window settings | `$XDG_CONFIG_HOME/omarchy-mail/window.json` (`~/.config/omarchy-mail/window.json`): `letterZoom` (letter zoom), `listPreview` (`false`: no letter text in the list) |
 
 The window talks to the network only to load the images of the open message (`http`/`https`, no cookies, cached for 30 days). Everything else goes through `maild`.
 

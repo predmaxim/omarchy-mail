@@ -1,8 +1,9 @@
 import QtQuick
 
-// The mailboxes page (spec «Ящики и вход»; rules §9: no tabs, Esc — back): the mailboxes with their state, then
-// "Add a mailbox". ↑/↓ walk the mailboxes and the form; on a mailbox d / Del removes it (twice), Enter logs in
-// again after a refused login, else edits its sender name. Addresses, names and service words are plain text.
+// The mailboxes page (spec «Ящики и вход»; rules §9: no tabs, Esc — back): the «List» switch, the mailboxes with
+// their state, then "Add a mailbox". ↑/↓ walk the switch, the mailboxes and the form; on a mailbox d / Del removes it
+// (twice), Enter logs in again after a refused login, else edits its sender name. Addresses, names and service words
+// are plain text.
 FocusScope {
     id: page
     property string provider: "gmail"
@@ -136,6 +137,28 @@ FocusScope {
         }
     }
 
+    component ToggleSwitch: Rectangle {   // the stock shell ToggleSwitch's look: that one needs Quickshell
+        id: toggle
+        property bool checked: false
+        width: theme.space(42)
+        height: theme.space(22)
+        radius: height / 2
+        color: checked ? theme.currentFill : "transparent"
+        border.width: 1
+        border.color: checked ? theme.accent : theme.muted
+        Behavior on color { ColorAnimation { duration: 120 } }
+        Rectangle {
+            width: theme.space(16)
+            height: width
+            radius: height / 2
+            x: toggle.checked ? toggle.width - width - theme.space(3) : theme.space(3)
+            anchors.verticalCenter: parent.verticalCenter
+            color: toggle.checked ? theme.accent : Qt.darker(theme.foreground, 1.25)
+            Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
+    }
+
     Flickable {
         id: flick
         anchors.fill: parent
@@ -151,7 +174,64 @@ FocusScope {
             spacing: theme.space(8)
 
             Caption {
+                text: i18n.t("List")
+            }
+            Rectangle {   // the letter text in the list: Enter, Space, ←/→ or a click flip it
+                id: previewRow
+                objectName: "previewRow"
+                readonly property bool hasCursor: activeFocus || previewMouse.containsMouse
+                width: parent.width
+                height: Math.max(previewLabel.implicitHeight, previewSwitch.height) + 2 * theme.space(8)
+                radius: theme.space(8)
+                color: hasCursor ? theme.hoverFill : "transparent"
+                border.width: 1
+                border.color: hasCursor ? theme.cursorBorder : "transparent"
+                Behavior on color { ColorAnimation { duration: 60 } }
+                KeyNavigation.down: rows
+                onActiveFocusChanged: if (activeFocus) rows.currentIndex = 0   // the form shows the first row
+                Keys.onPressed: e => {
+                    if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+                        return
+                    if ([Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Left, Qt.Key_Right].includes(e.key)) {
+                        if (!e.isAutoRepeat)   // a held key doesn't flicker the switch
+                            app.listPreview = !app.listPreview
+                        e.accepted = true
+                    }
+                }
+                MouseArea {
+                    id: previewMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: {
+                        app.listPreview = !app.listPreview
+                        previewRow.forceActiveFocus()
+                    }
+                }
+                Text {
+                    id: previewLabel
+                    anchors.left: parent.left
+                    anchors.right: previewSwitch.left
+                    anchors.leftMargin: theme.space(12)
+                    anchors.rightMargin: theme.space(12)
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    text: i18n.t("Letter text in the list")
+                    color: theme.foreground
+                    font.pixelSize: theme.fontHeading
+                }
+                ToggleSwitch {
+                    id: previewSwitch
+                    objectName: "previewSwitch"
+                    anchors.right: parent.right
+                    anchors.rightMargin: theme.space(12)
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: app.listPreview
+                }
+            }
+
+            Caption {
                 visible: rows.count > 0
+                topPadding: theme.space(14)
                 text: i18n.t("Mailboxes")
             }
             ListView {
@@ -165,8 +245,9 @@ FocusScope {
                 model: app.accounts.length   // a count: new status texts don't rebuild the rows or move the cursor
                 spacing: theme.space(2)
                 onCurrentIndexChanged: if (activeFocus) page.reveal(currentItem)
+                KeyNavigation.up: previewRow
                 KeyNavigation.down: providerRow
-                KeyNavigation.priority: KeyNavigation.AfterItem   // the list moves first, ↓ on its last row leaves it
+                KeyNavigation.priority: KeyNavigation.AfterItem   // the list moves first, ↑/↓ at its ends leave it
                 Keys.onPressed: e => {
                     const acc = app.accounts[currentIndex]
                     if (!acc || (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)))
@@ -309,7 +390,7 @@ FocusScope {
             }
 
             Caption {
-                topPadding: rows.count > 0 ? theme.space(14) : 0
+                topPadding: theme.space(14)
                 text: i18n.t("Add a mailbox")
             }
             Row {

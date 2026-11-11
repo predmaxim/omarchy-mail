@@ -73,6 +73,12 @@ class TstUi : public QObject {
         qputenv("XDG_CONFIG_HOME", dir->filePath("config").toUtf8());
         return qScopeGuard([config] { qputenv("XDG_CONFIG_HOME", config); });
     }
+    // window.json under ownConfig()
+    QJsonObject saved() const
+    {
+        QFile f(dir->filePath("config/omarchy-mail/window.json"));
+        return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+    }
 
 private Q_SLOTS:
     void initTestCase()
@@ -725,7 +731,6 @@ private Q_SLOTS:
     {
         const auto config = ownConfig();
         const QString file = dir->filePath("config/omarchy-mail/window.json");
-        const auto saved = [file] { QFile f(file); return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject(); };
         const auto fresh = [this] { return Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img")).app.listPreview(); };
         QVERIFY(fresh());   // no file: the text is shown
         s->letter.zoomBy(1);
@@ -855,6 +860,10 @@ private Q_SLOTS:
         QVERIFY(!item("mailList")->isVisible());
         QCOMPARE(item("accountRows")->property("count").toInt(), 0);
         QTRY_VERIFY(item("providerRow")->hasActiveFocus());   // the first mailbox: the form has the keys
+        QTest::keyClick(win, Qt::Key_Up);   // past the empty list: the switch
+        QVERIFY(item("previewRow")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("providerRow")->hasActiveFocus());
     }
     void settings_keys_rows_and_form()
     {
@@ -973,6 +982,66 @@ private Q_SLOTS:
         QVERIFY(!rename->hasActiveFocus());
         QTest::qWait(100);
         QVERIFY(h.sent("account_update").isEmpty());
+    }
+    void list_preview_switch()
+    {
+        const auto config = ownConfig();
+        start();
+        QQuickItem *preview = itemAt(item("mailList"), 0)->findChild<QQuickItem *>("rowPreview");
+        QVERIFY(preview->isVisible());
+        s->app.openSettings();
+        QTRY_VERIFY(item("accountRows")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Down);                                   // the second mailbox
+        QQuickItem *sw = item("previewSwitch");
+        QVERIFY(sw->property("checked").toBool());
+        QTest::mouseClick(win, Qt::LeftButton, {}, sw->mapToScene(QPointF(sw->width() / 2, sw->height() / 2)).toPoint());
+        QVERIFY(item("previewRow")->hasActiveFocus());
+        QCOMPARE(item("accountRows")->property("currentIndex").toInt(), 0);   // the form shows the first row
+        QVERIFY(!s->app.listPreview() && !sw->property("checked").toBool());
+        for (Qt::Key k : {Qt::Key_Return, Qt::Key_Space, Qt::Key_Left, Qt::Key_Right}) {
+            const bool was = s->app.listPreview();
+            QTest::keyClick(win, k);
+            QCOMPARE(s->app.listPreview(), !was);
+        }
+        QKeyEvent held(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "), true);
+        QCoreApplication::sendEvent(win, &held);
+        QVERIFY(!s->app.listPreview());   // a held key doesn't flicker the switch
+        QTest::keyClick(win, Qt::Key_Down);
+        QVERIFY(item("accountRows")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Up);                                     // ↑ from the first mailbox: the switch
+        QVERIFY(item("previewRow")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Escape);
+        QCOMPARE(s->app.page(), QString("main"));
+        QVERIFY(!preview->isVisible());   // checked on the main page: the settings page hides the whole list
+        QCOMPARE(saved(), QJsonObject({{"listPreview", false}}));
+    }
+    void preview_switch_keeps_the_cursor_row_in_sight()   // the rows change height while the list is hidden
+    {
+        const auto config = ownConfig();
+        start();
+        QQuickItem *view = item("mailList");
+        const auto at = [view](int i) { QQuickItem *r = nullptr; QMetaObject::invokeMethod(view, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, r), Q_ARG(int, i)); return r; };
+        const auto inView = [&](int i) { QQuickItem *r = at(i); const qreal y = r ? r->y() - view->property("contentY").toReal() : -1; return r && y >= 0 && y + r->height() <= view->height(); };
+        const qreal tall = at(0)->height();
+        s->app.setListPreview(false);
+        QTRY_VERIFY(at(0)->height() < tall);      // laid out short while the list is shown
+        s->list.setCursor(15);                    // from above: the cursor row at the bottom of the list
+        QTRY_VERIFY(inView(15));
+        const qreal shortRow = at(15)->height();
+        s->app.openSettings();
+        QTRY_VERIFY(item("accountRows")->hasActiveFocus());
+        win->grabWindow();   // a frame before the flip, as between a person's keys: hidden rows then keep their height
+        QTest::keyClick(win, Qt::Key_Up);
+        QTest::keyClick(win, Qt::Key_Return);     // the text back: every row above the cursor grows
+        QTest::keyClick(win, Qt::Key_Escape);
+        QCOMPARE(s->app.page(), QString("main"));
+        win->grabWindow();                        // the frame that lays the shown rows out
+        QVERIFY(at(15)->height() > shortRow);
+        QVERIFY(inView(15));
+        view->setProperty("contentY", 0);         // the wheel: the cursor row out of sight
+        s->app.openSettings();
+        QTest::keyClick(win, Qt::Key_Escape);     // no flip: the list stays where the user left it
+        QCOMPARE(view->property("contentY").toReal(), 0.);
     }
 };
 

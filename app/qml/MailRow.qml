@@ -63,6 +63,9 @@ Rectangle {
         y: row.padY
         width: row.width - 2 * row.padX
         spacing: theme.space(4)
+        // the list shown again: a preview switched while it was hidden is laid out now, not a frame later, so the
+        // list's onVisibleChanged (Main.qml, emitted after its rows') positions the cursor row by the new heights
+        onVisibleChanged: if (visible) forceLayout()
 
         Item {
             width: parent.width
@@ -111,7 +114,7 @@ Rectangle {
         Text {
             objectName: "rowPreview"
             width: parent.width
-            visible: row.previewRich !== ""   // server search hits come without one
+            visible: app.listPreview && row.previewRich !== ""   // server search hits come without one
             elide: Text.ElideRight
             textFormat: Text.StyledText
             text: row.previewRich
