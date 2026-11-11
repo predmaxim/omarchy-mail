@@ -2,6 +2,7 @@
 #include "AppHarness.h"
 #include "Session.h"
 #include <QClipboard>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QPointer>
 #include <QScopeGuard>
@@ -719,6 +720,27 @@ private Q_SLOTS:
         QCOMPARE(zoom(), 1.65);   // the reader's own, over GNOME's
         Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img")).letter.zoomBy(0);
         QCOMPARE(zoom(), 1.5);   // follows GNOME again
+    }
+    void list_preview_is_remembered()
+    {
+        const auto config = ownConfig();
+        const QString file = dir->filePath("config/omarchy-mail/window.json");
+        const auto saved = [file] { QFile f(file); return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject(); };
+        const auto fresh = [this] { return Session(h.d->path(), dir->filePath("drafts"), dir->filePath("img")).app.listPreview(); };
+        QVERIFY(fresh());   // no file: the text is shown
+        s->letter.zoomBy(1);
+        QTRY_COMPARE(saved().value("letterZoom").toDouble(), 1.1);
+        QSignalSpy flips(&s->app, &App::listPreviewChanged);
+        s->app.setListPreview(false);
+        QCOMPARE(saved(), QJsonObject({{"letterZoom", 1.1}, {"listPreview", false}}));   // at once, next to the zoom
+        QCOMPARE(QFileInfo(file).permissions() & 0x7777,
+                 QFile::Permissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser | QFile::WriteUser));
+        QVERIFY(!fresh());   // the next window reads it
+        s->app.setListPreview(false);
+        QCOMPARE(flips.size(), 1);   // no change: no signal
+        s->app.setListPreview(true);
+        QCOMPARE(saved(), QJsonObject({{"letterZoom", 1.1}}));   // the default is no key
+        QVERIFY(fresh());
     }
     void ctrl_plus_minus_zero_zoom_the_letter_only()
     {

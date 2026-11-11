@@ -40,6 +40,7 @@ class App : public QObject {
     Q_PROPERTY(bool letterAtTop READ letterAtTop WRITE setLetterAtTop)   // QML keeps it = letterView.atTop
     Q_PROPERTY(bool adding READ adding NOTIFY changed)
     Q_PROPERTY(QString addError READ addError NOTIFY changed)
+    Q_PROPERTY(bool listPreview READ listPreview WRITE setListPreview NOTIFY listPreviewChanged)
 public:
     App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *nav, Theme *theme,
         QObject *parent = nullptr);
@@ -65,6 +66,8 @@ public:
     void setLetterAtTop(bool v) { m_letterAtTop = v; }
     bool adding() const { return m_adding; }           // account_add's trial login is on its way
     QString addError() const { return m_addError; }
+    bool listPreview() const { return m_listPreview; }   // the letter text under each row; window.json
+    void setListPreview(bool on);
 
     Q_INVOKABLE void pickAccount(int index);           // as accountIndex: -1 all mailboxes
     Q_INVOKABLE void pickFolder(int index);
@@ -108,6 +111,7 @@ Q_SIGNALS:
     void scroll(int cmd, int dir);         // int(Cmd::ScrollLines / ScrollPages / ScrollTop / ScrollEnd) -> LetterView
     void pickFiles();                      // Ctrl+O in the form -> FileDialog
     void accountAdded();                   // the page clears its form
+    void listPreviewChanged();
 
 private:
     void connectedChanged();
@@ -184,6 +188,7 @@ private:
 
     bool m_adding = false;
     QString m_addError;
+    bool m_listPreview;          // window.json "listPreview", read in the ctor
 };
 
 } // namespace om

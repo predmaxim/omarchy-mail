@@ -6,6 +6,7 @@
 #include "I18n.h"
 #include "Letter.h"
 #include "MailList.h"
+#include "Prefs.h"
 #include "Theme.h"
 #include <QDateTime>
 #include <QPointer>
@@ -36,6 +37,7 @@ std::function<void(const QJsonValue &, const QString &)> App::ok(std::function<v
 
 App::App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *nav, Theme *theme, QObject *parent)
     : QObject(parent), m_client(client), m_list(list), m_letter(letter), m_compose(compose), m_nav(nav), m_theme(theme)
+    , m_listPreview(prefs::read().value(QStringLiteral("listPreview")).toBool(true))
 {
     m_searchTimer.setSingleShot(true);
     m_searchTimer.setInterval(150);
@@ -79,6 +81,15 @@ void App::start(qint64 openId)
 }
 
 // ---- properties ----
+
+void App::setListPreview(bool on)
+{
+    if (on == m_listPreview)
+        return;
+    m_listPreview = on;
+    prefs::write(QStringLiteral("listPreview"), on ? QJsonValue() : QJsonValue(false));   // shown is the default: no key
+    Q_EMIT listPreviewChanged();
+}
 
 QVariantList App::accounts() const
 {
