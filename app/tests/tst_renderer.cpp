@@ -428,6 +428,9 @@ private Q_SLOTS:
         QCOMPARE(gap(standards, padded), 60);
         QCOMPARE(gap(quirks, padded), 40);
         QCOMPARE(gap(xhtml, padded), 60);   // not quirks mode: the quirk is quirks-only
+        // collapsed borders: a cell takes half of each, whether its height comes from CSS or from its content
+        QCOMPARE(gap(xhtml, "<td style=\"height:40px;padding:0;border:2px solid\"></td>"),
+                 gap(xhtml, "<td style=\"padding:0;border:2px solid\"><div style=\"height:40px\"></div></td>"));
         // quirks by a public id prefix, compared case-insensitively (HTML, "initial" insertion mode), as in Chromium
         QCOMPARE(gap("<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">", padded), 40);
         QCOMPARE(gap("<!doctype html public \"-//w3o//dtd w3 html strict 3.0//en//\">", padded), 40);

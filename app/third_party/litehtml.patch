@@ -211,15 +211,40 @@ index e2a8344b..30920a91 100644
      return 0_px;
  }
 diff --git a/src/render_table.cpp b/src/render_table.cpp
-index 03a122c8..028e8fd8 100644
+index 03a122c8..206aa65e 100644
 --- a/src/render_table.cpp
 +++ b/src/render_table.cpp
-@@ -146,6 +146,20 @@ litehtml::pixel_t litehtml::render_item_table::_render(pixel_t x, pixel_t y,
+@@ -105,17 +105,18 @@ litehtml::pixel_t litehtml::render_item_table::_render(pixel_t x, pixel_t y,
+     // calc_table_spacings() already refreshed the collapsed-border cache above
+     // when in the collapsing model.
+     const bool collapse = src_el()->css().get_border_collapse() == border_collapse_collapse;
+-    // In the collapsing model a cell takes up half of the collapsed borders on its edges
+-    auto cell_height = [&](int col, int row) {
+-        const table_cell* cell   = m_grid->cell(col, row);
+-        pixel_t           height = cell->el->height();
++    // In the collapsing model a cell takes up half of the collapsed borders on its edges.
++    // row_height() is the height a cell takes in its row when its border box, own borders included, is `height`.
++    auto row_height = [&](int col, int row, pixel_t height) {
+         if(collapse)
+         {
+-            const margins& collapsed = m_grid->collapsed_borders(col, row);
++            const table_cell* cell      = m_grid->cell(col, row);
++            const margins&    collapsed = m_grid->collapsed_borders(col, row);
+             height += (collapsed.top + collapsed.bottom) / 2 - cell->borders.top - cell->borders.bottom;
+         }
+         return height;
+     };
++    auto cell_height = [&](int col, int row) { return row_height(col, row, m_grid->cell(col, row)->el->height()); };
+ 
+     // render cells with computed width
+     for(int row = 0; row < m_grid->rows_count(); row++)
+@@ -146,6 +147,21 @@ litehtml::pixel_t litehtml::render_item_table::_render(pixel_t x, pixel_t y,
                  if(cell->rowspan <= 1)
                  {
                      m_grid->row(row).height = std::max(m_grid->row(row).height, cell_height(col, row));
 +                    // CSS 2.1 17.5.3: a row is at least as tall as the computed height of each of its cells;
-+                    // quirks mode: the height includes padding and borders (quirks spec 3.13)
++                    // quirks mode: the height includes padding and borders (quirks spec 3.13), and in the
++                    // collapsing model those borders already are the halves of the collapsed ones
 +                    const css_length& h = cell->el->src_el()->css().get_height();
 +                    if(!h.is_predefined() && h.units() != css_units_percentage)
 +                    {
@@ -228,7 +253,7 @@ index 03a122c8..028e8fd8 100644
 +                        if(cell->el->src_el()->css().get_box_sizing() == box_sizing_content_box &&
 +                           src_el()->get_document()->mode() != quirks_mode)
 +                        {
-+                            computed += cell->el->content_offset_height();
++                            computed = row_height(col, row, computed + cell->el->content_offset_height());
 +                        }
 +                        m_grid->row(row).height = std::max(m_grid->row(row).height, computed);
 +                    }
