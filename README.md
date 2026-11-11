@@ -75,6 +75,8 @@ A `mailto:` link never goes into an unfinished new message: it gets a letter of 
 
 The folder picker has Flagged across all mailboxes and in each mailbox, right after its Inbox.
 
+A flagged message has a red bar at its left edge (the theme's red, `urgent`), an unread one an accent bar; both together sit side by side, red at the edge. Red is the user's choice: Omarchy rules §9 keep own row marks accent.
+
 One cursor moves through the whole window; the letters work in the Russian layout too (they are matched by key code).
 
 | Key | Action |

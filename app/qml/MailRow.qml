@@ -33,10 +33,23 @@ Rectangle {
     border.color: (!current && mouse.containsMouse) || (isCursor && list.selectedCount > 0) ? theme.cursorBorder : "transparent"
     Behavior on color { ColorAnimation { duration: 60 } }
 
+    // Red is the user's choice (spec «Метки»), against rules.md §9's accent for own row marks.
+    Rectangle {
+        id: flagBar
+        objectName: "flagBar"
+        visible: row.flagged
+        x: theme.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+        width: theme.space(3)
+        height: parent.height - 2 * row.padY
+        radius: width / 2
+        color: theme.urgent
+    }
+
     Rectangle {
         objectName: "unreadBar"
         visible: !row.seen
-        x: theme.space(4)
+        x: row.flagged ? flagBar.x + flagBar.width + theme.space(2) : theme.space(4)
         anchors.verticalCenter: parent.verticalCenter
         width: theme.space(3)
         height: parent.height - 2 * row.padY
@@ -74,12 +87,6 @@ Rectangle {
                     visible: row.attachments
                     text: "󰏢"
                     color: theme.dim
-                    font.pixelSize: theme.fontBody
-                }
-                Text {
-                    visible: row.flagged
-                    text: "󰈻"
-                    color: theme.accent
                     font.pixelSize: theme.fontBody
                 }
                 Text {

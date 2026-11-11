@@ -563,6 +563,29 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(view, "positionViewAtIndex", Q_ARG(int, 10), Q_ARG(int, 4 /* ListView.Contain */));
         QVERIFY(itemAt(view, 10)->findChild<QQuickItem *>("unreadBar")->isVisible());
     }
+    void flagged_row_has_red_bar()
+    {
+        for (int i : {0, 10}) {   // 10 is unread too
+            QJsonObject r = h.rows.at(i).toObject();
+            r.insert("flagged", true);
+            h.rows[i] = r;
+        }
+        start();
+        QQuickItem *view = item("mailList");
+        QQuickItem *flag = itemAt(view, 0)->findChild<QQuickItem *>("flagBar");
+        QVERIFY(flag->isVisible());
+        QCOMPARE(flag->property("color").value<QColor>().rgba(), s->theme.urgent().rgba());
+        QCOMPARE(flag->x(), qreal(s->theme.space(4)));
+        QVERIFY(!itemAt(view, 1)->findChild<QQuickItem *>("flagBar")->isVisible());
+        QVERIFY(s->list.cursor() != 10);   // not the open letter: auto-read never takes its unread mark
+        QMetaObject::invokeMethod(view, "positionViewAtIndex", Q_ARG(int, 10), Q_ARG(int, 4 /* ListView.Contain */));
+        QQuickItem *row = itemAt(view, 10);
+        QQuickItem *red = row->findChild<QQuickItem *>("flagBar"), *unread = row->findChild<QQuickItem *>("unreadBar");
+        QVERIFY(red->isVisible() && unread->isVisible());
+        QCOMPARE(red->x(), qreal(s->theme.space(4)));            // red at the edge
+        QVERIFY(unread->x() > red->x() + red->width());          // accent to its right, a gap between
+        QVERIFY(unread->x() + unread->width() <= row->property("padX").toInt());   // both before the text
+    }
     void empty_subject_shows_a_dim_placeholder()
     {
         const auto subject = [this](int i, const QString &s) {
