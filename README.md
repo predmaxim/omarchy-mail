@@ -127,7 +127,7 @@ The mailboxes page (the gear) has keys of its own:
 | Up / Down | the "Letter text in the list" switch, the mailboxes and "Add a mailbox"; the form below shows the row under the cursor |
 | Enter | on the switch: flip it; on a row: go into the form; in the form's last field: Save (Add) |
 | Space, Left / Right | flip the switch (a click too): show or hide the letter text under the subjects in the list |
-| Up / Down, Tab | between the form's fields |
+| Up / Down, Tab, Shift+Tab | between the form's fields; Tab on a row goes into its form |
 | `d`, Del | remove the mailbox, on the second press only |
 | Esc | from the form back to its row, from the list back to the mail |
 

@@ -2,8 +2,9 @@ import QtQuick
 
 // The mailboxes page (spec «Ящики и вход», round 2 §4; rules §9: no tabs, Esc — back): the «List» switch, the
 // mailboxes with their state, then «Add a mailbox»; the form below shows the row under the cursor. ↑/↓ walk the
-// switch, the rows and the form; Enter on a row goes into the form; on a mailbox d / Del removes it (twice). Esc: from
-// the form back to the row, from the list back to the mail. Addresses, names and service words are plain text.
+// switch, the rows and the form, Tab only the form's fields; Enter on a row goes into the form; on a mailbox d / Del
+// removes it (twice). Esc: from the form back to the row, from the list back to the mail. Addresses, names and service
+// words are plain text.
 FocusScope {
     id: page
     property string provider: "gmail"   // the one chosen on «Add a mailbox»
@@ -66,7 +67,9 @@ FocusScope {
     onFocusedChanged: reveal(focused === rows ? rows.currentItem : focused)
     // the list's keys are on its current row, so `activeFocus`, not `focused === rows`
     Keys.onEscapePressed: rows.activeFocus || previewRow.activeFocus ? app.closeSettings() : rows.forceActiveFocus()
-    onVisibleChanged: if (!visible) fill()   // typed edits and a password don't wait in a hidden page
+    // hidden: typed edits and a password don't wait; shown: a save that ended behind the page is in the form, not the
+    // name from before it (the cursor row, so `formEmail`, may be the same)
+    onVisibleChanged: fill()
 
     Connections {
         target: app
@@ -120,6 +123,7 @@ FocusScope {
                 anchors.rightMargin: theme.space(12)
                 verticalAlignment: TextInput.AlignVCenter
                 focus: true
+                activeFocusOnTab: true   // Tab and Shift+Tab walk the visible fields, as ↑/↓
                 clip: true
                 color: theme.foreground
                 selectionColor: theme.selection

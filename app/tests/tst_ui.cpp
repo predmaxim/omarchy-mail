@@ -896,8 +896,20 @@ private Q_SLOTS:
         for (const char *hidden : {"emailField", "providerRow", "imapHostField", "addButton", "retryButton", "loginState"})
             QVERIFY2(!item(hidden)->isVisible(), hidden);
         QVERIFY(item("saveButton")->isVisible());
+        QTest::keyClick(win, Qt::Key_Tab);   // Tab on a row: into its form, the first field
+        QVERIFY(name->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Escape);
         QTest::keyClick(win, Qt::Key_Return);   // into the form
         QVERIFY(name->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Tab);   // Tab walks the fields too, the hidden ones skipped
+        QVERIFY(item("passwordField")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Tab);   // the last field: round to the first, nothing else is on the chain
+        QVERIFY(name->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Backtab, Qt::ShiftModifier);
+        QVERIFY(item("passwordField")->hasActiveFocus());
+        QTest::keyClick(win, Qt::Key_Backtab, Qt::ShiftModifier);
+        QVERIFY(name->hasActiveFocus());
+        QCOMPARE(name->property("text").toString(), QString("Max"));   // no tab characters
         QTest::keyClick(win, Qt::Key_End);
         type(" P");
         *down = true;   // status churn while typing: the typed name stays
@@ -957,6 +969,35 @@ private Q_SLOTS:
         QVERIFY(h.sent("act").isEmpty());
         QTest::keyClick(win, Qt::Key_Escape);
         QCOMPARE(s->app.page(), QString("main"));
+    }
+    void settings_form_shows_a_save_that_ended_behind_it()
+    {
+        h.d->on("account_update", [this](const QJsonObject &r) {   // the trial login outlasts the page
+            QJsonObject a = h.accounts.at(0).toObject();
+            a["name"] = r.value("name");
+            h.accounts.replace(0, a);
+            return QJsonObject{{"delay", 300}};
+        });
+        start();
+        s->app.openSettings();
+        QQuickItem *rows = item("accountRows");
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QQuickItem *name = item("nameField");
+        QCOMPARE(name->property("text").toString(), QString("Max"));
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_End);
+        type(" P");
+        QTest::keyClick(win, Qt::Key_Return);
+        QTest::keyClick(win, Qt::Key_Return);   // the last field: Save
+        QTRY_COMPARE(h.sent("account_update").size(), 1);
+        QCOMPARE(body(h.sent("account_update").at(0)).value("name").toString(), QString("Max P"));
+        s->app.closeSettings();   // while the login is tried: the form drops to the old name
+        QCOMPARE(s->app.accounts().value(0).toMap().value("name").toString(), QString("Max"));
+        QTRY_COMPARE(s->app.accounts().value(0).toMap().value("name").toString(), QString("Max P"));
+        s->app.openSettings();
+        QTRY_VERIFY(rows->hasActiveFocus());
+        QCOMPARE(rows->property("currentIndex").toInt(), 0);
+        QCOMPARE(name->property("text").toString(), QString("Max P"));   // the saved name, not the one from before
     }
     void settings_form_of_an_imap_mailbox()
     {
