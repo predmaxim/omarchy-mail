@@ -26,7 +26,7 @@ Rectangle {
     readonly property int padY: theme.space(10)
 
     width: ListView.view ? ListView.view.width : 0
-    height: lines.implicitHeight + 2 * padY
+    height: lines.height + 2 * padY
     radius: theme.space(8)
     color: current ? theme.currentFill : mouse.containsMouse ? theme.hoverFill : "transparent"
     border.width: 1
@@ -57,17 +57,21 @@ Rectangle {
         color: theme.accent
     }
 
-    Column {
+    // Anchors and bindings, not a Column: a Column under the hidden list (the mailboxes page) relayouts only once
+    // shown, and the list would place the cursor row by the old heights. The conditions, not `visible`: under a
+    // hidden ancestor `visible` is false.
+    Item {
         id: lines
+        readonly property int gap: theme.space(4)
+        readonly property bool hasPreview: app.listPreview && row.previewRich !== ""   // server search hits come without one
+        readonly property Item last: row.place !== "" ? placeLine : hasPreview ? previewLine : subjectLine
         x: row.padX
         y: row.padY
         width: row.width - 2 * row.padX
-        spacing: theme.space(4)
-        // the list shown again: a preview switched while it was hidden is laid out now, not a frame later, so the
-        // list's onVisibleChanged (Main.qml, emitted after its rows') positions the cursor row by the new heights
-        onVisibleChanged: if (visible) forceLayout()
+        height: last.y + last.height
 
         Item {
+            id: head
             width: parent.width
             height: senderText.implicitHeight
             Text {
@@ -102,8 +106,11 @@ Rectangle {
             }
         }
         Text {
+            id: subjectLine
             objectName: "subject"
             readonly property bool none: row.subject.trim() === ""
+            anchors.top: head.bottom
+            anchors.topMargin: lines.gap
             width: parent.width
             elide: Text.ElideRight
             textFormat: none ? Text.PlainText : Text.StyledText
@@ -112,9 +119,12 @@ Rectangle {
             font.pixelSize: theme.fontTitle
         }
         Text {
+            id: previewLine
             objectName: "rowPreview"
+            anchors.top: subjectLine.bottom
+            anchors.topMargin: lines.gap
             width: parent.width
-            visible: app.listPreview && row.previewRich !== ""   // server search hits come without one
+            visible: lines.hasPreview
             elide: Text.ElideRight
             textFormat: Text.StyledText
             text: row.previewRich
@@ -122,7 +132,10 @@ Rectangle {
             font.pixelSize: theme.fontSubtitle
         }
         Text {
+            id: placeLine
             objectName: "rowPlace"
+            anchors.top: lines.hasPreview ? previewLine.bottom : subjectLine.bottom
+            anchors.topMargin: lines.gap
             width: parent.width
             visible: row.place !== ""
             elide: Text.ElideRight

@@ -1030,13 +1030,14 @@ private Q_SLOTS:
         const qreal shortRow = at(15)->height();
         s->app.openSettings();
         QTRY_VERIFY(item("accountRows")->hasActiveFocus());
-        win->grabWindow();   // a frame before the flip, as between a person's keys: hidden rows then keep their height
+        win->grabWindow();   // a frame before the flip, as between a person's keys
         QTest::keyClick(win, Qt::Key_Up);
         QTest::keyClick(win, Qt::Key_Return);     // the text back: every row above the cursor grows
+        QVERIFY(at(15)->height() > shortRow);     // at the flip itself, behind the page: no layout pass needed
         QTest::keyClick(win, Qt::Key_Escape);
         QCOMPARE(s->app.page(), QString("main"));
-        win->grabWindow();                        // the frame that lays the shown rows out
-        QVERIFY(at(15)->height() > shortRow);
+        QVERIFY(inView(15));                      // at once, before a frame
+        win->grabWindow();
         QVERIFY(inView(15));
         view->setProperty("contentY", 0);         // the wheel: the cursor row out of sight
         s->app.openSettings();
