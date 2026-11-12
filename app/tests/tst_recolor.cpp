@@ -49,6 +49,14 @@ private Q_SLOTS:
     {
         auto f = recolor::filter(bg, fg, true);
         QCOMPARE(f(Qt::white).rgb(), fg.rgb());
+        // twice: the second call is the remembered one; two alphas of one red are two keys
+        for (bool dark : {false, true}) {
+            const auto g = recolor::filter(bg, fg, dark);
+            for (const QColor &c : {QColor(Qt::white), QColor(Qt::black), QColor("#0000ff"), QColor("#6366f1"),
+                                    QColor(255, 0, 0, 128), QColor(255, 0, 0, 255), QColor("#3a3f4c")})
+                for (int i = 0; i < 2; ++i)
+                    QCOMPARE(g(c).rgba(), recolor::map(c, bg, fg, dark).rgba());
+        }
     }
     // a grey that map() turns into a theme colour between bg and fg: our own quote bar and quote text
     void unmap_inverts_map()

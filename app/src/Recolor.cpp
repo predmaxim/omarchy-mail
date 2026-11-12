@@ -1,8 +1,11 @@
 #include "Recolor.h"
 
+#include <QHash>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <memory>
 #include <vector>
 
 namespace om::recolor {
@@ -48,7 +51,13 @@ QColor map(const QColor &c, const QColor &bg, const QColor &fg, bool darkLetter)
 
 std::function<QColor(const QColor &)> filter(QColor bg, QColor fg, bool darkLetter)
 {
-    return [=](const QColor &c) { return map(c, bg, fg, darkLetter); };
+    // map bisects 24 times over pow-heavy luminance: a paint repeats a handful of colours
+    return [=, cache = std::make_shared<QHash<QRgb, QColor>>()](const QColor &c) {
+        auto it = cache->constFind(c.rgba());
+        if (it == cache->cend())
+            it = cache->insert(c.rgba(), map(c, bg, fg, darkLetter));
+        return *it;
+    };
 }
 
 QColor unmap(const QColor &target, const QColor &bg, const QColor &fg, bool darkLetter)
