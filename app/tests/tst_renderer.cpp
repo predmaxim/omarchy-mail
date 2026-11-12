@@ -327,6 +327,30 @@ private Q_SLOTS:
         QVERIFY(height("font-size:5px;line-height:1", "Hg") < 8);
     }
 
+    // a css font list takes its first installed family, as browsers do: Qt got the whole list, fontconfig put any font
+    // in place of a missing first name, and a <pre> in "Menlo, Monaco, monospace" came out proportional
+    void font_list_uses_the_first_installed_family()
+    {
+        // the width of each line of a <pre> in that font list (an inline span has no box of its own)
+        const auto widths = [&](const QString &family, const QStringList &lines) {
+            const QString span = QStringLiteral("<span style=\"display:inline-block\">");
+            const Rendered r = run(job(QStringLiteral("<pre style=\"font-family:%1\">%2%3</span></pre>")
+                                           .arg(family, span, lines.join("</span><br>" + span))));
+            QList<int> v;
+            for (const QRect &line : r.doc ? r.doc->boxes(QStringLiteral("span")) : QList<QRect>())
+                v << line.width();
+            return v;
+        };
+        const QList<int> fixed = widths("NoSuchFamilyOmTest, AnotherMissingOne, monospace", {"iiiiiiiiii", "WWWWWWWWWW"});
+        QCOMPARE(fixed.size(), 2);
+        QVERIFY(fixed.at(0) > 0);
+        QVERIFY2(qAbs(fixed.at(0) - fixed.at(1)) <= 1, qPrintable(QString("%1 != %2").arg(fixed.at(0)).arg(fixed.at(1))));
+        const QStringList word{QStringLiteral("Hamburgefonstiv")};
+        QCOMPARE(widths("NoSuchFamilyOmTest, serif", word), widths("serif", word));
+        // nothing installed and no generic name: the default font (the job's is sans-serif), as with no font-family
+        QCOMPARE(widths("NoSuchFamilyOmTest", word), widths("sans-serif", word));
+    }
+
     // A newsletter's 600 px shell: its rule for phones applies only in a narrow window, and a centred
     // cell or <center> centres it, as in browsers (HTML "align descendants", WebKit's -webkit-center)
     void fixed_width_shell_centred()
