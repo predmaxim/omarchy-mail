@@ -103,20 +103,25 @@ QColor unmap(const QColor &target, const QColor &bg, const QColor &fg, bool dark
     }
     const QColor c0 = QColor::fromHslF(qMax(0.f, h), sat, (l0 + l1) / 2);
 
-    // litehtml keeps colours in bytes, and rounding a dark saturated colour moves its map() far: the best byte
-    // neighbour (±2 would pull targets past the range toward other hues)
-    QColor best;
+    // litehtml keeps colours in bytes, and rounding a dark saturated colour moves its map() far: step to the best
+    // byte neighbour until none maps nearer (±2 would pull targets past the range toward other hues).
+    // shortcut: a local search, so hackerman's accent in a light letter lands 7 off where a byte 4 off exists;
+    // search along the saturation if a theme's accent or greys visibly drift.
+    QColor best(c0.red(), c0.green(), c0.blue()), from;
     double bestD = 1e9;
-    for (int dr = -1; dr <= 1; ++dr)
-        for (int dg = -1; dg <= 1; ++dg)
-            for (int db = -1; db <= 1; ++db) {
-                const QColor u(std::clamp(c0.red() + dr, 0, 255), std::clamp(c0.green() + dg, 0, 255),
-                               std::clamp(c0.blue() + db, 0, 255));
-                const QColor o = map(u, bg, fg, darkLetter);
-                const double d = std::abs(o.redF() - T[0]) + std::abs(o.greenF() - T[1]) + std::abs(o.blueF() - T[2]);
-                if (d < bestD)
-                    bestD = d, best = u;
-            }
+    while (from != best) {
+        from = best;
+        for (int dr = -1; dr <= 1; ++dr)
+            for (int dg = -1; dg <= 1; ++dg)
+                for (int db = -1; db <= 1; ++db) {
+                    const QColor u(std::clamp(from.red() + dr, 0, 255), std::clamp(from.green() + dg, 0, 255),
+                                   std::clamp(from.blue() + db, 0, 255));
+                    const QColor o = map(u, bg, fg, darkLetter);
+                    const double d = std::abs(o.redF() - T[0]) + std::abs(o.greenF() - T[1]) + std::abs(o.blueF() - T[2]);
+                    if (d < bestD)
+                        bestD = d, best = u;
+                }
+    }
     return best;
 }
 

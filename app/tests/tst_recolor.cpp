@@ -117,6 +117,37 @@ private Q_SLOTS:
         // past the range: its nearest end
         QCOMPARE(recolor::map(recolor::unmap(QColor("#1e1e1e"), light[0], light[1], false), light[0], light[1], false).name(),
                  QString("#2a2a2a"));
+
+        // the stock Omarchy themes' accents (background, foreground, accent): no byte a step away maps nearer, and
+        // map() lands within 3, but hackerman's in a light letter 7 off, the limit unmap's shortcut names
+        const char *stock[][3] = {
+            {"#1e1e2e", "#cdd6f4", "#89b4fa"}, {"#eff1f5", "#4c4f69", "#1e66f5"}, {"#060B1E", "#ffcead", "#7d82d9"},
+            {"#2d353b", "#d3c6aa", "#7fbbb3"}, {"#FFFCF0", "#100F0F", "#205EA6"}, {"#282828", "#d4be98", "#7daea3"},
+            {"#0B0C16", "#ddf7ff", "#82FB9C"}, {"#142620", "#dfede5", "#8bcbb1"}, {"#1f1f28", "#dcd7ba", "#dcd7ba"},
+            {"#0c0b0c", "#FAFCFB", "#b59790"}, {"#16242d", "#d6e2ee", "#8bc9eb"}, {"#fafafa", "#212121", "#3264eb"},
+            {"#121212", "#bebebe", "#e68e0d"}, {"#222222", "#c2c2b0", "#78824b"}, {"#2e3440", "#d8dee9", "#81a1c1"},
+            {"#05182e", "#f6dcac", "#faa968"}, {"#2c2525", "#e6d9db", "#f38d70"}, {"#faf4ed", "#575279", "#56949f"},
+            {"#101315", "#cacccc", "#798186"}, {"#1c1c1e", "#f5f5f7", "#ff9f0a"}, {"#1a1b26", "#a9b1d6", "#7aa2f7"},
+            {"#000000", "#ffffff", "#8d8d8d"}, {"#ffffff", "#000000", "#6e6e6e"}};
+        const auto off = [](const QColor &a, const QColor &b) {
+            return std::abs(a.redF() - b.redF()) + std::abs(a.greenF() - b.greenF()) + std::abs(a.blueF() - b.blueF());
+        };
+        for (const auto &[sb, sf, sa] : stock)
+            for (bool dark : {false, true}) {
+                const QColor b(sb), f(sf), c(sa), u = recolor::unmap(c, b, f, dark), o = recolor::map(u, b, f, dark);
+                const QString what = c.name() + " " + o.name() + (dark ? " dark" : " light");
+                QCOMPARE(u, QColor(u.name()));
+                QVERIFY2(qAbs(o.red() - c.red()) + qAbs(o.green() - c.green()) + qAbs(o.blue() - c.blue())
+                             <= (c == QColor("#82FB9C") && !dark ? 7 : 3),
+                         qPrintable(what));
+                for (int dr = -1; dr <= 1; ++dr)
+                    for (int dg = -1; dg <= 1; ++dg)
+                        for (int db = -1; db <= 1; ++db) {
+                            const QColor n(qBound(0, u.red() + dr, 255), qBound(0, u.green() + dg, 255),
+                                           qBound(0, u.blue() + db, 255));
+                            QVERIFY2(off(recolor::map(n, b, f, dark), c) >= off(o, c), qPrintable(what + " " + n.name()));
+                        }
+            }
     }
     void dark_detection()
     {

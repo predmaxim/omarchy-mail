@@ -10,7 +10,8 @@ namespace om::recolor {
 // darkLetter = the letter already has a dark background.
 QColor map(const QColor &c, const QColor &bg, const QColor &fg, bool darkLetter);
 std::function<QColor(const QColor &)> filter(QColor bg, QColor fg, bool darkLetter);
-// The 8-bit colour whose map() is nearest target (litehtml keeps colours in bytes): our own colours in a letter.
+// An 8-bit colour (litehtml keeps colours in bytes) whose map() is near target, no byte a step of ±1 per channel
+// away maps nearer: our own colours in a letter. A search from the exact inverse, so not always the nearest of all.
 QColor unmap(const QColor &target, const QColor &bg, const QColor &fg, bool darkLetter);
 // Median HSL lightness of every 4th pixel (both axes) < 0.5.
 bool isDarkLetter(const QImage &probe);
