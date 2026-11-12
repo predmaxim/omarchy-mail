@@ -244,7 +244,8 @@ private Q_SLOTS:
         const Rendered r = run(job(QString::fromUtf8(readFile(fixture("light.html")))));
         QVERIFY(r.doc);
         QCOMPARE(redPixels(drawn(r)), 0);
-        // only the dark text (#222) turns red: white fills, the blue button and grey text stay
+        // only the dark text (#222) and the unsubscribe link (the accent unmapped for a light letter, dark) turn red:
+        // white fills, the blue button and grey text stay
         r.doc->setColorFilter([](const QColor &c) { return c.lightness() < 100 ? QColor(Qt::red) : c; });
         QVERIFY(redPixels(drawn(r)) > 0);
     }
@@ -934,6 +935,46 @@ private Q_SLOTS:
                                       + qAbs(p.blue() - j.accent.blue()));
             }
         QVERIFY2(best < 30, qPrintable(QString::number(best)));
+    }
+
+    // links without a colour of their own are the theme's accent (litehtml's #00f fell to 1.92:1), light and dark
+    // letters, our auto-links in plain text too; the letter's own colour wins
+    void links_take_the_accent()
+    {
+        const auto best = [](const Rendered &r, const RenderJob &j) {
+            QImage img(760, r.size.height(), QImage::Format_RGB32);
+            img.fill(j.background);
+            r.doc->setColorFilter(recolor::filter(j.background, j.foreground, r.dark));
+            QPainter p(&img);
+            r.doc->draw(&p, img.rect());
+            p.end();
+            int b = 999;
+            const QRect l = r.links.at(0).rect;
+            for (int y = l.top(); y <= l.bottom(); ++y)
+                for (int x = l.left(); x <= l.right(); ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    b = qMin(b, qAbs(c.red() - j.accent.red()) + qAbs(c.green() - j.accent.green())
+                                    + qAbs(c.blue() - j.accent.blue()));
+                }
+            return b;
+        };
+        for (const char *style : {"", "background:#000;color:#fff"}) {
+            const RenderJob j = job(QStringLiteral("<body style=\"margin:0\"><div style=\"%1\"><p><a href=\"https://x.org/\">"
+                                                   "Accent link</a></p><div style=\"height:400px\"></div></div></body>")
+                                        .arg(QLatin1String(style)));
+            const Rendered r = run(j);
+            QCOMPARE(r.dark, *style != 0);
+            QCOMPARE(r.links.size(), 1);
+            const int b = best(r, j);
+            QVERIFY2(b < 30, qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(style)).arg(b)));
+        }
+        const RenderJob plain = job(renderSource({{"text", "see https://x.org/ now"}}, {}, QColor()));
+        const Rendered p = run(plain);
+        QCOMPARE(p.links.size(), 1);
+        QVERIFY2(best(p, plain) < 30, qPrintable(QString::number(best(p, plain))));
+        for (const char *html : {"<a href=\"https://x.org/\" style=\"color:#f00\">Own</a>",
+                                 "<style>a{color:#f00}</style><a href=\"https://x.org/\">Own</a>"})
+            QVERIFY2(redPixels(drawn(run(job(QString::fromLatin1(html))))) > 0, html);
     }
 
     // plain text: runs of "> " lines are quotes too, without the marks

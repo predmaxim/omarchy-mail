@@ -117,14 +117,16 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *picture, QList<
 // Our user-agent sheet after litehtml's, like Geary's (a letter's own CSS wins): roomier lines, <pre> that
 // wraps, quotes with a bar on the left only, a picture of no set height no wider than its block (it shrinks itself,
 // not the letter by the fit; with a height= litehtml would keep that height and squash it). The bar and the quote's text are the greys the colour filter
-// turns into the theme's muted and dim, and the filter runs the other way on a dark letter.
+// turns into the theme's muted and dim, a link without a colour of its own the accent (after litehtml's a:link #00f, so
+// ours wins); the filter runs the other way on a dark letter.
 static QString userAgentCss(const RenderJob &job, bool dark)
 {
-    const auto grey = [&](const QColor &c) { return recolor::unmap(c, job.background, job.foreground, dark).name(); };
+    const auto unmapped = [&](const QColor &c) { return recolor::unmap(c, job.background, job.foreground, dark).name(); };
     return QStringLiteral("body{margin:12px;line-height:1.7}h1,h2,h3,h4,h5,h6{line-height:1.2}table{font-size:inherit}"
                           "pre{white-space:pre-wrap}img:not([height]){max-width:100%}"
-                          "blockquote{margin:.3em 0 .3em 16px;padding:0 0 0 8px;border-left:3px solid %1;color:%2}")
-        .arg(grey(job.muted), grey(job.dim));
+                          "blockquote{margin:.3em 0 .3em 16px;padding:0 0 0 8px;border-left:3px solid %1;color:%2}"
+                          "a:link{color:%3}")
+        .arg(unmapped(job.muted), unmapped(job.dim), unmapped(job.accent));
 }
 
 // Like Geary: a top-level quote taller than 120 px (boxes: of every quote, laid out) gives its place to a
@@ -247,7 +249,7 @@ void Renderer::render(const RenderJob &job)
         });
         auto holder = layOut(html, userAgentCss(job, false), job, &r.wanted);
         r.dark = isDark(holder->doc, job.width);
-        // once more without the tall quotes, or with the quotes' greys for a dark letter
+        // once more without the tall quotes, or with a dark letter's sheet (quote greys, link accent)
         const QList<QRect> boxes = holder->doc.boxes(QStringLiteral("blockquote"));
         const QByteArray shown = boxes.size() == quotes.size() ? folded(html, quotes, boxes, job, r.dark) : html;
         // content of a fixed width wider than the job's (a 600 px newsletter at a big zoom) is laid out as wide as
@@ -255,7 +257,7 @@ void Renderer::render(const RenderJob &job)
         std::vector<std::shared_ptr<Holder>> dropped;
         RenderJob fit = job;
         fit.width = qMax(job.width, needed(*holder, html, userAgentCss(job, false), job, &dropped));
-        if (shown != html || (r.dark && !quotes.isEmpty()) || fit.width != job.width)
+        if (shown != html || r.dark || fit.width != job.width)
             dropped.push_back(std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), fit, &r.wanted)));
         r.width = fit.width;
         if (fit.width != job.width)   // as wide as it came out: width:100% plus padding overflows again
