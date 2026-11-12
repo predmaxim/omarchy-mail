@@ -100,6 +100,17 @@ class TstLetterView : public QObject {
         QWheelEvent e(at, win->mapToGlobal(at), QPoint(), QPoint(0, angle), Qt::NoButton, mods, Qt::NoScrollPhase, false);
         QGuiApplication::sendEvent(win, &e);
     }
+    // The document box of the first `text` (findText selects it; the next press drops that selection).
+    QRect textBox(const QString &text)
+    {
+        bool found = false;
+        QVector<QRect> boxes;
+        letter->document()->findText(text, {}, false, nullptr, &found, nullptr, &boxes);
+        return found && !boxes.isEmpty() ? boxes.first() : QRect();
+    }
+    QPoint viewAt(const QPoint &doc) const { return {theme->space(18) + doc.x(), doc.y() - int(view->scrollY())}; }   // zoom 1
+    // Qt counts clicks by event time: 600 simulated ms start a new click sequence (QTest's interval is 500, Qt's 400)
+    void pause() { QTest::mouseMove(win, QPoint(1, 1), 600); }
 
 private Q_SLOTS:
     void init()
@@ -186,6 +197,22 @@ private Q_SLOTS:
         QTest::mouseMove(win, QPoint(m + 120, m + 8));
         QTest::mouseRelease(win, Qt::LeftButton, {}, QPoint(m + 120, m + 8));
         QVERIFY(!view->selectedText().isEmpty());
+    }
+    void double_click_selects_a_word_and_opens_a_link_once()
+    {
+        QTemporaryDir dir(scratch());
+        const QString stub = writeStub(dir.path());
+        launch::setProgramForTests(stub);
+        open(QStringLiteral("<p>Alpha beta gamma <a href=\"https://x.org/go\">Linkword</a></p>"));
+        const QPoint beta = viewAt(textBox("beta").center()), link = viewAt(textBox("Linkword").center());
+        pause();
+        QTest::mouseDClick(win, Qt::LeftButton, {}, beta);
+        QCOMPARE(view->selectedText(), QString("beta"));
+        QTest::mouseDClick(win, Qt::LeftButton, {}, link);
+        QCOMPARE(view->selectedText(), QString("Linkword"));
+        QTRY_COMPARE(stubCalls(stub).size(), 1);   // the first click opened it; the second one selected
+        QTest::qWait(200);
+        QCOMPARE(stubCalls(stub).size(), 1);
     }
     void expanding_quotes_keeps_scroll()
     {

@@ -126,6 +126,12 @@ Selecting several messages works as in a file manager:
 
 `d`, `u`, `f` act on all selected messages and Ctrl+Z undoes the whole batch; without a selection they act, as `r`, `o`, `y` do, on the open message.
 
+Text in a letter is selected with the mouse as in a browser:
+
+| Mouse | Action |
+|---|---|
+| double click | the word; on a link the link opens once |
+
 The mailboxes page (the gear) has keys of its own:
 
 | Key | Action |

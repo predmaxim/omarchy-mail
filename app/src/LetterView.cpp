@@ -194,7 +194,7 @@ void LetterView::paint(QPainter *p)
     }
 }
 
-// kind: 0 press, 1 move, 2 release
+// kind: 0 press, 1 move, 2 release, 3 double click
 void LetterView::mouse(const QPointF &pos, int kind, Qt::MouseButton button)
 {
     const auto doc = m_letter ? m_letter->document() : nullptr;
@@ -208,8 +208,10 @@ void LetterView::mouse(const QPointF &pos, int kind, Qt::MouseButton button)
         doc->mousePressEvent(docPos, view, button);
     else if (kind == 1)
         doc->mouseMoveEvent(docPos, view);
-    else
+    else if (kind == 2)
         doc->mouseReleaseEvent(docPos, view, button);
+    else
+        doc->mouseDoubleClickEvent(docPos, view, button);
     update();   // selection and :hover boxes are small; the window is one repaint
 }
 
@@ -220,6 +222,7 @@ void LetterView::mousePressEvent(QMouseEvent *e)
 }
 void LetterView::mouseMoveEvent(QMouseEvent *e) { mouse(e->position(), 1, Qt::NoButton); }
 void LetterView::mouseReleaseEvent(QMouseEvent *e) { mouse(e->position(), 2, e->button()); }
+void LetterView::mouseDoubleClickEvent(QMouseEvent *e) { mouse(e->position(), 3, e->button()); }
 void LetterView::hoverMoveEvent(QHoverEvent *e) { mouse(e->position(), 1, Qt::NoButton); }
 
 void LetterView::wheelEvent(QWheelEvent *e)
