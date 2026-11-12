@@ -53,8 +53,8 @@ Window {
     }
     Binding {
         target: app
-        property: "letterAtTop"
-        value: pane.view.atTop
+        property: "letterViewport"
+        value: Qt.rect(0, pane.view.scrollY, pane.view.width, pane.view.height)
     }
 
     Item {

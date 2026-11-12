@@ -4,6 +4,7 @@
 #include "Letter.h"
 #include "MailList.h"
 #include <QScopedValueRollback>
+#include <QTransform>
 
 namespace om {
 
@@ -162,10 +163,18 @@ NavShape App::shape() const
     s.pickers = accountChoices().isEmpty() ? 1 : 2;
     s.outbox = m_letter->outbox() == 2 ? 2 : 0;   // "Send again" and "Discard" under a mail that wasn't sent
     s.attachments = int(m_letter->attachments().size());
-    s.links = m_letter->linkCount();
+    const qreal z = m_letter->documentZoom();   // the mapping LetterView paints with
+    for (const DocumentContainer::Link &l : m_letter->links())
+        s.links << QTransform::fromScale(z, z).mapRect(QRectF(l.rect));
+    s.view = m_letterViewport;
     s.listAtTop = m_list->cursor() <= 0;
-    s.textAtTop = m_letterAtTop;
     return s;
+}
+
+void App::setLetterViewport(const QRectF &v)
+{
+    m_letterViewport = v;
+    m_nav->scrolled(shape());
 }
 
 void App::run(const Step &st, bool repeat)

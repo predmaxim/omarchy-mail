@@ -206,12 +206,51 @@ private Q_SLOTS:
         start();
         QQuickItem *view = item("letterView");
         QTRY_VERIFY_WITH_TIMEOUT(view->property("contentHeight").toInt() > view->height(), 10000);
-        QVERIFY(s->app.letterAtTop());
+        QCOMPARE(s->app.letterViewport().top(), 0.0);
         QTest::keyClick(win, Qt::Key_PageDown);
         QVERIFY(view->property("scrollY").toReal() > 0);
-        QVERIFY(!s->app.letterAtTop());
+        QVERIFY(s->app.letterViewport().top() > 0);
         QTest::keyClick(win, Qt::Key_PageUp);
         QCOMPARE(view->property("scrollY").toReal(), 0.0);
+    }
+    void down_steps_through_links_on_screen_then_scrolls()
+    {
+        h.d->on("message", [](const QJsonObject &r) {
+            QJsonObject f = letter(r.value("message").toInteger());
+            f.insert("html", "<p><a href=\"https://x.org/1\">one</a></p><div style=\"height:3000px\"></div>"
+                             "<p><a href=\"https://x.org/2\">two</a></p>");
+            return QJsonObject{{"result", f}};
+        });
+        start();
+        letterShown();
+        QTRY_COMPARE_WITH_TIMEOUT(s->letter.linkCount(), 2, 10000);
+        QQuickItem *view = item("letterView");
+        const auto link = [view] { return view->property("currentLink").toInt(); };
+        const auto y = [view] { return view->property("scrollY").toReal(); };
+        QTest::keyClick(win, Qt::Key_Right);
+        QCOMPARE(s->nav.row(), int(Row::Attachments));   // message.json has 2
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(s->nav.row(), int(Row::Body));
+        QCOMPARE(link(), 0);
+        const qreal bottom0 = s->letter.links().at(0).rect.bottom() * s->letter.documentZoom();
+        int presses = 0;
+        for (; link() != 1 && presses < 200; ++presses) {
+            QTest::keyClick(win, Qt::Key_Down);
+            if (y() > bottom0)
+                QVERIFY(link() != 0);   // off the screen: no longer current
+        }
+        QCOMPARE(link(), 1);
+        QVERIFY(presses > 1);   // the screen scrolled between the two links
+        const qreal down = y();
+        QTest::keyClick(win, Qt::Key_Up);
+        QVERIFY(y() < down);
+        QTest::keyClick(win, Qt::Key_Home);
+        QCOMPARE(y(), 0.0);
+        QCOMPARE(link(), -1);
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(link(), 0);
+        QTest::keyClick(win, Qt::Key_Up);
+        QCOMPARE(s->nav.row(), int(Row::Attachments));
     }
     void open_picker_keeps_the_keys_then_gives_them_back()
     {

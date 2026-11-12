@@ -4,6 +4,15 @@
 using namespace om;
 
 static KeyPress kp(KeyAction a, bool ctrl = false, bool shift = false) { return {a, ctrl, shift}; }
+// The letter on a 600 px screen scrolled to `y`; its links' boxes in view px.
+static NavShape body(const QList<QRectF> &links, qreal y = 0)
+{
+    NavShape s;
+    s.links = links;
+    s.view = QRectF(0, y, 800, 600);
+    return s;
+}
+static QRectF at(qreal x, qreal y) { return QRectF(x, y, 60, 20); }
 
 class TstNav : public QObject {
     Q_OBJECT
@@ -85,70 +94,97 @@ private Q_SLOTS:
         QCOMPARE(n.col(), 0);
     }
     void right_enters_first_available()
-    {
-        Nav n;
-        NavShape s;
-        s.links = 2;
-        Step st = n.press(kp(KeyAction::Right), s);
-        QCOMPARE(st.cmd, Cmd::EnterLetter);
-        QCOMPARE(n.row(), int(Row::Links));
-        QCOMPARE(n.col(), 0);
-        n.reset();
-        s.outbox = 2;
-        n.press(kp(KeyAction::Enter), s);
-        QCOMPARE(n.row(), int(Row::Outbox));
-        n.reset();
-        s.outbox = 0;
-        s.links = 0;
-        n.press(kp(KeyAction::Right), s);
-        QCOMPARE(n.row(), int(Row::Text));
-    }
-    void left_on_first_returns_to_list()
-    {
-        Nav n;
-        NavShape s;
-        s.links = 2;
-        n.press(kp(KeyAction::Right), s);
-        n.press(kp(KeyAction::Right), s);
-        QCOMPARE(n.col(), 1);
-        n.press(kp(KeyAction::Left), s);
-        QCOMPARE(n.col(), 0);
-        QCOMPARE(n.row(), int(Row::Links));
-        n.press(kp(KeyAction::Left), s);
-        QCOMPARE(n.row(), int(Row::List));
+    {   // links at 100 and 1000; screen at 0, then at 650, then at 200
+        Nav n; NavShape s = body({at(10, 100), at(10, 1000)});
+        QCOMPARE(n.press(kp(KeyAction::Right), s).cmd, Cmd::EnterLetter);
+        QCOMPARE(n.row(), int(Row::Body)); QCOMPARE(n.col(), 0);          // the first link on screen
+        n.reset(); s.view.moveTop(650); n.press(kp(KeyAction::Enter), s); QCOMPARE(n.col(), 1);
+        n.reset(); s.view.moveTop(200); n.press(kp(KeyAction::Right), s); QCOMPARE(n.col(), -1);   // only scrolling
+        n.reset(); s.attachments = 2; n.press(kp(KeyAction::Right), s); QCOMPARE(n.row(), int(Row::Attachments));
+        n.reset(); s.outbox = 2; n.press(kp(KeyAction::Enter), s); QCOMPARE(n.row(), int(Row::Outbox));
     }
     void esc_in_letter_returns_to_list()
     {
         Nav n;
         NavShape s;
         n.press(kp(KeyAction::Right), s);
-        QCOMPARE(n.row(), int(Row::Text));
+        QCOMPARE(n.row(), int(Row::Body));
         n.press(kp(KeyAction::Escape), s);
         QCOMPARE(n.row(), int(Row::List));
     }
-    void text_up_at_top_goes_up()
+    void body_down_up_step_links_on_screen_else_scroll()
     {
-        Nav n;
-        NavShape s;
-        s.links = 1;
-        n.press(kp(KeyAction::Right), s);
-        n.press(kp(KeyAction::Down), s);
-        QCOMPARE(n.row(), int(Row::Text));
-        s.textAtTop = false;
-        Step st = n.press(kp(KeyAction::Up), s);
-        QCOMPARE(st.cmd, Cmd::ScrollLines);
-        QCOMPARE(st.dir, -1);
-        QCOMPARE(n.row(), int(Row::Text));
-        st = n.press(kp(KeyAction::Down), s);
-        QCOMPARE(st.dir, 1);
-        s.textAtTop = true;
-        n.press(kp(KeyAction::Up), s);
-        QCOMPARE(n.row(), int(Row::Links));
-        QCOMPARE(n.press(kp(KeyAction::PageDown), s).cmd, Cmd::None);
-        n.press(kp(KeyAction::Down), s);
+        Nav n; NavShape s = body({at(10, 100), at(10, 300), at(10, 900)});
+        n.press(kp(KeyAction::Right), s); QCOMPARE(n.col(), 0);
+        n.press(kp(KeyAction::Down), s); QCOMPARE(n.col(), 1);
+        Step st = n.press(kp(KeyAction::Down), s);                 // link 2 starts below the screen
+        QCOMPARE(st.cmd, Cmd::ScrollLines); QCOMPARE(st.dir, 1); QCOMPARE(n.col(), 1);
+        s.view.moveTop(400); n.scrolled(s); QCOMPARE(n.col(), -1);  // link 1 went off the top
+        n.press(kp(KeyAction::Down), s); QCOMPARE(n.col(), 2);      // the first link on screen
+        st = n.press(kp(KeyAction::Up), s);                         // link 1 is above the screen
+        QCOMPARE(st.cmd, Cmd::ScrollLines); QCOMPARE(st.dir, -1); QCOMPARE(n.col(), 2);
+    }
+    void body_up_without_current_takes_last_on_screen()
+    {
+        Nav n; const NavShape s = body({at(10, 100), at(10, 300), at(10, 500)}, 50);
+        n.reset(Row::Body, -1); n.press(kp(KeyAction::Up), s); QCOMPARE(n.col(), 2);
+        n.reset(Row::Body, -1); n.press(kp(KeyAction::Down), s); QCOMPARE(n.col(), 0);
+    }
+    void body_up_at_top_goes_to_the_row_above()
+    {
+        Nav n; NavShape s = body({at(10, 100)}); s.attachments = 2;
+        n.press(kp(KeyAction::Right), s); QCOMPARE(n.row(), int(Row::Attachments));
+        n.press(kp(KeyAction::Down), s); QCOMPARE(n.row(), int(Row::Body)); QCOMPARE(n.col(), 0);
+        n.press(kp(KeyAction::Up), s); QCOMPARE(n.row(), int(Row::Attachments));
+        s.attachments = 0; s.outbox = 2; n.reset(Row::Body, 0);
+        n.press(kp(KeyAction::Up), s); QCOMPARE(n.row(), int(Row::Outbox));
+        s.outbox = 0; n.reset(Row::Body, 0);                        // nothing above: stays
+        QCOMPARE(n.press(kp(KeyAction::Up), s).cmd, Cmd::None); QCOMPARE(n.row(), int(Row::Body));
+        s.view.moveTop(50);                                         // not at the top: scrolls
+        QCOMPARE(n.press(kp(KeyAction::Up), s).cmd, Cmd::ScrollLines);
+    }
+    void body_left_right_on_the_same_line()
+    {   // 0, 1, 2 on one line (2 is an icon a little lower), 3 under them
+        Nav n; const NavShape s = body({QRectF(10, 100, 60, 30), QRectF(100, 100, 60, 30), QRectF(300, 105, 40, 20), QRectF(100, 200, 60, 20)});
+        n.reset(Row::Body, 0);
+        n.press(kp(KeyAction::Right), s); QCOMPARE(n.col(), 1);
+        n.press(kp(KeyAction::Right), s); QCOMPARE(n.col(), 2);
+        QCOMPARE(n.press(kp(KeyAction::Right), s).cmd, Cmd::None); QCOMPARE(n.col(), 2);
+        n.press(kp(KeyAction::Left), s); QCOMPARE(n.col(), 1);                   // the nearest, not the first
+        n.reset(Row::Body, 3); n.press(kp(KeyAction::Right), s); QCOMPARE(n.col(), 3);
+        n.press(kp(KeyAction::Left), s); QCOMPARE(n.row(), int(Row::List));      // none to the left: the list
+        n.reset(Row::Body, -1); n.press(kp(KeyAction::Right), s); QCOMPARE(n.row(), int(Row::Body));
+        n.press(kp(KeyAction::Left), s); QCOMPARE(n.row(), int(Row::List));
+    }
+    void body_scroll_keys_scroll_and_enter_opens()
+    {
+        Nav n; const NavShape s = body({at(10, 100), at(10, 300)});
+        n.reset(Row::Body, 1);
+        QCOMPARE(n.press(kp(KeyAction::PageDown), s).cmd, Cmd::ScrollPages);
         QCOMPARE(n.press(kp(KeyAction::PageUp), s).dir, -1);
+        const Step sp = n.press(kp(KeyAction::Space), s); QCOMPARE(sp.cmd, Cmd::ScrollPages); QCOMPARE(sp.dir, 1);
         QCOMPARE(n.press(kp(KeyAction::Home), s).cmd, Cmd::ScrollTop);
         QCOMPARE(n.press(kp(KeyAction::End), s).cmd, Cmd::ScrollEnd);
+        QCOMPARE(n.col(), 1);   // the screen decides what stays current: scrolled()
+        const Step st = n.press(kp(KeyAction::Enter), s); QCOMPARE(st.cmd, Cmd::OpenLink); QCOMPARE(st.col, 1);
+        QCOMPARE(n.press(kp(KeyAction::Save), s).cmd, Cmd::None);
+        n.reset(Row::Body, -1); QCOMPARE(n.press(kp(KeyAction::Enter), s).cmd, Cmd::None);
+    }
+    void scrolled_drops_a_link_off_screen()
+    {
+        Nav n; NavShape s = body({at(10, 100), at(10, 300)});
+        n.reset(Row::Body, 1);
+        s.view.moveTop(310); n.scrolled(s); QCOMPARE(n.col(), 1);    // partly on screen: still current
+        s.view.moveTop(320); n.scrolled(s); QCOMPARE(n.col(), -1);   // wholly above
+        n.reset(Row::Body, 1); s.view.moveTop(0); s.links.clear(); n.scrolled(s); QCOMPARE(n.col(), -1);   // gone
+        n.reset(Row::Attachments, 1); n.scrolled(s); QCOMPARE(n.col(), 1);   // other rows keep theirs
+    }
+    void links_without_a_box_are_skipped()
+    {
+        Nav n; const NavShape s = body({QRectF(), at(10, 100), QRectF()});
+        n.press(kp(KeyAction::Right), s); QCOMPARE(n.col(), 1);
+        QCOMPARE(n.press(kp(KeyAction::Down), s).cmd, Cmd::ScrollLines);
+        n.reset(Row::Body, -1); n.press(kp(KeyAction::Up), s); QCOMPARE(n.col(), 1);
     }
     void attachment_commands()
     {
@@ -166,17 +202,6 @@ private Q_SLOTS:
         QCOMPARE(st.col, 1);
         st = n.press(kp(KeyAction::Save), s);
         QCOMPARE(st.cmd, Cmd::SaveAttachment);
-        QCOMPARE(st.col, 1);
-    }
-    void link_enter_opens()
-    {
-        Nav n;
-        NavShape s;
-        s.links = 2;
-        n.press(kp(KeyAction::Right), s);
-        n.press(kp(KeyAction::Right), s);
-        Step st = n.press(kp(KeyAction::Enter), s);
-        QCOMPARE(st.cmd, Cmd::OpenLink);
         QCOMPARE(st.col, 1);
     }
     void outbox_enter()

@@ -37,7 +37,7 @@ class App : public QObject {
     Q_PROPERTY(QString note READ note NOTIFY changed)
     Q_PROPERTY(bool noteError READ noteError NOTIFY changed)
     Q_PROPERTY(bool trashView READ trashView NOTIFY changed)
-    Q_PROPERTY(bool letterAtTop READ letterAtTop WRITE setLetterAtTop)   // QML keeps it = letterView.atTop
+    Q_PROPERTY(QRectF letterViewport READ letterViewport WRITE setLetterViewport)   // QML keeps it = the letter's part on screen
     Q_PROPERTY(bool adding READ adding NOTIFY changed)
     Q_PROPERTY(QString addError READ addError NOTIFY changed)
     Q_PROPERTY(bool listPreview READ listPreview WRITE setListPreview NOTIFY listPreviewChanged)
@@ -64,8 +64,8 @@ public:
     QString note() const { return m_note; }
     bool noteError() const { return m_noteError; }
     bool trashView() const;                            // a Trash or Junk folder
-    bool letterAtTop() const { return m_letterAtTop; }
-    void setLetterAtTop(bool v) { m_letterAtTop = v; }
+    QRectF letterViewport() const { return m_letterViewport; }   // view px: y = scrollY
+    void setLetterViewport(const QRectF &v);
     bool adding() const { return m_adding; }           // account_add's trial login is on its way
     QString addError() const { return m_addError; }
     bool listPreview() const { return m_listPreview; }   // the letter text under each row; window.json
@@ -187,7 +187,7 @@ private:
     QTimer m_readTimer;
     bool m_sending = false;
     bool m_byUser = false;      // the cursor moves by a key, a click or a new view's placement: auto-read may start
-    bool m_letterAtTop = true;
+    QRectF m_letterViewport;
 
     bool m_adding = false;
     QString m_addError;

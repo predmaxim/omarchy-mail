@@ -1,20 +1,22 @@
 #pragma once
 #include "Keys.h"
+#include <QList>
 #include <QObject>
+#include <QRectF>
 #include <QString>
 
 namespace om {
 
-enum class Row { Actions, Search, Pickers, List, Outbox, Attachments, Links, Text };
+enum class Row { Actions, Search, Pickers, List, Outbox, Attachments, Body };
 
 struct NavShape {
     int actions = 6;
     int pickers = 2;
     int outbox = 0;
     int attachments = 0;
-    int links = 0;
+    QList<QRectF> links;   // the letter's links in view px (document box × documentZoom), document order; an empty one has no box
+    QRectF view;           // the letter's part on screen, view px: y = scrollY, height = the view's
     bool listAtTop = false;
-    bool textAtTop = true;
 };
 
 enum class Cmd {
@@ -38,13 +40,15 @@ class Nav : public QObject {
 public:
     using QObject::QObject;
     int row() const { return int(m_row); }
-    int col() const { return m_col; }
+    int col() const { return m_col; }   // on Row::Body: an index into NavShape::links, -1 for no current link
     Step press(const KeyPress &k, const NavShape &s);
-    void reset(Row r = Row::List);
+    void reset(Row r = Row::List, int col = 0);
+    void scrolled(const NavShape &s);   // the letter moved under the cursor: a link wholly off screen, or gone, stops being current
 Q_SIGNALS:
     void changed();
 private:
     void go(Row r, int col = 0);
+    void enter(Row r, const NavShape &s);   // a letter row from another: the body takes its first link on screen
     Row m_row = Row::List;
     int m_col = 0;
 };

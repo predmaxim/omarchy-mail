@@ -15,7 +15,6 @@ class LetterView : public QQuickPaintedItem {
     Q_PROPERTY(qreal scrollY READ scrollY WRITE setScrollY NOTIFY scrollYChanged)
     Q_PROPERTY(int contentHeight READ contentHeight NOTIFY contentHeightChanged)
     Q_PROPERTY(int currentLink READ currentLink WRITE setCurrentLink NOTIFY currentLinkChanged)
-    Q_PROPERTY(bool atTop READ atTop NOTIFY scrollYChanged)
 public:
     explicit LetterView(QQuickItem *parent = nullptr);
 
@@ -24,7 +23,6 @@ public:
     qreal scrollY() const { return m_scrollY; }
     int contentHeight() const { return m_contentHeight; }
     int currentLink() const { return m_currentLink; }
-    bool atTop() const { return m_scrollY <= 0; }
     void setLetter(Letter *letter);
     void setTheme(Theme *theme);
     void setScrollY(qreal y);

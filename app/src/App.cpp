@@ -59,9 +59,15 @@ App::App(Client *client, MailList *list, Letter *letter, Compose *compose, Nav *
     connect(&m_readTimer, &QTimer::timeout, this, &App::autoRead);
     connect(list, &MailList::cursorChanged, this, [this] { cursorMoved(); });
     connect(letter, &Letter::note, this, &App::setNote);
-    connect(letter, &Letter::quotesOpened, this, [this] {   // W39: Enter again must not open a link that slid in
-        if (m_nav->row() == int(Row::Links))
-            m_nav->reset(Row::Text);
+    const auto drop = [this] {   // W39: its links are other links now; Enter again must not open one that slid in
+        if (m_nav->row() == int(Row::Body))
+            m_nav->reset(Row::Body, -1);
+    };
+    connect(letter, &Letter::quotesOpened, this, drop);
+    // not on a re-layout of the same letter: LetterView keeps the place after App's slot; the next key calls scrolled()
+    connect(letter, &Letter::documentChanged, this, [drop](bool sameLetter) {
+        if (!sameLetter)
+            drop();
     });
     connect(letter, &Letter::composeTo, this, [this](const QUrl &url) { m_compose->startMailto(url, composeAccount()); });
     setPlace();

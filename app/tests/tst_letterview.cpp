@@ -156,7 +156,6 @@ private Q_SLOTS:
         QCOMPARE(view->scrollY(), qreal(view->contentHeight() - 600));
         view->setScrollY(-5);
         QCOMPARE(view->scrollY(), qreal(0));
-        QVERIFY(view->atTop());
     }
     void current_link_scrolls_into_view()
     {

@@ -4,7 +4,7 @@ import OmMail
 
 // The open letter (spec «Окно», «Письмо внутри»): subject, sender, recipients and date, an unsent mail's state,
 // the attachments right under the header, then the body that LetterView paints in the theme's colours.
-// Mail strings are plain text. `nav` rows here: Outbox 4, Attachments 5, Links 6 (om::Row).
+// Mail strings are plain text. `nav` rows here: Outbox 4, Attachments 5, Body 6 (om::Row).
 Item {
     id: pane
     readonly property alias view: body

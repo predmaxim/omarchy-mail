@@ -83,11 +83,11 @@ One cursor moves through the whole window; the letters work in the Russian layou
 
 | Key | Action |
 |---|---|
-| Up / Down | move between messages; the message opens at once |
-| Right / Left | into the message / back to the list; inside a row, between buttons, attachments, links |
-| Enter | on a message in the list: into the message, as Right; press the button; open the attachment or link |
-| PgUp / PgDn | scroll the message by a page, from the list too |
-| Home / End | in the list: the first / last loaded message, it opens at once; in the message text: to its top / its end |
+| Up / Down | move between messages; the message opens at once. In the message text: to the next / previous link or button that starts on screen, else scroll a few lines; Up at the top of the text: to the attachments or the unsent mail's buttons |
+| Right / Left | into the message / back to the list; on the attachments and buttons: between them; in the text: the nearest link on the same line (a row of buttons, social icons), Left with none: back to the list |
+| Enter | on a message in the list: into the message, as Right; press the button; open the attachment or the current link |
+| PgUp / PgDn | scroll the message by a page, from the list too; a link that leaves the screen stops being current |
+| Home / End | in the list: the first / last loaded message, it opens at once; in the message: to the top / the end of its text |
 | `d`, Del | delete (to Trash), cursor to the next one; in Trash and Spam it deletes forever, on the second press only |
 | `r` | reply |
 | `c` | compose |
@@ -106,6 +106,8 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | Esc | one step back: from the message to the list; in the list clear the selection, leave search, then up to the mailbox and folder pickers; in the search field clear it, then up to the pickers; leave the form or settings. Esc never closes the window: close it with Hyprland. |
 | Ctrl+Enter, Ctrl+V, Ctrl+O | in the form: send, paste a screenshot, attach a file |
 | Ctrl+D | in the form: discard the draft; press twice |
+
+In the message the cursor moves as in Lynx ([design §6](docs/superpowers/specs/2026-11-11-mail-round2-design.md#6-ход-по-письму-lynx)). Right or Enter from the list goes to the unsent mail's buttons, else the attachments, else the text, where the first link on screen becomes current; Down from the attachments works the same way.
 
 Selecting several messages works as in a file manager:
 

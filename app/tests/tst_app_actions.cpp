@@ -39,6 +39,12 @@ class TstAppActions : public QObject, AppHarness {
         boot();
         QTRY_COMPARE(list->rowCount(), 50);
     }
+    void serveHtml(const QString &html)   // every letter
+    {
+        d->on("message", [html](const QJsonObject &r) {
+            return QJsonObject{{"result", QJsonObject{{"summary", QJsonObject{{"id", r.value("message")}}}, {"html", html}}}};
+        });
+    }
 
 private Q_SLOTS:
     void init()
@@ -62,15 +68,49 @@ private Q_SLOTS:
                                                                               "<a href=\"https://x.org/inside\">inside</a></blockquote>").arg(lines)}}}};
         });
         letter->setWidth(760);
+        app->setLetterViewport(QRectF(0, 0, 760, 600));   // as Main.qml binds it
         bootList();
         QTRY_COMPARE_WITH_TIMEOUT(letter->linkCount(), 1, 10000);   // "··· Show quoted text (1)"
         QVERIFY(press(Qt::Key_Right));
-        QCOMPARE(nav->row(), int(Row::Links));
+        QCOMPARE(nav->row(), int(Row::Body));
+        QCOMPARE(nav->col(), 0);
         QVERIFY(press(Qt::Key_Return, 36));
         QTRY_COMPARE_WITH_TIMEOUT(letter->links().value(0).url, QUrl("https://x.org/inside"), 10000);   // opened
         QCOMPARE(letter->linkCount(), 1);
         // W39: the links moved under the cursor: nothing stays picked that a second Enter would open
-        QCOMPARE(nav->row(), int(Row::Text));
+        QCOMPARE(nav->row(), int(Row::Body));
+        QCOMPARE(nav->col(), -1);
+    }
+    void another_letter_drops_the_current_link()
+    {
+        serveHtml(QStringLiteral("<p><a href=\"https://x.org/a\">a</a></p>"));
+        letter->setWidth(760);
+        app->setLetterViewport(QRectF(0, 0, 760, 600));
+        bootList();
+        QTRY_COMPARE_WITH_TIMEOUT(letter->linkCount(), 1, 10000);
+        QVERIFY(press(Qt::Key_Right));
+        QCOMPARE(nav->col(), 0);
+        letter->show(QJsonObject{{"id", 99}});   // the list put another letter under the cursor
+        QCOMPARE(nav->row(), int(Row::Body));
+        QCOMPARE(nav->col(), -1);
+    }
+    void body_links_are_measured_in_view_px()
+    {
+        serveHtml(QStringLiteral("<div style=\"height:400px\"></div><p><a href=\"https://x.org/a\">a</a></p>"));
+        letter->setWidth(760);
+        app->setLetterViewport(QRectF(0, 0, 760, 600));
+        bootList();
+        QTRY_COMPARE_WITH_TIMEOUT(letter->linkCount(), 1, 10000);
+        QVERIFY(press(Qt::Key_Right));
+        QCOMPARE(nav->col(), 0);   // about 416 px at 1×
+        QVERIFY(press(Qt::Key_Left));
+        QCOMPARE(nav->row(), int(Row::List));
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->setZoom(2.0);
+        QTRY_VERIFY_WITH_TIMEOUT(docs.size() >= 1, 10000);
+        QVERIFY(press(Qt::Key_Right));
+        QCOMPARE(nav->row(), int(Row::Body));
+        QCOMPARE(nav->col(), -1);   // about 832 px: below the 600 px screen
     }
     void d_deletes_and_moves_cursor()
     {
