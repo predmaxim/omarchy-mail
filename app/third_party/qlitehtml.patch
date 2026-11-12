@@ -14,7 +14,7 @@ index cba179a..0e840aa 100644
      QT_NO_JAVA_STYLE_ITERATORS
      QT_NO_CAST_TO_ASCII QT_RESTRICTED_CAST_FROM_ASCII
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..8e14977 100644
+index 6fa2c82..329afaf 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,11 +20,15 @@
@@ -283,8 +283,8 @@ index 6fa2c82..8e14977 100644
 +// and every 10 characters without one. ponytail: such a word breaks wherever the line ends, not only when it
 +// can't fit a line of its own, and up to 9 characters short of the end; exact needs litehtml's line layout.
 +// Only its first 10 000 characters are cut, the rest stays one piece past the right edge: a 1 MiB word
-+// (inline base64) in 100 000 pieces took 8 s, and a later letter waits for the layout. Measuring drops the
-+// rest (setDropWordRest): its pieces would wrap like the first ones, so it widens nothing
++// (inline base64) in 100 000 pieces took 8 s, and a later letter waits for the layout. setWrapAll drops the
++// rest: its pieces would wrap like the first ones, so it widens nothing
 +void DocumentContainerPrivate::split_text(const char *text,
 +                                          const std::function<void(const char *)> &on_word,
 +                                          const std::function<void(const char *)> &on_space)
@@ -310,8 +310,8 @@ index 6fa2c82..8e14977 100644
 +                const bool last = at == word.size() || at >= 10000;
 +                if (!last && ++run < 10 && !(urlBreak(word.at(at - 1)) && !urlBreak(word.at(at))))
 +                    continue;
-+                m_wordRest = m_wordRest || (last && at < word.size());
-+                on_word(word.mid(from, last && !m_dropWordRest ? -1 : at - from).toUtf8().constData());
++                m_unbroken = m_unbroken || (last && at < word.size());
++                on_word(word.mid(from, last && !m_wrapAll ? -1 : at - from).toUtf8().constData());
 +                if (last)
 +                    return;
 +                from = at;
@@ -356,18 +356,42 @@ index 6fa2c82..8e14977 100644
  {
      // TODO
      qWarning(log) << "get_language not implemented";
-@@ -1152,7 +1248,9 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
+@@ -1147,14 +1243,33 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
+     d->m_scrollPosition = pos;
+ }
+ 
++// Whether an element under el keeps its lines whole however narrow the layout (nowrap, pre); wrapAll lets them
++// wrap, as normal and pre-wrap: the same words and spaces, only the line breaks differ
++static bool unbreak(const litehtml::element::ptr &el, bool wrapAll)
++{
++    const litehtml::white_space ws = el->css().get_white_space();
++    const bool kept = ws == litehtml::white_space_nowrap || ws == litehtml::white_space_pre;
++    if (kept && wrapAll)
++        el->css().set_white_space(ws == litehtml::white_space_pre ? litehtml::white_space_pre_wrap
++                                                                  : litehtml::white_space_normal);
++    bool found = kept;
++    for (const litehtml::element::ptr &child : el->children())
++        found = unbreak(child, wrapAll) || found;
++    return found;
++}
++
+ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerContext *context)
+ {
      d->m_pixmaps.clear();
      d->m_animations.clear();
      d->clearSelection();
 -    d->m_document = litehtml::document::createFromString(data.constData(),
-+    d->m_wordRest = false;
++    d->m_unbroken = false;
 +    // data is UTF-8: a <meta charset> of the letter must not decode it a second time
 +    d->m_document = litehtml::document::createFromString({data.toStdString(), litehtml::encoding::utf_8},
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
++    if (d->m_document)
++        d->m_unbroken = unbreak(d->m_document->root(), d->m_wrapAll) || d->m_unbroken;
      d->buildIndex();
-@@ -1219,7 +1317,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+ }
+ 
+@@ -1219,7 +1334,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
              return -1;
      }
      while (element) {
@@ -376,7 +400,7 @@ index 6fa2c82..8e14977 100644
              return qRound(element->get_placement().y);
          element = element->parent();
      }
-@@ -1275,7 +1373,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+@@ -1275,7 +1390,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
      // post to litehtml
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_down(
@@ -386,7 +410,7 @@ index 6fa2c82..8e14977 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1308,7 +1407,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+@@ -1308,7 +1424,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
      }
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_mouse_over(
@@ -396,7 +420,7 @@ index 6fa2c82..8e14977 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1331,7 +1431,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+@@ -1331,7 +1448,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
          d->clearSelection();
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_up(
@@ -406,7 +430,7 @@ index 6fa2c82..8e14977 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1380,7 +1481,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+@@ -1380,7 +1498,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
      if (!d->m_document)
          return {};
      litehtml::position::vector redrawBoxes;
@@ -416,7 +440,7 @@ index 6fa2c82..8e14977 100644
          QVector<QRect> redrawRects;
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
-@@ -1589,11 +1691,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,11 +1708,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -451,14 +475,14 @@ index 6fa2c82..8e14977 100644
 +    return result;
 +}
 +
-+void DocumentContainer::setDropWordRest(bool drop)
++void DocumentContainer::setWrapAll(bool wrap)
 +{
-+    d->m_dropWordRest = drop;
++    d->m_wrapAll = wrap;
 +}
 +
-+bool DocumentContainer::hasWordRest() const
++bool DocumentContainer::hasUnbrokenText() const
 +{
-+    return d->m_wordRest;
++    return d->m_unbroken;
 +}
 +
  static litehtml::element::ptr elementForY(int y, const litehtml::element::ptr &element)
@@ -471,7 +495,7 @@ index 6fa2c82..8e14977 100644
      for (const litehtml::element::ptr &child : element->children()) {
          litehtml::element::ptr result = elementForY(y, child);
 diff --git a/src/container_qpainter.h b/src/container_qpainter.h
-index 0a7939e..102f684 100644
+index 0a7939e..bda7dcd 100644
 --- a/src/container_qpainter.h
 +++ b/src/container_qpainter.h
 @@ -6,6 +6,8 @@
@@ -483,7 +507,7 @@ index 0a7939e..102f684 100644
  #include <QPaintDevice>
  #include <QPainter>
  #include <QPoint>
-@@ -131,6 +133,23 @@ public: // outside API
+@@ -131,6 +133,25 @@ public: // outside API
  
      int withFixedElementPosition(int y, const std::function<void()> &action);
  
@@ -499,16 +523,18 @@ index 0a7939e..102f684 100644
 +    QList<Link> links() const;
 +    // document-space boxes of the elements a CSS selector matches, in document order
 +    QList<QRect> boxes(const QString &selector) const;
-+    // a word's rest past its first 10 000 characters stays one piece past the right edge; dropped (set before
-+    // setDocument), the document is as wide as if the word broke all along: to measure what else widens it
-+    void setDropWordRest(bool drop);
-+    bool hasWordRest() const; // the document has such a rest, kept or dropped
++    // Text that stays on one line however narrow the layout: a word's rest past its first 10 000 characters
++    // (one piece past the right edge) and lines the CSS keeps unbroken (nowrap, pre). Set before setDocument,
++    // wrapAll drops the rest and lays nowrap and pre out as normal and pre-wrap: the document is as wide as if
++    // all of it wrapped, to measure what else widens it
++    void setWrapAll(bool wrap);
++    bool hasUnbrokenText() const; // the document has such text, wrapped or not
 +
  private:
      std::unique_ptr<DocumentContainerPrivate> d;
  };
 diff --git a/src/container_qpainter_p.h b/src/container_qpainter_p.h
-index b767a32..a991ffd 100644
+index b767a32..708cc98 100644
 --- a/src/container_qpainter_p.h
 +++ b/src/container_qpainter_p.h
 @@ -136,8 +136,11 @@ public: // document_container API
@@ -550,8 +576,8 @@ index b767a32..a991ffd 100644
 +    std::function<QColor(const QColor &)> m_colorFilter;
      bool m_blockLinks = false;
      bool m_linkActivated = false;
-+    bool m_dropWordRest = false;
-+    bool m_wordRest = false;
++    bool m_wrapAll = false;
++    bool m_unbroken = false;
  };
  
  class DocumentContainerContextPrivate

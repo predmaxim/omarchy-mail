@@ -171,14 +171,14 @@ struct Holder
     DocumentContainer doc;
 };
 
-// Lays html out at the job's width; images come from loadData, the missing ones go to `wanted`. `measuring` drops
-// the rest of a word that qlitehtml leaves in one piece past the right edge.
+// Lays html out at the job's width; images come from loadData, the missing ones go to `wanted`. `measuring` lets
+// all text wrap: the rest of a word that qlitehtml leaves in one piece past the right edge, and nowrap and pre.
 static std::shared_ptr<Holder> layOut(const QByteArray &html, const QString &css, const RenderJob &job,
                                       QStringList *wanted, bool measuring = false)
 {
     auto holder = std::make_shared<Holder>();
     DocumentContainer &doc = holder->doc;
-    doc.setDropWordRest(measuring);
+    doc.setWrapAll(measuring);
     DocumentContainerContext ctx;
     ctx.setMasterStyleSheet(QString::fromUtf8(litehtml::master_css) + css);
     doc.setPaintDevice(&holder->device);
@@ -199,14 +199,14 @@ static std::shared_ptr<Holder> layOut(const QByteArray &html, const QString &css
     return holder;
 }
 
-// The width the layout needs, however wide (W41): the document's, unless the rest of a huge word, which qlitehtml
-// leaves in one piece past the right edge, widens it or a table around it; then the letter is laid out once more
-// without the rest, as if the word broke all along, and the rest stays cut on the right. Lines the letter's CSS
-// keeps unbroken (nowrap, pre) count: the letter set that width itself.
+// The width the layout needs, however wide (W41): the document's, unless text that stays on one line however narrow
+// widens it or a table around it: the rest of a huge word, which qlitehtml leaves in one piece past the right edge,
+// or a line the letter's CSS keeps unbroken (nowrap, pre). Then the letter is laid out once more with all text
+// wrapping, and that text stays cut on the right: the width is the fixed layout's, never the text's.
 static int needed(const Holder &h, const QByteArray &html, const QString &css, const RenderJob &job,
                   std::vector<std::shared_ptr<Holder>> *dropped)
 {
-    if (h.doc.documentWidth() <= job.width || !h.doc.hasWordRest())
+    if (h.doc.documentWidth() <= job.width || !h.doc.hasUnbrokenText())
         return h.doc.documentWidth();
     dropped->push_back(layOut(html, css, job, nullptr, true));
     return dropped->back()->doc.documentWidth();

@@ -71,7 +71,7 @@ xdg-mime default omarchy-mail.desktop x-scheme-handler/mailto
 
 Bare web addresses (`https://…`, `www.…`) and e-mail addresses in a letter's text are links too, in plain and HTML mail: a web address opens in the browser, an e-mail address starts a new letter to it. Trailing punctuation and `&nbsp;` stay outside the link.
 
-A letter laid out wider than the pane (a newsletter of a fixed width, a wide table) is shown smaller, so that none of it is cut off, however wide it is. Text never makes a letter smaller: a long word breaks into pieces, white space at the end of a line hangs past it, and only the rest of a word longer than 10 000 characters runs off the right edge.
+A letter laid out wider than the pane (a newsletter of a fixed width, a wide table) is shown smaller, so that none of it is cut off, however wide it is. Text never makes a letter smaller: a long word breaks into pieces and white space at the end of a line hangs past it; what cannot break, the rest of a word longer than 10 000 characters or a line the letter's own style keeps whole (`nowrap`, `pre`), runs off the right edge.
 
 A `mailto:` link never goes into an unfinished new message: it gets a letter of its own, which `c` opens until it is sent or discarded. The author's dotfiles bind the window to `Super+Shift+M`. There is one window per system: a second launch hands its arguments to the open window and exits.
 

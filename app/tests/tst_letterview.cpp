@@ -277,12 +277,16 @@ private Q_SLOTS:
         const int m = theme->space(18), pane = 1000;
         view->setSize(QSizeF(pane + 2 * m, 600));
         const QString word = QString(20000, QLatin1Char('x'));   // its tail is one huge piece, as in the slot below
+        const QString line = QStringLiteral("a line the letter keeps unbroken ").repeated(60);   // ~14 000 px
         const QString table = QStringLiteral("<table width=\"%1\"><tr><td>a</td><td>b</td></tr></table>");
         const QList<QPair<QString, int>> letters = {
             {table.arg(1500), 1500},
             {table.arg(3000), 3000},
             {table.arg(1500) + QStringLiteral("<p>%1</p>").arg(word), 1500},   // the word widens nothing
             {QStringLiteral("<table><tr><td>%1</td></tr></table>").arg(word), pane},   // nor the table around it
+            {table.arg(1500) + QStringLiteral("<div style=\"white-space:nowrap\">%1</div>").arg(line), 1500},   // nor such a line
+            {QStringLiteral("<table><tr><td nowrap>%1</td></tr></table>").arg(line), pane},
+            {QStringLiteral("<p style=\"white-space:pre\">%1</p>").arg(line), pane},
         };
         for (const auto &[html, wide] : letters) {
             letter->clear();
