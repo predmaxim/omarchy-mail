@@ -282,6 +282,9 @@ private Q_SLOTS:
         const QString pic = QStringLiteral("<img width=\"900\" height=\"50\">");
         const QString pics = pic + QLatin1Char(' ') + pic;
         const QString boxes = QStringLiteral("<span style=\"display:inline-block;width:900px\">a</span>").repeated(2);
+        const QString block = QStringLiteral("<span style=\"display:inline-block\">%1</span> ").arg(line);
+        const QString tags = QStringLiteral("<span style=\"display:inline-block\">unbroken</span> ").repeated(200);
+        const QString nowrap = QStringLiteral("<div style=\"white-space:nowrap\">%1</div>");
         const QList<QPair<QString, int>> letters = {
             {table.arg(1500), 1500},
             {table.arg(3000), 3000},
@@ -298,6 +301,16 @@ private Q_SLOTS:
             {QStringLiteral("<table><tr><td nowrap>%1&nbsp;%1</td></tr></table>").arg(pic), 1800},
             {QStringLiteral("<div style=\"white-space:nowrap\">%1 %2</div>").arg(pics, line), 1800},
             {QStringLiteral("<p style=\"white-space:pre\">%1%2%3</p>").arg(pics, QString(400, QLatin1Char('\t')), line), 1800},
+            // a box as wide as the letter's CSS sets it, a percentage only under a fixed max-width, or as its pictures
+            {nowrap.arg(QStringLiteral("<span style=\"display:inline-block;width:100%;max-width:900px\">a</span>").repeated(2)), 1800},
+            {nowrap.arg(QStringLiteral("<span style=\"display:inline-block\"><a>%1</a></span> ").arg(pic).repeated(2)), 1800},
+            // an inline block of no width is as wide as its text, so it is text and wraps; one of a percentage is
+            // as wide as the line, which a fit never makes room for
+            {nowrap.arg(block.repeated(2)), pane},
+            {nowrap.arg(block + pic + QLatin1Char(' ') + block), pane},
+            {nowrap.arg(tags), pane},
+            {QStringLiteral("<table><tr><td nowrap>%1</td></tr></table>").arg(tags), pane},
+            {nowrap.arg(QStringLiteral("<span style=\"display:inline-block;width:60%\">a</span>").repeated(2)), pane},
         };
         for (const auto &[html, wide] : letters) {
             letter->clear();
