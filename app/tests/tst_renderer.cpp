@@ -447,6 +447,34 @@ private Q_SLOTS:
         QCOMPARE(left(cell.arg("align=\"center\"", "", cssTable.arg(block))), 232);   // only the <table> element resets it
     }
 
+    // quirks mode (no doctype) only: a table starts its text over, as in browsers (Blink's quirks.css): line-height,
+    // text-align, white-space and the font's weight, style and variant. Our sheet's table{font-size:inherit} and the
+    // letter's own CSS still win
+    void quirks_tables_reset_text()
+    {
+        const auto cell = [&](const QString &doctype, const QString &table = {}) {
+            const Rendered r = run(job(QStringLiteral("%1<body style=\"line-height:30px;font-size:14px\"><table%2><tr><td>a<br>b</td></tr>"
+                                                      "</table></body>").arg(doctype, table)));
+            return r.doc ? r.doc->boxes(QStringLiteral("td")).value(0).height() : -1;
+        };
+        const QString xhtml = QStringLiteral("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" "
+                                             "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">");
+        // Chromium 155 with our sheet, as the survey lays letters out: the cell is 34 px or 62 px with its 1 px padding,
+        // so two lines of 16 px (normal at 14 px) in quirks mode, else of the inherited 30 px (boxes() has no padding).
+        // 14 px, not 20: from 16 px up Chromium's normal line also holds the font's line gap, which Qt gives as 0
+        QCOMPARE(cell(QString()), 32);
+        QCOMPARE(cell(QString(), QStringLiteral(" style=\"line-height:30px\"")), 60);
+        QCOMPARE(cell(QStringLiteral("<!DOCTYPE html>")), 60);
+        QCOMPARE(cell(xhtml), 60);   // limited quirks: no reset
+        // a CSS text-align:center stops at the table too (Chromium 155: 12; 232 with <!DOCTYPE html>)
+        const Rendered r = run(job(QStringLiteral("<body style=\"margin:12px\"><table cellpadding=\"0\" cellspacing=\"0\"><tr><td "
+                                                  "style=\"width:540px;text-align:center\"><table width=\"100%\" cellpadding=\"0\" "
+                                                  "cellspacing=\"0\"><tr><td><div id=\"x\" style=\"display:inline-block;width:100px;"
+                                                  "height:10px\"></div></td></tr></table></td></tr></table></body>")));
+        QVERIFY(r.doc);
+        QCOMPARE(r.doc->boxes(QStringLiteral("#x")).value(0).left(), 12);
+    }
+
     // our user-agent sheet, like Geary's: roomier lines, quotes with a bar; the letter's own CSS wins
     void ua_sheet_like_geary()
     {
@@ -459,7 +487,7 @@ private Q_SLOTS:
         QCOMPARE(r.left(), 12);    // body margin
         QCOMPARE(r.height(), 27);  // line-height 1.7 of 16 px
         QCOMPARE(box("<h1>" + a + "</h1>").height(), 38);   // 1.2 of 32 px
-        QCOMPARE(box("<div style=\"font-size:20px\"><table><tr><td>" + a + "</td></tr></table></div>").height(), 34);
+        QCOMPARE(box("<!DOCTYPE html><div style=\"font-size:20px\"><table><tr><td>" + a + "</td></tr></table></div>").height(), 34);
         r = box("<blockquote>" + a + "</blockquote>");
         QCOMPARE(r.left(), 12 + 16 + 3 + 8);   // margin, bar, padding
         QCOMPARE(r.right() + 1, 760 - 12);     // nothing taken on the right

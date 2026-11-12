@@ -21,7 +21,7 @@ index b3291c89..9b33edeb 100644
  
      // ==========================================================
 diff --git a/include/litehtml/master_css.h b/include/litehtml/master_css.h
-index 36f27311..6676234b 100644
+index 36f27311..ab26ca1a 100644
 --- a/include/litehtml/master_css.h
 +++ b/include/litehtml/master_css.h
 @@ -64,7 +64,7 @@ del, s, strike {
@@ -33,6 +33,29 @@ index 36f27311..6676234b 100644
  	display:block;
  }
  
+@@ -381,6 +381,22 @@ figcaption {
+ 	display: block;
+ }
+ 
++)##";
++
++    // In quirks mode a table starts its text over, as in browsers (Blink's quirks.css). The document parses this
++    // before the master sheet, in quirks mode only, so a master sheet can override it. "text-align: start" is left
++    // without direction. shortcut: the color is not reset, a table inherits its parent's; Blink's
++    // "-internal-quirk-inherit" gives it the body's (Chromium 155). Add it if a colored wrapper around a table shows.
++    const char* const quirks_css = R"##(
++table {
++	white-space: normal;
++	line-height: normal;
++	font-weight: normal;
++	font-size: medium;
++	font-variant: normal;
++	font-style: normal;
++	text-align: left;
++}
+ )##";
+ }
+ #endif // LITEHTML_MASTER_CSS_H
 diff --git a/src/css_properties.cpp b/src/css_properties.cpp
 index 5b03ba4d..ca1ec449 100644
 --- a/src/css_properties.cpp
@@ -70,6 +93,35 @@ index 5b03ba4d..ca1ec449 100644
  
      m_list_style_type = static_cast<list_style_type>(
          el->get_property<int>(_list_style_type_, true, list_style_type_disc, offset(m_list_style_type)));
+diff --git a/src/document.cpp b/src/document.cpp
+index 315749ab..098fbf1a 100644
+--- a/src/document.cpp
++++ b/src/document.cpp
+@@ -22,6 +22,7 @@
+ #include "el_tr.h"
+ #include "gumbo.h"
+ #include "html_tag.h"
++#include "master_css.h"
+ #include "render_block.h"
+ #include "render_item.h"
+ #include "render_table.h"
+@@ -108,11 +109,15 @@ namespace litehtml
+ 
+         m_root = root;
+ 
++        if(m_mode == quirks_mode)
++        {
++            m_master_css.parse_css_stylesheet(std::string(quirks_css), "", shared_from_this());
++        }
+         if(master_styles != "")
+         {
+             m_master_css.parse_css_stylesheet(master_styles, "", shared_from_this());
+-            m_master_css.sort_selectors();
+         }
++        m_master_css.sort_selectors();
+         if(user_styles != "")
+         {
+             m_user_css.parse_css_stylesheet(user_styles, "", shared_from_this());
 diff --git a/src/el_div.cpp b/src/el_div.cpp
 index ca6ad2f0..47906c12 100644
 --- a/src/el_div.cpp
