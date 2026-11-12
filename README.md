@@ -130,6 +130,7 @@ Text in a letter is selected with the mouse as in a browser:
 
 | Mouse | Action |
 |---|---|
+| drag | the text from the press to the pointer; past the top or bottom edge the letter scrolls, faster the farther the pointer |
 | double click | the word; on a link the link opens once |
 
 The mailboxes page (the gear) has keys of its own:

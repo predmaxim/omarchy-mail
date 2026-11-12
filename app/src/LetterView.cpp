@@ -14,6 +14,8 @@
 
 namespace om {
 
+constexpr int kAutoScrollMs = 20;
+
 LetterView::LetterView(QQuickItem *parent) : QQuickPaintedItem(parent)
 {
     setAcceptedMouseButtons(Qt::LeftButton);
@@ -218,10 +220,39 @@ void LetterView::mouse(const QPointF &pos, int kind, Qt::MouseButton button)
 void LetterView::mousePressEvent(QMouseEvent *e)
 {
     Q_EMIT pressed();
+    m_held = true;
     mouse(e->position(), 0, e->button());
 }
-void LetterView::mouseMoveEvent(QMouseEvent *e) { mouse(e->position(), 1, Qt::NoButton); }
-void LetterView::mouseReleaseEvent(QMouseEvent *e) { mouse(e->position(), 2, e->button()); }
+void LetterView::mouseMoveEvent(QMouseEvent *e)
+{
+    m_dragPos = e->position();
+    mouse(m_dragPos, 1, Qt::NoButton);
+    if (m_held && (m_dragPos.y() < 0 || m_dragPos.y() > height())) {
+        if (!m_autoScroll.isActive())   // a restart on every move would never let it tick
+            m_autoScroll.start(kAutoScrollMs, this);
+    } else {
+        m_autoScroll.stop();
+    }
+}
+void LetterView::mouseReleaseEvent(QMouseEvent *e)
+{
+    mouseUngrabEvent();
+    mouse(e->position(), 2, e->button());
+}
+void LetterView::mouseUngrabEvent()
+{
+    m_held = false;
+    m_autoScroll.stop();
+}
+void LetterView::timerEvent(QTimerEvent *e)
+{
+    if (e->timerId() != m_autoScroll.timerId())
+        return QQuickPaintedItem::timerEvent(e);
+    // the farther past the edge, the faster: a quarter of the distance a tick
+    const qreal outside = m_dragPos.y() < 0 ? m_dragPos.y() : m_dragPos.y() - height();
+    setScrollY(m_scrollY + std::copysign(qMax(qreal(1), qAbs(outside) / 4), outside));
+    mouse(m_dragPos, 1, Qt::NoButton);   // the selection's end follows the text under the pointer
+}
 void LetterView::mouseDoubleClickEvent(QMouseEvent *e) { mouse(e->position(), 3, e->button()); }
 void LetterView::hoverMoveEvent(QHoverEvent *e) { mouse(e->position(), 1, Qt::NoButton); }
 

@@ -3,6 +3,7 @@
 // scrolling, selection, link cursor and keyboard link navigation. scrollY and contentHeight are view px.
 #include "Letter.h"
 #include "Theme.h"
+#include <QBasicTimer>
 #include <QQuickPaintedItem>
 
 namespace om {
@@ -51,7 +52,9 @@ protected:
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
     void mouseDoubleClickEvent(QMouseEvent *e) override;
+    void mouseUngrabEvent() override;
     void hoverMoveEvent(QHoverEvent *e) override;
+    void timerEvent(QTimerEvent *e) override;   // the drag past an edge scrolls
     void wheelEvent(QWheelEvent *e) override;
     void geometryChange(const QRectF &now, const QRectF &old) override;
 
@@ -69,6 +72,9 @@ private:
     int m_currentLink = -1;
     qreal m_zoom = 1;      // the document's
     int m_wheelZoom = 0;   // Ctrl+wheel: the part of a notch not zoomed yet
+    QBasicTimer m_autoScroll;   // runs while the button is held and the pointer is above or below the view
+    bool m_held = false;
+    QPointF m_dragPos;
 };
 
 } // namespace om

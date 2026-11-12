@@ -214,6 +214,39 @@ private Q_SLOTS:
         QTest::qWait(200);
         QCOMPARE(stubCalls(stub).size(), 1);
     }
+    void dragging_past_the_edge_scrolls()
+    {
+        QString lines;
+        for (int i = 1; i <= 200; ++i)
+            lines += QStringLiteral("<p>Line %1</p>").arg(i);
+        open(lines);
+        view->setHeight(400);   // below the view is still the window: no QTest "outside window" warning
+        const int x = theme->space(18) + 20;
+        QTest::mousePress(win, Qt::LeftButton, {}, QPoint(x, 30));
+        QTest::mouseMove(win, QPoint(x, 200));
+        QTest::mouseMove(win, QPoint(x, 420));   // 20 px below the view
+        const qsizetype selected = view->selectedText().size();
+        QTRY_VERIFY(view->scrollY() > 0);
+        qreal from = view->scrollY();
+        QTest::qWait(200);
+        const qreal slow = view->scrollY() - from;
+        QVERIFY(view->selectedText().size() > selected);   // the end follows the scrolled text
+        QTest::mouseMove(win, QPoint(x, 520));   // 120 px below: faster
+        from = view->scrollY();
+        QTest::qWait(200);
+        const qreal fast = view->scrollY() - from;
+        QVERIFY2(fast > 2 * slow, qPrintable(QStringLiteral("%1 %2").arg(slow).arg(fast)));
+        QTest::mouseMove(win, QPoint(x, 300));   // back inside: it stops
+        from = view->scrollY();
+        QTest::qWait(100);
+        QCOMPARE(view->scrollY(), from);
+        QTest::mouseMove(win, QPoint(x, 520));
+        QTRY_VERIFY(view->scrollY() > from);
+        QTest::mouseRelease(win, Qt::LeftButton, {}, QPoint(x, 520));   // released outside: it stops too
+        from = view->scrollY();
+        QTest::qWait(100);
+        QCOMPARE(view->scrollY(), from);
+    }
     void expanding_quotes_keeps_scroll()
     {
         QString lines;
