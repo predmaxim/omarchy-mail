@@ -272,7 +272,28 @@ private Q_SLOTS:
         QTest::mouseClick(win, Qt::LeftButton, {}, QPoint(m + int(r.center().x() * z), int(r.center().y() * z - view->scrollY())));
         QTRY_COMPARE(stubCalls(stub), (QList<QStringList>{{"--", "xdg-open", "https://x.org/far"}}));
     }
-    void text_keeps_the_full_zoom()   // W41: only fixed-width content is shrunk, and not past 1200 CSS px of it
+    void wide_fixed_layout_is_fitted_at_any_width()   // W41: nothing of it right of the pane, however wide
+    {
+        const int m = theme->space(18), pane = 1000;
+        view->setSize(QSizeF(pane + 2 * m, 600));
+        const QString word = QString(20000, QLatin1Char('x'));   // its tail is one huge piece, as in the slot below
+        const QString table = QStringLiteral("<table width=\"%1\"><tr><td>a</td><td>b</td></tr></table>");
+        const QList<QPair<QString, int>> letters = {
+            {table.arg(1500), 1500},
+            {table.arg(3000), 3000},
+            {table.arg(1500) + QStringLiteral("<p>%1</p>").arg(word), 1500},   // the word widens nothing
+            {QStringLiteral("<table><tr><td>%1</td></tr></table>").arg(word), pane},   // nor the table around it
+        };
+        for (const auto &[html, wide] : letters) {
+            letter->clear();
+            open(html);
+            const qreal z = letter->documentZoom();
+            QVERIFY2(qAbs(z - qreal(pane) / wide) <= 0.01, qPrintable(QStringLiteral("%1: %2").arg(wide).arg(z)));
+            const QRect t = letter->document()->boxes(QStringLiteral("table")).value(0);
+            QVERIFY2(wide == pane || (t.x() + t.width()) * z <= pane, qPrintable(QString::number((t.x() + t.width()) * z)));
+        }
+    }
+    void text_keeps_the_full_zoom()   // W41: only fixed-width content is shrunk; unbreakable text never is
     {
         view->setSize(QSizeF(600 + 2 * theme->space(18), 600));
         letter->setZoom(2.0);

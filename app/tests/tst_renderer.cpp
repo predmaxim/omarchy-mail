@@ -267,6 +267,24 @@ private Q_SLOTS:
         QVERIFY(found);
         QCOMPARE(r.doc->selectedText(), token);
     }
+    // pre-wrap white space that runs past the end of a line hangs there: it widens nothing, so it never shrinks the
+    // letter, and the next word starts the next line (Chromium 155, 1000 px viewport: the document is 1000 px wide)
+    void pre_wrap_spaces_hang_at_the_line_end()
+    {
+        const auto laid = [&](const QString &text) {
+            RenderJob j = job(QStringLiteral("<body style=\"margin:12px\"><pre style=\"white-space:pre-wrap\">%1</pre>").arg(text));
+            j.width = 1000;
+            return run(j);
+        };
+        const int lines = laid(QStringLiteral("a\nb\nc")).size.height();
+        for (const QChar space : {QLatin1Char('\t'), QLatin1Char(' ')}) {
+            const Rendered r = laid(QStringLiteral("a%1b\nc").arg(QString(400, space)));
+            QVERIFY(r.doc);
+            QCOMPARE(r.size.width(), 1000);
+            QCOMPARE(r.width, 1000);
+            QCOMPARE(r.size.height(), lines);
+        }
+    }
     void ordinary_words_stay_whole()
     {
         // only words too long for a line break inside: these move to the next line whole

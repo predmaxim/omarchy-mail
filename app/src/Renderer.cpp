@@ -171,12 +171,14 @@ struct Holder
     DocumentContainer doc;
 };
 
-// Lays html out at the job's width; images come from loadData, the missing ones go to `wanted`.
+// Lays html out at the job's width; images come from loadData, the missing ones go to `wanted`. `measuring` drops
+// the rest of a word that qlitehtml leaves in one piece past the right edge.
 static std::shared_ptr<Holder> layOut(const QByteArray &html, const QString &css, const RenderJob &job,
-                                      QStringList *wanted)
+                                      QStringList *wanted, bool measuring = false)
 {
     auto holder = std::make_shared<Holder>();
     DocumentContainer &doc = holder->doc;
+    doc.setDropWordRest(measuring);
     DocumentContainerContext ctx;
     ctx.setMasterStyleSheet(QString::fromUtf8(litehtml::master_css) + css);
     doc.setPaintDevice(&holder->device);
@@ -195,6 +197,19 @@ static std::shared_ptr<Holder> layOut(const QByteArray &html, const QString &css
     doc.render(job.width, job.viewportHeight);
     doc.setDataCallback([](const QUrl &) { return QByteArray(); }); // job and wanted are gone after the task
     return holder;
+}
+
+// The width the layout needs, however wide (W41): the document's, unless the rest of a huge word, which qlitehtml
+// leaves in one piece past the right edge, widens it or a table around it; then the letter is laid out once more
+// without the rest, as if the word broke all along, and the rest stays cut on the right. Lines the letter's CSS
+// keeps unbroken (nowrap, pre) count: the letter set that width itself.
+static int needed(const Holder &h, const QByteArray &html, const QString &css, const RenderJob &job,
+                  std::vector<std::shared_ptr<Holder>> *dropped)
+{
+    if (h.doc.documentWidth() <= job.width || !h.doc.hasWordRest())
+        return h.doc.documentWidth();
+    dropped->push_back(layOut(html, css, job, nullptr, true));
+    return dropped->back()->doc.documentWidth();
 }
 
 static bool isDark(DocumentContainer &doc, int width)
@@ -234,18 +249,15 @@ void Renderer::render(const RenderJob &job)
         const QList<QRect> boxes = holder->doc.boxes(QStringLiteral("blockquote"));
         const QByteArray shown = boxes.size() == quotes.size() ? folded(html, quotes, boxes, job, r.dark) : html;
         // content of a fixed width wider than the job's (a 600 px newsletter at a big zoom) is laid out as wide as
-        // it is, so @media sees the width it is shown at; Letter shrinks it to fit. ponytail: a fixed cap, wider
-        // is junk (a huge word, a photo without a width) that would shrink the letter to dust: it's cut as before
-        constexpr int maxFit = 1200;
+        // it is, so @media sees the width it is shown at; Letter shrinks it to fit
+        std::vector<std::shared_ptr<Holder>> dropped;
         RenderJob fit = job;
-        if (const int wide = holder->doc.documentWidth(); wide > job.width && wide <= maxFit)
-            fit.width = wide;
-        std::shared_ptr<Holder> dropped;
+        fit.width = qMax(job.width, needed(*holder, html, userAgentCss(job, false), job, &dropped));
         if (shown != html || (r.dark && !quotes.isEmpty()) || fit.width != job.width)
-            dropped = std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), fit, &r.wanted));
+            dropped.push_back(std::exchange(holder, layOut(shown, userAgentCss(job, r.dark), fit, &r.wanted)));
         r.width = fit.width;
         if (fit.width != job.width)   // as wide as it came out: width:100% plus padding overflows again
-            r.width = qMax(fit.width, qMin(holder->doc.documentWidth(), maxFit));
+            r.width = qMax(fit.width, needed(*holder, shown, userAgentCss(job, r.dark), fit, &dropped));
         r.size = QSize(holder->doc.documentWidth(), holder->doc.documentHeight());
         r.links = holder->doc.links();
         r.doc = std::shared_ptr<DocumentContainer>(holder, &holder->doc);
