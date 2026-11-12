@@ -243,6 +243,16 @@ private Q_SLOTS:
         QTest::mouseClick(win, Qt::LeftButton, {}, mid);
         QTRY_COMPARE(stubCalls(stub), (QList<QStringList>{{"--", "xdg-open", "https://x.org/go"}}));
     }
+    void link_box_is_the_border_box()   // the ring goes around a button, not just its text
+    {
+        open(QStringLiteral("<p><a href=\"https://x.org/1\">Go</a> <a href=\"https://x.org/2\" style=\"padding:8px 15px\">Go</a> "
+                            "<a href=\"https://x.org/3\" style=\"display:inline-block;padding:8px 15px;border:2px solid #000\">Go</a></p>"));
+        const auto links = letter->links();
+        const QRect plain = links.at(0).rect, padded = links.at(1).rect, button = links.at(2).rect;
+        QCOMPARE(padded.size(), plain.size() + QSize(30, 16));   // an inline link: its padding is part of its box
+        QCOMPARE(padded.top(), plain.top() - 8);
+        QCOMPARE(button, letter->document()->boxes("a").at(2).adjusted(-17, -10, 17, 10));   // padding + border
+    }
     void fixed_width_letter_shrinks_to_fit()   // W41: never past the right edge; @media sees the width it's shown at
     {
         QTemporaryDir dir(scratch());

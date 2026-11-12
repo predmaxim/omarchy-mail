@@ -14,10 +14,19 @@ index cba179a..0e840aa 100644
      QT_NO_JAVA_STYLE_ITERATORS
      QT_NO_CAST_TO_ASCII QT_RESTRICTED_CAST_FROM_ASCII
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..d5289ec 100644
+index 6fa2c82..b12b150 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
-@@ -20,11 +20,15 @@
+@@ -4,6 +4,8 @@
+ #include "container_qpainter.h"
+ #include "container_qpainter_p.h"
+ 
++#include <litehtml/render_item.h>
++
+ #if QT_CONFIG(clipboard)
+ #include <QClipboard>
+ #endif
+@@ -20,11 +22,15 @@
  #include <QPalette>
  #include <QRegularExpression>
  #include <QScreen>
@@ -33,7 +42,7 @@ index 6fa2c82..d5289ec 100644
  #include <queue>
  
  QT_BEGIN_NAMESPACE
-@@ -307,9 +311,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
+@@ -307,9 +313,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
      return QFont::StyleNormal;
  }
  
@@ -46,7 +55,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  static Qt::PenStyle borderPenStyle(litehtml::border_style style)
-@@ -327,7 +332,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
+@@ -327,7 +334,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
      return Qt::SolidLine;
  }
  
@@ -55,7 +64,7 @@ index 6fa2c82..d5289ec 100644
  {
      return {toQColor(border.color), qreal(border.width), borderPenStyle(border.style)};
  }
-@@ -491,35 +496,83 @@ DocumentContainer::DocumentContainer()
+@@ -491,35 +498,83 @@ DocumentContainer::DocumentContainer()
  
  DocumentContainer::~DocumentContainer() = default;
  
@@ -162,7 +171,7 @@ index 6fa2c82..d5289ec 100644
      font->setWeight(cssWeightToQtWeight(descr.weight));
      font->setStyle(toQFontStyle(descr.style));
      font->setStyleStrategy(m_antialias ? QFont::PreferAntialias : QFont::NoAntialias);
-@@ -531,15 +584,15 @@ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_de
+@@ -531,15 +586,15 @@ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_de
          font->setStrikeOut(true);
      if (fm) {
          const QFontMetrics metrics(*font);
@@ -181,7 +190,7 @@ index 6fa2c82..d5289ec 100644
      }
      return reinterpret_cast<litehtml::uint_ptr>(font);
  }
-@@ -552,8 +605,9 @@ void DocumentContainerPrivate::delete_font(litehtml::uint_ptr hFont)
+@@ -552,8 +607,9 @@ void DocumentContainerPrivate::delete_font(litehtml::uint_ptr hFont)
  
  litehtml::pixel_t DocumentContainerPrivate::text_width(const char *text, litehtml::uint_ptr hFont)
  {
@@ -193,7 +202,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
-@@ -570,8 +624,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
+@@ -570,8 +626,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
  
  litehtml::pixel_t DocumentContainerPrivate::pt_to_px(float pt) const
  {
@@ -204,7 +213,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  litehtml::pixel_t DocumentContainerPrivate::get_default_font_size() const
-@@ -632,7 +686,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
+@@ -632,7 +688,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
      QPixmap pixmap;
      pixmap.loadFromData(data);
      m_pixmaps.insert(url, pixmap);
@@ -213,7 +222,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
-@@ -794,6 +848,8 @@ static bool isInBody(const litehtml::element::ptr &e)
+@@ -794,6 +850,8 @@ static bool isInBody(const litehtml::element::ptr &e)
      return current.get() != nullptr;
  }
  
@@ -222,7 +231,7 @@ index 6fa2c82..d5289ec 100644
  void DocumentContainerPrivate::buildIndex()
  {
      m_index.elementToIndex.clear();
-@@ -802,8 +858,12 @@ void DocumentContainerPrivate::buildIndex()
+@@ -802,8 +860,12 @@ void DocumentContainerPrivate::buildIndex()
  
      int index = 0;
      bool inBody = false;
@@ -237,7 +246,7 @@ index 6fa2c82..d5289ec 100644
          m_index.elementToIndex.insert({current, index});
          if (!inBody)
              inBody = isInBody(current);
-@@ -817,8 +877,9 @@ void DocumentContainerPrivate::buildIndex()
+@@ -817,8 +879,9 @@ void DocumentContainerPrivate::buildIndex()
                  index += str.size();
              }
          }
@@ -249,7 +258,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  void DocumentContainerPrivate::updateSelection()
-@@ -999,37 +1060,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
+@@ -999,37 +1062,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
      if (borders.top.style != litehtml::border_style_none
          && borders.top.style != litehtml::border_style_hidden) {
          painter->setPen(borderPen(borders.top));
@@ -298,7 +307,7 @@ index 6fa2c82..d5289ec 100644
      }
  }
  
-@@ -1065,7 +1126,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
+@@ -1065,7 +1128,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
      m_cursorCallback(toQCursor(QString::fromUtf8(cursor)));
  }
  
@@ -307,7 +316,7 @@ index 6fa2c82..d5289ec 100644
  {
      // TODO
      qWarning(log) << "transform_text not implemented";
-@@ -1073,15 +1134,79 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
+@@ -1073,15 +1136,79 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
      Q_UNUSED(tt)
  }
  
@@ -395,7 +404,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1118,8 +1243,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
+@@ -1118,8 +1245,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
  
  void DocumentContainerPrivate::get_media_features(litehtml::media_features &media) const
  {
@@ -410,7 +419,7 @@ index 6fa2c82..d5289ec 100644
  }
  
  void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
-@@ -1129,7 +1259,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+@@ -1129,7 +1261,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
      Q_UNUSED(event)
  }
  
@@ -419,7 +428,7 @@ index 6fa2c82..d5289ec 100644
  {
      // TODO
      qWarning(log) << "get_language not implemented";
-@@ -1147,14 +1277,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
+@@ -1147,14 +1279,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
      d->m_scrollPosition = pos;
  }
  
@@ -452,7 +461,7 @@ index 6fa2c82..d5289ec 100644
      d->buildIndex();
  }
  
-@@ -1181,6 +1328,13 @@ void DocumentContainer::render(int width, int height)
+@@ -1181,6 +1330,13 @@ void DocumentContainer::render(int width, int height)
      if (!d->m_document)
          return;
      d->m_document->render(width);
@@ -466,7 +475,7 @@ index 6fa2c82..d5289ec 100644
      d->updateSelection();
  }
  
-@@ -1219,7 +1373,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+@@ -1219,7 +1375,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
              return -1;
      }
      while (element) {
@@ -475,7 +484,7 @@ index 6fa2c82..d5289ec 100644
              return qRound(element->get_placement().y);
          element = element->parent();
      }
-@@ -1275,7 +1429,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+@@ -1275,7 +1431,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
      // post to litehtml
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_down(
@@ -485,7 +494,7 @@ index 6fa2c82..d5289ec 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1308,7 +1463,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+@@ -1308,7 +1465,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
      }
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_mouse_over(
@@ -495,7 +504,7 @@ index 6fa2c82..d5289ec 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1331,7 +1487,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+@@ -1331,7 +1489,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
          d->clearSelection();
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_up(
@@ -505,7 +514,7 @@ index 6fa2c82..d5289ec 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1380,7 +1537,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+@@ -1380,7 +1539,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
      if (!d->m_document)
          return {};
      litehtml::position::vector redrawBoxes;
@@ -515,7 +524,7 @@ index 6fa2c82..d5289ec 100644
          QVector<QRect> redrawRects;
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
-@@ -1589,11 +1747,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,11 +1749,54 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -529,9 +538,11 @@ index 6fa2c82..d5289ec 100644
 +    QList<Link> result;
 +    if (!d->m_document)
 +        return result;
-+    // an inline <a> has no box of its own: its rect is the union of its text and children
++    // litehtml's own boxes: the border box, an inline element's per line; children add an image or text outside them
 +    const std::function<QRect(const litehtml::element::ptr &)> placement = [&](const litehtml::element::ptr &e) {
-+        QRect r = toQRect(e->get_placement());
++        QRect r;
++        if (const auto ri = e->get_render_item())
++            ri->get_rendering_boxes([&](const litehtml::position &b) { r = r.united(toQRect(b)); });
 +        for (const litehtml::element::ptr &child : e->children())
 +            r = r.united(placement(child));
 +        return r;
