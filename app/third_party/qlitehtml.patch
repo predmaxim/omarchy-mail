@@ -1,8 +1,23 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index cba179a..0e840aa 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -89,7 +89,9 @@ if(TARGET litehtml)
+   add_library(qlitehtml ${QLITEHTML_LIBRARY_TYPE} ${PUBLIC_HEADERS} container_qpainter.cpp qlitehtmlwidget.cpp)
+ 
+   target_include_directories(qlitehtml PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+-  target_link_libraries(qlitehtml PUBLIC Qt${QT_VERSION_MAJOR}::Widgets PRIVATE litehtml)
++  # create_font asks fontconfig for the metric-compatible aliases of a missing family
++  find_package(Fontconfig REQUIRED)
++  target_link_libraries(qlitehtml PUBLIC Qt${QT_VERSION_MAJOR}::Widgets PRIVATE litehtml Fontconfig::Fontconfig)
+   target_compile_definitions(qlitehtml PRIVATE
+     QT_NO_JAVA_STYLE_ITERATORS
+     QT_NO_CAST_TO_ASCII QT_RESTRICTED_CAST_FROM_ASCII
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..62b6cf1 100644
+index 6fa2c82..de452c8 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
-@@ -20,6 +20,7 @@
+@@ -20,11 +20,15 @@
  #include <QPalette>
  #include <QRegularExpression>
  #include <QScreen>
@@ -10,7 +25,15 @@ index 6fa2c82..62b6cf1 100644
  #include <QTextLayout>
  #include <QUrl>
  
-@@ -307,9 +308,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
++#include <fontconfig/fontconfig.h>
++
+ #include <algorithm>
+ #include <cmath>
++#include <memory>
+ #include <queue>
+ 
+ QT_BEGIN_NAMESPACE
+@@ -307,9 +311,10 @@ static QFont::Style toQFontStyle(litehtml::font_style style)
      return QFont::StyleNormal;
  }
  
@@ -23,7 +46,7 @@ index 6fa2c82..62b6cf1 100644
  }
  
  static Qt::PenStyle borderPenStyle(litehtml::border_style style)
-@@ -327,7 +329,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
+@@ -327,7 +332,7 @@ static Qt::PenStyle borderPenStyle(litehtml::border_style style)
      return Qt::SolidLine;
  }
  
@@ -32,7 +55,7 @@ index 6fa2c82..62b6cf1 100644
  {
      return {toQColor(border.color), qreal(border.width), borderPenStyle(border.style)};
  }
-@@ -491,35 +493,47 @@ DocumentContainer::DocumentContainer()
+@@ -491,35 +496,83 @@ DocumentContainer::DocumentContainer()
  
  DocumentContainer::~DocumentContainer() = default;
  
@@ -41,6 +64,33 @@ index 6fa2c82..62b6cf1 100644
 +// ponytail: em/% lengths of raised text scale with 13 (litehtml to_pixels reads metrics.font_size); fix by passing the CSS size separately if a letter breaks
 +static constexpr litehtml::pixel_t kMinFontPx = 13;
 +static constexpr litehtml::pixel_t kSpacerFontPx = 6;
++
++// The first installed family that fontconfig binds to a missing one as strongly as the name:
++// a metric-compatible alias (Liberation Serif for Times New Roman, 30-metric-aliases.conf).
++// Families appended at the end, such as the generic default for any name, come after the end
++// marker and do not count.
++static QString installedAlias(const QString &name)
++{
++    const auto end = reinterpret_cast<const FcChar8 *>("-qlitehtml-end-of-list-");
++    const std::unique_ptr<FcPattern, decltype(&FcPatternDestroy)> pattern(FcPatternCreate(),
++                                                                          FcPatternDestroy);
++    FcPatternAddString(pattern.get(),
++                       FC_FAMILY,
++                       reinterpret_cast<const FcChar8 *>(name.toUtf8().constData()));
++    FcPatternAddString(pattern.get(), FC_FAMILY, end);
++    FcConfigSubstitute(nullptr, pattern.get(), FcMatchPattern); // thread-safe since fontconfig 2.11
++    FcValue value;
++    FcValueBinding binding;
++    for (int i = 0;
++         FcPatternGetWithBinding(pattern.get(), FC_FAMILY, i, &value, &binding) == FcResultMatch
++         && FcStrCmp(value.u.s, end) != 0;
++         ++i) {
++        const QString family = QString::fromUtf8(reinterpret_cast<const char *>(value.u.s));
++        if (binding == FcValueBindingStrong && family != name && QFontDatabase::hasFamily(family))
++            return family;
++    }
++    return {};
++}
 +
  litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_description &descr,
                                                           const litehtml::document *doc,
@@ -68,31 +118,40 @@ index 6fa2c82..62b6cf1 100644
 -                           return monospaceFont();
 -                       return name;
 -                   });
-+    // Like a browser, take the first family that is installed or generic, else the default font.
++    // Like a browser, take the first family that is installed or generic, else the
++    // metric-compatible font of a missing one, else the default font.
 +    // Qt gets only that one: for a missing first family, fontconfig substitutes any font
 +    // (a proportional one for "Menlo, monospace").
-+    const QStringList splitNames = QString::fromStdString(descr.family).split(',', Qt::SkipEmptyParts)
-+                                   << QString::fromUtf8(m_defaultFontFamilyName);
-+    QString family;
-+    for (const QString &s : splitNames) {
++    QStringList names;
++    for (const QString &s : QString::fromStdString(descr.family).split(',', Qt::SkipEmptyParts)) {
 +        // clean whitespace and quotes
 +        QString name = s.trimmed();
 +        if (name.startsWith('\"'))
 +            name = name.mid(1);
 +        if (name.endsWith('\"'))
 +            name.chop(1);
++        names << name;
++    }
++    const auto available = [this](const QString &name) {
 +        const QString lowerName = name.toLower();
 +        if (lowerName == "serif")
-+            family = serifFont();
-+        else if (lowerName == "sans-serif")
-+            family = sansSerifFont();
-+        else if (lowerName == "monospace")
-+            family = monospaceFont();
-+        else if (QFontDatabase::hasFamily(name)) // thread-safe: layout runs in a worker thread
-+            family = name;
-+        if (!family.isEmpty())
-+            break;
-+    }
++            return serifFont();
++        if (lowerName == "sans-serif")
++            return sansSerifFont();
++        if (lowerName == "monospace")
++            return monospaceFont();
++        // thread-safe: layout runs in a worker thread
++        return QFontDatabase::hasFamily(name) ? name : QString();
++    };
++    QString family;
++    for (auto it = names.cbegin(); family.isEmpty() && it != names.cend(); ++it)
++        family = available(*it);
++    // aliases come after them: Chromium sets "Helvetica, Arial, sans-serif" in Liberation Sans,
++    // not in Nimbus Sans, fontconfig's alias of Helvetica
++    for (auto it = names.cbegin(); family.isEmpty() && it != names.cend(); ++it)
++        family = installedAlias(*it);
++    if (family.isEmpty())
++        family = available(QString::fromUtf8(m_defaultFontFamilyName));
 +    // text of 6..13 px is raised to kMinFontPx; the metrics carry the raised size (litehtml reads font_size from them)
 +    const litehtml::pixel_t size = descr.size >= kSpacerFontPx ? std::max<litehtml::pixel_t>(descr.size, kMinFontPx) : descr.size;
      auto font = new QFont();
@@ -103,7 +162,7 @@ index 6fa2c82..62b6cf1 100644
      font->setWeight(cssWeightToQtWeight(descr.weight));
      font->setStyle(toQFontStyle(descr.style));
      font->setStyleStrategy(m_antialias ? QFont::PreferAntialias : QFont::NoAntialias);
-@@ -531,15 +545,15 @@ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_de
+@@ -531,15 +584,15 @@ litehtml::uint_ptr DocumentContainerPrivate::create_font(const litehtml::font_de
          font->setStrikeOut(true);
      if (fm) {
          const QFontMetrics metrics(*font);
@@ -122,7 +181,7 @@ index 6fa2c82..62b6cf1 100644
      }
      return reinterpret_cast<litehtml::uint_ptr>(font);
  }
-@@ -570,8 +584,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
+@@ -570,8 +623,8 @@ void DocumentContainerPrivate::draw_text(litehtml::uint_ptr hdc,
  
  litehtml::pixel_t DocumentContainerPrivate::pt_to_px(float pt) const
  {
@@ -133,7 +192,7 @@ index 6fa2c82..62b6cf1 100644
  }
  
  litehtml::pixel_t DocumentContainerPrivate::get_default_font_size() const
-@@ -632,7 +646,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
+@@ -632,7 +685,7 @@ void DocumentContainerPrivate::load_image(const char *src, const char *baseurl,
      QPixmap pixmap;
      pixmap.loadFromData(data);
      m_pixmaps.insert(url, pixmap);
@@ -142,7 +201,7 @@ index 6fa2c82..62b6cf1 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
-@@ -999,37 +1013,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
+@@ -999,37 +1052,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
      if (borders.top.style != litehtml::border_style_none
          && borders.top.style != litehtml::border_style_hidden) {
          painter->setPen(borderPen(borders.top));
@@ -191,7 +250,7 @@ index 6fa2c82..62b6cf1 100644
      }
  }
  
-@@ -1065,7 +1079,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
+@@ -1065,7 +1118,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
      m_cursorCallback(toQCursor(QString::fromUtf8(cursor)));
  }
  
@@ -200,7 +259,7 @@ index 6fa2c82..62b6cf1 100644
  {
      // TODO
      qWarning(log) << "transform_text not implemented";
-@@ -1073,15 +1087,50 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
+@@ -1073,15 +1126,50 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
      Q_UNUSED(tt)
  }
  
@@ -259,7 +318,7 @@ index 6fa2c82..62b6cf1 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1118,8 +1167,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
+@@ -1118,8 +1206,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
  
  void DocumentContainerPrivate::get_media_features(litehtml::media_features &media) const
  {
@@ -274,7 +333,7 @@ index 6fa2c82..62b6cf1 100644
  }
  
  void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
-@@ -1129,7 +1183,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+@@ -1129,7 +1222,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
      Q_UNUSED(event)
  }
  
@@ -283,7 +342,7 @@ index 6fa2c82..62b6cf1 100644
  {
      // TODO
      qWarning(log) << "get_language not implemented";
-@@ -1152,7 +1206,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
+@@ -1152,7 +1245,8 @@ void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerCon
      d->m_pixmaps.clear();
      d->m_animations.clear();
      d->clearSelection();
@@ -293,7 +352,7 @@ index 6fa2c82..62b6cf1 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
      d->buildIndex();
-@@ -1219,7 +1274,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+@@ -1219,7 +1313,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
              return -1;
      }
      while (element) {
@@ -302,7 +361,7 @@ index 6fa2c82..62b6cf1 100644
              return qRound(element->get_placement().y);
          element = element->parent();
      }
-@@ -1275,7 +1330,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+@@ -1275,7 +1369,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
      // post to litehtml
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_down(
@@ -312,7 +371,7 @@ index 6fa2c82..62b6cf1 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1308,7 +1364,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+@@ -1308,7 +1403,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
      }
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_mouse_over(
@@ -322,7 +381,7 @@ index 6fa2c82..62b6cf1 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1331,7 +1388,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+@@ -1331,7 +1427,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
          d->clearSelection();
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_up(
@@ -332,7 +391,7 @@ index 6fa2c82..62b6cf1 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1380,7 +1438,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+@@ -1380,7 +1477,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
      if (!d->m_document)
          return {};
      litehtml::position::vector redrawBoxes;
@@ -342,7 +401,7 @@ index 6fa2c82..62b6cf1 100644
          QVector<QRect> redrawRects;
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
-@@ -1589,11 +1648,42 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,11 +1687,42 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  

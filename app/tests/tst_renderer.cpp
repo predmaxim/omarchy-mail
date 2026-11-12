@@ -347,7 +347,17 @@ private Q_SLOTS:
         QVERIFY2(qAbs(fixed.at(0) - fixed.at(1)) <= 1, qPrintable(QString("%1 != %2").arg(fixed.at(0)).arg(fixed.at(1))));
         const QStringList word{QStringLiteral("Hamburgefonstiv")};
         QCOMPARE(widths("NoSuchFamilyOmTest, serif", word), widths("serif", word));
-        // nothing installed and no generic name: the default font (the job's is sans-serif), as with no font-family
+        // nothing installed and no generic name: the metric-compatible font fontconfig gives the first family it has
+        // one for (30-metric-aliases.conf), as Chromium does
+        QCOMPARE(widths("'Times New Roman'", word), widths("serif", word));
+        const QList<int> courier = widths("'Courier New'", {"iiiiiiiiii", "WWWWWWWWWW"});
+        QCOMPARE(courier.size(), 2);
+        QVERIFY2(qAbs(courier.at(0) - courier.at(1)) <= 1, qPrintable(QString("%1 != %2").arg(courier.at(0)).arg(courier.at(1))));
+        // an installed family or a generic name comes first: Chromium sets "Helvetica, Arial, sans-serif" in
+        // Liberation Sans, the font of sans-serif, not in Nimbus Sans, fontconfig's alias of Helvetica
+        const QStringList sample{QStringLiteral("Hamburgefonstiv Hamburgefonstiv Hamburgefonstiv Hamburgefonstiv")};
+        QCOMPARE(widths("Helvetica, Arial, sans-serif", sample), widths("sans-serif", sample));
+        // else the default font (the job's is sans-serif), as with no font-family
         QCOMPARE(widths("NoSuchFamilyOmTest", word), widths("sans-serif", word));
     }
 
