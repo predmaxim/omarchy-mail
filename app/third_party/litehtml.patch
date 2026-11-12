@@ -221,7 +221,7 @@ index 0099ec97..9755fe79 100644
          m_intrinsic_min_size.width = 0_px;
      }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
-index e2a8344b..27d04a87 100644
+index e2a8344b..4f62e100 100644
 --- a/src/render_item.cpp
 +++ b/src/render_item.cpp
 @@ -48,6 +48,11 @@ void litehtml::render_item::update_intrinsic_size()
@@ -236,7 +236,7 @@ index e2a8344b..27d04a87 100644
      // Flex items have their intrisict size calculated based on the flex container, so we skip this step for them
      // We also skip this step for text elements, because they have their intrisict size calculated based on the text
      // content
-@@ -56,14 +61,15 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -56,14 +61,21 @@ void litehtml::render_item::update_intrinsic_size()
          if(!css().get_width().is_predefined() && css().get_width().units() != css_units_percentage)
          {
              auto w = doc->to_pixels(css().get_width(), fm, 0_px);
@@ -244,8 +244,15 @@ index e2a8344b..27d04a87 100644
 +            if(is_one_of(css().get_display(), display_table_cell, display_table))
              {
                  // Table column width is applied to the whole cell box, including padding and borders.
+-                m_intrinsic_max_size.width = m_intrinsic_min_size.width = std::max(w, m_intrinsic_min_size.width);
 +                // So is a table's width, and a table is never narrower than its content.
-                 m_intrinsic_max_size.width = m_intrinsic_min_size.width = std::max(w, m_intrinsic_min_size.width);
++                m_intrinsic_max_size.width = std::max(w, m_intrinsic_min_size.width);
++                // A cell's width is its column's preferred width, not its minimum (css-tables-3): the cell's
++                // min-content stays its content's, and a table too narrow for its fixed columns shrinks them
++                if(css().get_display() == display_table)
++                {
++                    m_intrinsic_min_size.width = m_intrinsic_max_size.width;
++                }
              } else
              {
                  // If width is defined and not percentage, then we can set the intrisict size to that value
@@ -254,7 +261,7 @@ index e2a8344b..27d04a87 100644
              }
          } else if(css().get_overflow() > overflow_visible &&
                    !is_one_of(css().get_display(), display_table_cell, display_table))
-@@ -91,8 +97,8 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -91,8 +103,8 @@ void litehtml::render_item::update_intrinsic_size()
      {
          if(!css().get_max_width().is_predefined() && css().get_max_width().units() != css_units_percentage)
          {
@@ -265,7 +272,7 @@ index e2a8344b..27d04a87 100644
              // A table can't be narrower than its minimum content width.
              if(css().get_display() == display_table)
              {
-@@ -108,8 +114,8 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -108,8 +120,8 @@ void litehtml::render_item::update_intrinsic_size()
  
          if(!css().get_min_width().is_predefined() && css().get_min_width().units() != css_units_percentage)
          {
@@ -276,7 +283,7 @@ index e2a8344b..27d04a87 100644
          }
          if(!css().get_min_height().is_predefined() && css().get_min_height().units() != css_units_percentage)
          {
-@@ -169,6 +175,15 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
+@@ -169,6 +181,15 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
      m_margins.top    = m_element->css().get_margins().top.calc_percent(parent_width);
      m_margins.bottom = m_element->css().get_margins().bottom.calc_percent(parent_width);
  
@@ -292,7 +299,7 @@ index e2a8344b..27d04a87 100644
      m_padding.top    = m_element->css().get_padding().top.calc_percent(parent_width);
      m_padding.bottom = m_element->css().get_padding().bottom.calc_percent(parent_width);
  }
-@@ -207,6 +222,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
+@@ -207,6 +228,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
              m_margins.right = parent_width - el_width;
              m_margins.right = std::max<pixel_t>(m_margins.right, 0_px);
          }
@@ -312,7 +319,7 @@ index e2a8344b..27d04a87 100644
      }
      return 0_px;
  }
-@@ -1710,6 +1738,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+@@ -1710,6 +1744,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
  
      calc_cb_length(src_el()->css().get_min_width(), cb_context.width, ret.min_width);
      calc_cb_length(src_el()->css().get_max_width(), cb_context.width, ret.max_width);
@@ -331,7 +338,7 @@ index e2a8344b..27d04a87 100644
  
      calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
      calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
-@@ -1737,13 +1777,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+@@ -1737,13 +1783,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
  
      ret.unclamped_render_width = ret.render_width.value;
  
@@ -424,10 +431,42 @@ index 3a6c0a94..17be19de 100644
      static int init()
      {
 diff --git a/src/table.cpp b/src/table.cpp
-index cb321fdf..67699a4f 100644
+index cb321fdf..946620ef 100644
 --- a/src/table.cpp
 +++ b/src/table.cpp
-@@ -312,6 +312,18 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
+@@ -205,6 +205,13 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
+ 
+     std::vector<table_column*> distribute_columns;
+ 
++    // How far a column grows towards its max-content width; a fixed width is a column's max-content width
++    auto elasticity = [](const table_column* column) {
++        return column->css_width.is_predefined() || column->css_width.units() == css_units_percentage
++                   ? column->max_width - column->min_width
++                   : 0_px;
++    };
++
+     for(int step = 0; step < 3; step++)
+     {
+         distribute_columns.clear();
+@@ -254,7 +261,7 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
+             pixel_t cols_width;
+             for(const auto& column : distribute_columns)
+             {
+-                cols_width += column->max_width - column->min_width;
++                cols_width += elasticity(column);
+             }
+ 
+             if(cols_width != 0_px)
+@@ -262,7 +269,7 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
+                 pixel_t add = width / pixel_t(static_cast<int>(distribute_columns.size()));
+                 for(const auto& column : distribute_columns)
+                 {
+-                    add = width * ((column->max_width - column->min_width) / cols_width);
++                    add = width * (elasticity(column) / cols_width);
+                     if(column->width + add >= column->min_width)
+                     {
+                         column->width += add;
+@@ -312,12 +319,27 @@ void litehtml::table_grid::distribute_width(pixel_t width, int start, int end)
  litehtml::pixel_t litehtml::table_grid::calc_table_width(std::optional<pixel_t> block_width, bool is_auto,
                                                           pixel_t& min_table_width, pixel_t& max_table_width)
  {
@@ -446,3 +485,42 @@ index cb321fdf..67699a4f 100644
      // Calculate the minimum content width (MCW) of each cell: the formatted content may span any number of lines but
      // may not overflow the cell box. If the specified 'width' (W) of the cell is greater than MCW, W is the minimum
      // cell width. A value of 'auto' means that MCW is the minimum cell width.
+     //
+     // Also, calculate the "maximum" cell width of each cell: formatting the content without breaking lines other than
+     // where explicit line breaks occur.
++    //
++    // That is CSS 2.1. Like browsers, this follows css-tables-3 instead: W raises only the maximum, the minimum is MCW,
++    // and fixed columns shrink towards it when the table cannot hold them (below).
+ 
+     for(int row = 0; row < rows_count(); row++)
+     {
+@@ -441,6 +463,29 @@ litehtml::pixel_t litehtml::table_grid::calc_table_width(std::optional<pixel_t>
+         }
+     } else
+     {
++        // css-tables-3: a fixed width is the column's preferred width, not its minimum. The fixed columns give up
++        // the width the table lacks first, down to their min-content, each in proportion to its width above that
++        pixel_t shrinkable = 0_px;
++        for(const auto& column : m_columns)
++        {
++            if(!column.css_width.is_predefined() && column.css_width.units() != css_units_percentage)
++            {
++                shrinkable += column.width - column.min_width;
++            }
++        }
++        if(shrinkable > 0_px)
++        {
++            const pixel_t shrink = std::min(cur_width - block_width.value(), shrinkable);
++            for(auto& column : m_columns)
++            {
++                if(!column.css_width.is_predefined() && column.css_width.units() != css_units_percentage)
++                {
++                    column.width -= shrink * ((column.width - column.min_width) / shrinkable);
++                }
++            }
++            cur_width -= shrink;
++        }
++
+         pixel_t fixed_width = 0_px;
+         float   percent     = 0;
+         for(int col = 0; col < m_cols_count; col++)

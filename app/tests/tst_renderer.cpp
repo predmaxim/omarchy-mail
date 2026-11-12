@@ -567,6 +567,51 @@ private Q_SLOTS:
         QCOMPARE(v, (QList<QPoint>{QPoint(0, 0), QPoint(200, 0)}));
     }
 
+    // css-tables-3: a fixed column width is the column's preferred width, not its minimum (CSS 2.1). A table that
+    // cannot hold every fixed width shrinks those columns towards their min-content, each in proportion to its width
+    // above it (litehtml master kept them: two wide tables ran 1283 and 1146 px wide and were cut on the right)
+    void fixed_columns_shrink_to_fit()
+    {
+        const QString box = QStringLiteral("<div style=\"width:40px;height:10px\"></div>");
+        // with a height, our sheet's max-width:100% leaves the picture alone: it can't shrink
+        const QString picture = QStringLiteral("<img src=\"%1\" width=\"300\" height=\"60\" style=\"display:block\">").arg(widePicture());
+        // the width laid out at, then each cell's left edge and width; the widths come from <col> or from <td width>
+        const auto cells = [&](bool cols, const QList<int> &widths, const QStringList &content, const QString &table = {}) {
+            QString colgroup, row;
+            for (int i = 0; i < widths.size(); ++i) {
+                colgroup += QStringLiteral("<col style=\"width:%1px\">").arg(widths.at(i));
+                row += QStringLiteral("<td %1style=\"padding:0\">%2</td>")
+                           .arg(cols ? QString() : QStringLiteral("width=\"%1\" ").arg(widths.at(i)), content.at(i));
+            }
+            const Rendered r = run(job(QStringLiteral("<!doctype html><body style=\"margin:0\"><table style=\"border-spacing:0;%1\">"
+                                                      "%2<tr>%3</tr></table></body>")
+                                           .arg(table, cols ? "<colgroup>" + colgroup + "</colgroup>" : QString(), row)));
+            QList<int> v{r.width};
+            for (const QRect &c : r.doc ? r.doc->boxes(QStringLiteral("td")) : QList<QRect>())
+                v << c.left() << c.width();
+            return v;
+        };
+        const auto near = [](const QList<int> &actual, const QList<int> &expected) {
+            bool same = actual.size() == expected.size();
+            for (qsizetype i = 0; same && i < actual.size(); ++i)
+                same = qAbs(actual.at(i) - expected.at(i)) <= 1;
+            if (!same)
+                qWarning() << "actual" << actual << "expected" << expected;
+            return same;
+        };
+        // expected: Chromium 155 on the same HTML in a 760 px viewport
+        for (const bool cols : {true, false}) {
+            // they fit: kept exactly
+            QVERIFY(near(cells(cols, {200, 300}, {box, box}), {760, 0, 200, 200, 300}));
+            // 920 px of fixed widths: each column gives up the same share of its width above its 40 px content
+            QVERIFY(near(cells(cols, {440, 240, 240}, {box, box, box}), {760, 0, 360, 360, 200, 560, 200}));
+            // a 300 px picture can't shrink: its column keeps that, the others give up the width
+            QVERIFY(near(cells(cols, {240, 610, 230}, {picture, box, box}), {760, 0, 300, 300, 325, 625, 135}));
+            // a table wider than its fixed columns still widens them in proportion to their widths
+            QVERIFY(near(cells(cols, {200, 100}, {box, box}, QStringLiteral("width:600px")), {760, 0, 400, 400, 200}));
+        }
+    }
+
     // a line with only a line break is a blank line, also inside an inline element (Blink counts <br> as text)
     void blank_lines_stay()
     {
