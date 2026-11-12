@@ -20,6 +20,46 @@ index b3291c89..9b33edeb 100644
      };
  
      // ==========================================================
+diff --git a/include/litehtml/document_container.h b/include/litehtml/document_container.h
+index 6928f6ce..2857f3c7 100644
+--- a/include/litehtml/document_container.h
++++ b/include/litehtml/document_container.h
+@@ -83,6 +83,13 @@ namespace litehtml
+         }
+         virtual void split_text(const char* text, const std::function<void(const char*)>& on_word,
+                                 const std::function<void(const char*)>& on_space);
++        // To measure what else widens the layout: text that white-space keeps on one line (nowrap, pre) wraps as
++        // in normal and pre-wrap, while the atomic inlines it keeps side by side (only white space or &nbsp;
++        // between) stay so
++        virtual bool wrap_all_text() const
++        {
++            return false;
++        }
+ 
+       protected:
+         virtual ~document_container() = default;
+diff --git a/include/litehtml/line_box.h b/include/litehtml/line_box.h
+index f9c33b79..edfa54fe 100644
+--- a/include/litehtml/line_box.h
++++ b/include/litehtml/line_box.h
+@@ -9,6 +9,7 @@
+ namespace litehtml
+ {
+     class render_item;
++    class element;
+ 
+     struct line_context
+     {
+@@ -240,6 +241,9 @@ namespace litehtml
+ 
+         void    add_item(std::unique_ptr<line_box_item> item);
+         bool    can_hold(const std::unique_ptr<line_box_item>& item, white_space ws) const;
++        // measuring (wrap_all_text): white space or text of no-break spaces only (&nbsp;), which never parts the
++        // atomic inlines on either side
++        static bool is_glue(const std::shared_ptr<element>& el);
+         bool    is_empty() const;
+         pixel_t baseline() const;
+         pixel_t top_margin() const;
 diff --git a/include/litehtml/master_css.h b/include/litehtml/master_css.h
 index 36f27311..ab26ca1a 100644
 --- a/include/litehtml/master_css.h
@@ -201,25 +241,37 @@ index 35c5c3ff..07e2c8f6 100644
      str = get_attr("valign");
      if(str)
 diff --git a/src/line_box.cpp b/src/line_box.cpp
-index 48f79487..3749bcf9 100644
+index 48f79487..5c4e00c4 100644
 --- a/src/line_box.cpp
 +++ b/src/line_box.cpp
-@@ -184,6 +184,14 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
+@@ -1,5 +1,7 @@
+ #include "html.h"
+ #include "line_box.h"
++#include "document.h"
++#include "document_container.h"
+ #include "element.h"
+ #include "render_item.h"
+ #include "types.h"
+@@ -184,6 +186,18 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
      if(add)
      {
          item->place_to(m_left + m_width, m_top);
 +        // pre-wrap white space that runs past the line's end hangs there with no width, as in browsers (CSS Text 3
-+        // §4.1.3 lets it collapse): it widens nothing, and the next word starts the next line
++        // §4.1.3 lets it collapse): it widens nothing, and the next word starts the next line. So does pre when
++        // measuring (wrap_all_text), where it wraps as pre-wrap
 +        const auto& el = item->get_el();
++        const white_space ws = el->css().get_white_space();
 +        if(item->get_type() == line_box_item::type_text_part && el->src_el()->is_space() &&
-+           el->css().get_white_space() == white_space_pre_wrap && m_left + m_width + item->width() > m_right)
++           m_left + m_width + item->width() > m_right &&
++           (ws == white_space_pre_wrap ||
++            (ws == white_space_pre && el->src_el()->get_document()->container()->wrap_all_text())))
 +        {
 +            el->pos().width = std::max(0_px, m_right - m_left - m_width);
 +        }
          m_width  += item->width();
          m_height  = std::max(m_height, item->get_el()->height());
          m_items.emplace_back(std::move(item));
-@@ -316,6 +324,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+@@ -316,6 +330,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
          }
          break;
      case text_align_center:
@@ -227,7 +279,7 @@ index 48f79487..3749bcf9 100644
          if(m_width < (m_right - m_left))
          {
              shift_x = ((m_right - m_left) - m_width) / 2_px;
-@@ -338,7 +347,16 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+@@ -338,7 +353,16 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
  
      std::optional<pixel_t> line_height;
  
@@ -245,7 +297,7 @@ index 48f79487..3749bcf9 100644
      {
          line_height = m_default_line_height.computed_value;
      }
-@@ -509,7 +527,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+@@ -509,7 +533,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
              default:
                  break;
              }
@@ -255,7 +307,7 @@ index 48f79487..3749bcf9 100644
          {
              if(!lbi->get_el()->src_el()->is_inline_box())
              {
-@@ -520,7 +539,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
+@@ -520,7 +545,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
              }
          }
  
@@ -265,6 +317,63 @@ index 48f79487..3749bcf9 100644
          {
              if(line_height.has_value())
              {
+@@ -794,8 +820,25 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
+             return true;
+         }
+ 
+-        if(ws == white_space_nowrap || ws == white_space_pre ||
+-           (ws == white_space_pre_wrap && item->get_el()->src_el()->is_space()))
++        const element::ptr src  = item->get_el()->src_el();
++        const bool         kept = ws == white_space_nowrap || ws == white_space_pre;
++        if(kept && !src->get_document()->container()->wrap_all_text())
++        {
++            return true;
++        }
++        // measuring (wrap_all_text): the text wraps as in normal and pre-wrap, but nothing breaks a picture or an
++        // inline block, or the white space or &nbsp; after it, away from the one before it
++        if(kept && (!src->is_text() || is_glue(src)))
++        {
++            auto last = std::find_if(m_items.rbegin(), m_items.rend(), [](const std::unique_ptr<line_box_item>& lbi) {
++                return lbi->get_type() == line_box_item::type_text_part && !is_glue(lbi->get_el()->src_el());
++            });
++            if(last != m_items.rend() && !(*last)->get_el()->src_el()->is_text())
++            {
++                return true;
++            }
++        }
++        if((ws == white_space_pre_wrap || ws == white_space_pre) && src->is_space())
+         {
+             return true;
+         }
+@@ -809,6 +852,28 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
+     return true;
+ }
+ 
++bool litehtml::line_box::is_glue(const std::shared_ptr<element>& el)
++{
++    if(el->is_space())
++    {
++        return true;
++    }
++    if(!el->is_text())
++    {
++        return false;
++    }
++    std::string text;
++    el->get_text(text);
++    for(size_t i = 0; i < text.size(); i += 2)
++    {
++        if(text.compare(i, 2, "\xC2\xA0") != 0)
++        {
++            return false;
++        }
++    }
++    return !text.empty();
++}
++
+ bool litehtml::line_box::have_last_space() const
+ {
+     auto last_el = get_last_text_part();
 diff --git a/src/render_image.cpp b/src/render_image.cpp
 index 0099ec97..9755fe79 100644
 --- a/src/render_image.cpp
@@ -298,6 +407,57 @@ index 0099ec97..9755fe79 100644
 +       (!css().get_max_width().is_predefined() && css().get_max_width().units() == css_units_percentage))
      {
          m_intrinsic_min_size.width = 0_px;
+     }
+diff --git a/src/render_inline_context.cpp b/src/render_inline_context.cpp
+index 648521cb..b305891b 100644
+--- a/src/render_inline_context.cpp
++++ b/src/render_inline_context.cpp
+@@ -1,6 +1,7 @@
+ #include "render_inline_context.h"
+ #include "css_values.h"
+ #include "document.h"
++#include "document_container.h"
+ #include "iterators.h"
+ #include "types.h"
+ #include <algorithm>
+@@ -446,12 +447,26 @@ void litehtml::render_item_inline_context::calc_intrinsic_size()
+ 
+     bool skip_spaces = ws == white_space_normal || ws == white_space_nowrap || ws == white_space_pre_line;
+ 
++    // measuring (wrap_all_text), nowrap text wraps: the narrowest line is the widest word or the widest run of
++    // atomic inlines with only white space or &nbsp; between them
++    const bool wrap_all = ws == white_space_nowrap && src_el()->get_document()->container()->wrap_all_text();
++    pixel_t    run      = 0_px;
++    pixel_t    run_max  = 0_px;
++
+     for_each_inline(
+         [&](const std::shared_ptr<render_item>& el, iterator_item_type item_type) {
+             switch(item_type)
+             {
+             case iterator_item_type_child:
+                 {
++                    if(wrap_all && !el->src_el()->is_white_space() && !el->src_el()->is_float())
++                    {
++                        const bool atomic = !el->src_el()->is_text() && !el->src_el()->is_break();
++                        run     = atomic || (run > 0_px && line_box::is_glue(el->src_el()))
++                                      ? run + (run > 0_px ? spaces_width : 0_px) + el->get_intrinsic_min_size().width
++                                      : 0_px;
++                        run_max = std::max(run_max, run);
++                    }
+                     if(skip_spaces)
+                     {
+                         if(el->src_el()->is_white_space())
+@@ -502,7 +517,10 @@ void litehtml::render_item_inline_context::calc_intrinsic_size()
+     m_intrinsic_min_size.height  = std::max(m_intrinsic_min_size.height, line_height) + content_offset_height();
+     m_intrinsic_min_size.width  += content_offset_width();
+     m_intrinsic_max_size.height += content_offset_height();
+-    if(ws == white_space_nowrap)
++    if(wrap_all)
++    {
++        m_intrinsic_min_size.width = std::max(m_intrinsic_min_size.width, run_max + content_offset_width());
++    } else if(ws == white_space_nowrap)
+     {
+         m_intrinsic_min_size = m_intrinsic_max_size;
      }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
 index e2a8344b..4f62e100 100644

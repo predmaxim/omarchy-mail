@@ -279,6 +279,9 @@ private Q_SLOTS:
         const QString word = QString(20000, QLatin1Char('x'));   // its tail is one huge piece, as in the slot below
         const QString line = QStringLiteral("a line the letter keeps unbroken ").repeated(60);   // ~14 000 px
         const QString table = QStringLiteral("<table width=\"%1\"><tr><td>a</td><td>b</td></tr></table>");
+        const QString pic = QStringLiteral("<img width=\"900\" height=\"50\">");
+        const QString pics = pic + QLatin1Char(' ') + pic;
+        const QString boxes = QStringLiteral("<span style=\"display:inline-block;width:900px\">a</span>").repeated(2);
         const QList<QPair<QString, int>> letters = {
             {table.arg(1500), 1500},
             {table.arg(3000), 3000},
@@ -287,14 +290,23 @@ private Q_SLOTS:
             {table.arg(1500) + QStringLiteral("<div style=\"white-space:nowrap\">%1</div>").arg(line), 1500},   // nor such a line
             {QStringLiteral("<table><tr><td nowrap>%1</td></tr></table>").arg(line), pane},
             {QStringLiteral("<p style=\"white-space:pre\">%1</p>").arg(line), pane},
+            // pictures and inline blocks such a line keeps side by side are layout: they stay so, the text wraps
+            {QStringLiteral("<div style=\"white-space:nowrap\">%1</div>").arg(pics), 1800},
+            {QStringLiteral("<div style=\"white-space:nowrap\">%1</div>").arg(boxes), 1800},
+            {QStringLiteral("<table><tr><td nowrap>%1</td></tr></table>").arg(pics), 1800},
+            {QStringLiteral("<div style=\"white-space:nowrap\">%1&nbsp;%1</div>").arg(pic), 1800},
+            {QStringLiteral("<table><tr><td nowrap>%1&nbsp;%1</td></tr></table>").arg(pic), 1800},
+            {QStringLiteral("<div style=\"white-space:nowrap\">%1 %2</div>").arg(pics, line), 1800},
+            {QStringLiteral("<p style=\"white-space:pre\">%1%2%3</p>").arg(pics, QString(400, QLatin1Char('\t')), line), 1800},
         };
         for (const auto &[html, wide] : letters) {
             letter->clear();
             open(html);
             const qreal z = letter->documentZoom();
             QVERIFY2(qAbs(z - qreal(pane) / wide) <= 0.01, qPrintable(QStringLiteral("%1: %2").arg(wide).arg(z)));
-            const QRect t = letter->document()->boxes(QStringLiteral("table")).value(0);
-            QVERIFY2(wide == pane || (t.x() + t.width()) * z <= pane, qPrintable(QString::number((t.x() + t.width()) * z)));
+            for (const QString &fixed : {QStringLiteral("table"), QStringLiteral("img"), QStringLiteral("span")})
+                for (const QRect &b : letter->document()->boxes(fixed))
+                    QVERIFY2(wide == pane || qRound((b.x() + b.width()) * z) <= pane, qPrintable(QString::number((b.x() + b.width()) * z)));
         }
     }
     void text_keeps_the_full_zoom()   // W41: only fixed-width content is shrunk; unbreakable text never is

@@ -172,7 +172,8 @@ struct Holder
 };
 
 // Lays html out at the job's width; images come from loadData, the missing ones go to `wanted`. `measuring` lets
-// all text wrap: the rest of a word that qlitehtml leaves in one piece past the right edge, and nowrap and pre.
+// all text wrap: the rest of a word that qlitehtml leaves in one piece past the right edge, and nowrap and pre;
+// the pictures and inline blocks those keep side by side stay so.
 static std::shared_ptr<Holder> layOut(const QByteArray &html, const QString &css, const RenderJob &job,
                                       QStringList *wanted, bool measuring = false)
 {

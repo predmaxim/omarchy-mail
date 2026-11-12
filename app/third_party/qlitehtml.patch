@@ -14,7 +14,7 @@ index cba179a..0e840aa 100644
      QT_NO_JAVA_STYLE_ITERATORS
      QT_NO_CAST_TO_ASCII QT_RESTRICTED_CAST_FROM_ASCII
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..329afaf 100644
+index 6fa2c82..ab1d9e2 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,11 +20,15 @@
@@ -356,23 +356,21 @@ index 6fa2c82..329afaf 100644
  {
      // TODO
      qWarning(log) << "get_language not implemented";
-@@ -1147,14 +1243,33 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
+@@ -1147,14 +1243,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
      d->m_scrollPosition = pos;
  }
  
-+// Whether an element under el keeps its lines whole however narrow the layout (nowrap, pre); wrapAll lets them
-+// wrap, as normal and pre-wrap: the same words and spaces, only the line breaks differ
-+static bool unbreak(const litehtml::element::ptr &el, bool wrapAll)
++// Whether an element under el keeps its lines whole however narrow the layout (nowrap, pre); wrapAll lets their
++// text wrap (litehtml's wrap_all_text)
++static bool unbroken(const litehtml::element::ptr &el)
 +{
 +    const litehtml::white_space ws = el->css().get_white_space();
-+    const bool kept = ws == litehtml::white_space_nowrap || ws == litehtml::white_space_pre;
-+    if (kept && wrapAll)
-+        el->css().set_white_space(ws == litehtml::white_space_pre ? litehtml::white_space_pre_wrap
-+                                                                  : litehtml::white_space_normal);
-+    bool found = kept;
++    if (ws == litehtml::white_space_nowrap || ws == litehtml::white_space_pre)
++        return true;
 +    for (const litehtml::element::ptr &child : el->children())
-+        found = unbreak(child, wrapAll) || found;
-+    return found;
++        if (unbroken(child))
++            return true;
++    return false;
 +}
 +
  void DocumentContainer::setDocument(const QByteArray &data, DocumentContainerContext *context)
@@ -387,11 +385,11 @@ index 6fa2c82..329afaf 100644
                                                           d.get(),
                                                           context->d->masterCss.toUtf8().constData());
 +    if (d->m_document)
-+        d->m_unbroken = unbreak(d->m_document->root(), d->m_wrapAll) || d->m_unbroken;
++        d->m_unbroken = d->m_unbroken || unbroken(d->m_document->root());
      d->buildIndex();
  }
  
-@@ -1219,7 +1334,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+@@ -1219,7 +1332,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
              return -1;
      }
      while (element) {
@@ -400,7 +398,7 @@ index 6fa2c82..329afaf 100644
              return qRound(element->get_placement().y);
          element = element->parent();
      }
-@@ -1275,7 +1390,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+@@ -1275,7 +1388,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
      // post to litehtml
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_down(
@@ -410,7 +408,7 @@ index 6fa2c82..329afaf 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1308,7 +1424,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+@@ -1308,7 +1422,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
      }
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_mouse_over(
@@ -420,7 +418,7 @@ index 6fa2c82..329afaf 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1331,7 +1448,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+@@ -1331,7 +1446,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
          d->clearSelection();
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_up(
@@ -430,7 +428,7 @@ index 6fa2c82..329afaf 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1380,7 +1498,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+@@ -1380,7 +1496,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
      if (!d->m_document)
          return {};
      litehtml::position::vector redrawBoxes;
@@ -440,7 +438,7 @@ index 6fa2c82..329afaf 100644
          QVector<QRect> redrawRects;
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
-@@ -1589,11 +1708,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,11 +1706,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -495,7 +493,7 @@ index 6fa2c82..329afaf 100644
      for (const litehtml::element::ptr &child : element->children()) {
          litehtml::element::ptr result = elementForY(y, child);
 diff --git a/src/container_qpainter.h b/src/container_qpainter.h
-index 0a7939e..bda7dcd 100644
+index 0a7939e..a7748ff 100644
 --- a/src/container_qpainter.h
 +++ b/src/container_qpainter.h
 @@ -6,6 +6,8 @@
@@ -507,7 +505,7 @@ index 0a7939e..bda7dcd 100644
  #include <QPaintDevice>
  #include <QPainter>
  #include <QPoint>
-@@ -131,6 +133,25 @@ public: // outside API
+@@ -131,6 +133,26 @@ public: // outside API
  
      int withFixedElementPosition(int y, const std::function<void()> &action);
  
@@ -525,8 +523,9 @@ index 0a7939e..bda7dcd 100644
 +    QList<QRect> boxes(const QString &selector) const;
 +    // Text that stays on one line however narrow the layout: a word's rest past its first 10 000 characters
 +    // (one piece past the right edge) and lines the CSS keeps unbroken (nowrap, pre). Set before setDocument,
-+    // wrapAll drops the rest and lays nowrap and pre out as normal and pre-wrap: the document is as wide as if
-+    // all of it wrapped, to measure what else widens it
++    // wrapAll drops the rest and lets the text of nowrap and pre wrap, as normal and pre-wrap, while pictures and
++    // inline blocks they keep side by side stay so: the document is as wide as if all text wrapped, to measure
++    // what else widens it
 +    void setWrapAll(bool wrap);
 +    bool hasUnbrokenText() const; // the document has such text, wrapped or not
 +
@@ -534,10 +533,10 @@ index 0a7939e..bda7dcd 100644
      std::unique_ptr<DocumentContainerPrivate> d;
  };
 diff --git a/src/container_qpainter_p.h b/src/container_qpainter_p.h
-index b767a32..708cc98 100644
+index b767a32..65f3dec 100644
 --- a/src/container_qpainter_p.h
 +++ b/src/container_qpainter_p.h
-@@ -136,8 +136,11 @@ public: // document_container API
+@@ -136,8 +136,12 @@ public: // document_container API
      void on_anchor_click(const char *url, const litehtml::element::ptr &el) override;
      void on_mouse_event(const litehtml::element::ptr &el, litehtml::mouse_event event) override;
      void set_cursor(const char *cursor) override;
@@ -547,11 +546,12 @@ index b767a32..708cc98 100644
 +    void split_text(const char *text,
 +                    const std::function<void(const char *)> &on_word,
 +                    const std::function<void(const char *)> &on_space) override;
++    bool wrap_all_text() const override { return m_wrapAll; }
 +    void import_css(std::string &text, const std::string &url, std::string &baseurl) override;
      void set_clip(const litehtml::position &pos,
                    const litehtml::border_radiuses &bdr_radius) override;
      void del_clip() override;
-@@ -147,7 +150,7 @@ public: // document_container API
+@@ -147,7 +151,7 @@ public: // document_container API
          const litehtml::string_map &attributes,
          const std::shared_ptr<litehtml::document> &doc) override;
      void get_media_features(litehtml::media_features &media) const override;
@@ -560,7 +560,7 @@ index b767a32..708cc98 100644
  
      QPixmap getPixmap(const QUrl &url);
      QPixmap getPixmap(const QString &imageUrl, const QString &baseUrl);
-@@ -166,6 +169,8 @@ public: // document_container API
+@@ -166,6 +170,8 @@ public: // document_container API
      QString sansSerifFont() const;
      QString monospaceFont() const;
      QUrl resolveUrl(const QString &url, const QString &baseUrl) const;
@@ -569,7 +569,7 @@ index b767a32..708cc98 100644
      void drawSelection(QPainter *painter, const QRect &clip) const;
      void buildIndex();
      void updateSelection();
-@@ -193,8 +198,11 @@ public: // document_container API
+@@ -193,8 +199,11 @@ public: // document_container API
      DocumentContainer::PaletteCallback m_paletteCallback;
      DocumentContainer::ClipboardCallback m_clipboardCallback;
      DocumentContainer::RepaintCallback m_repaintCallback;
