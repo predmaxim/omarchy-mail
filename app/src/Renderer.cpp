@@ -71,19 +71,21 @@ struct Quote
 };
 
 // litehtml recurses per nesting level (parse, layout, draw, and the tree's destruction on the main
-// thread) and lays nested tables out in ~3^n time: 16000 nested divs overflow 8 MiB, 14 nested
-// tables take 46 s (measured 2026-10-17). gumbo, its own parser, measures the tree first; a letter
-// past the caps is shown as its text. On the way it notes the text, whether there is a picture and the quotes.
+// thread): 16000 nested divs overflow 8 MiB (measured 2026-10-17). gumbo, its own parser, measures the
+// tree first; a letter past the cap is shown as its text. On the way it notes the text, whether there is a
+// picture and the quotes. Nested tables have no cap of their own: pinned litehtml took ~3^n (14 took 46 s);
+// litehtml a5ee957 with our patch lays 25/50/100/240 out in 2/3/7/32 ms at 1000 px, and 249, the deepest
+// under the cap, needs less than 512 KiB of stack (measured 2026-11-12).
 static bool tooDeep(const QByteArray &html, QString *text, bool *picture, QList<Quote> *quotes)
 {
-    constexpr int maxDepth = 1000, maxTables = 12;
+    constexpr int maxDepth = 1000;
     GumboOutput *out = gumbo_parse_with_options(&kGumboDefaultOptions, html.constData(), size_t(html.size()));
     struct Item
     {
         const GumboNode *node;
-        int depth, tables, quotes;
+        int depth, quotes;
     };
-    std::vector<Item> todo{{out->root, 0, 0, 0}};
+    std::vector<Item> todo{{out->root, 0, 0}};
     bool deep = false;
     while (!todo.empty()) {
         const Item it = todo.back();
@@ -104,10 +106,9 @@ static bool tooDeep(const QByteArray &html, QString *text, bool *picture, QList<
                             qsizetype(e.end_pos.offset + e.original_end_tag.length)});
         if (e.tag == GUMBO_TAG_BR)
             *text += QLatin1Char('\n');
-        const int tables = it.tables + (e.tag == GUMBO_TAG_TABLE);
-        deep = deep || it.depth > maxDepth || tables > maxTables;
+        deep = deep || it.depth > maxDepth;
         for (unsigned i = e.children.length; i-- > 0;)
-            todo.push_back({static_cast<const GumboNode *>(e.children.data[i]), it.depth + 1, tables, it.quotes + quote});
+            todo.push_back({static_cast<const GumboNode *>(e.children.data[i]), it.depth + 1, it.quotes + quote});
     }
     gumbo_destroy_output(&kGumboDefaultOptions, out);
     return deep;

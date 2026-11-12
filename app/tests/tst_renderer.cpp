@@ -983,6 +983,21 @@ private Q_SLOTS:
         }
     }
 
+    // nested tables took ~3^n before litehtml master, so past 12 a letter was shown as text; now only the
+    // 1000-deep cap stays (240 tables are 962 deep)
+    void deep_tables_lay_out()
+    {
+        const auto nested = [](int n) {
+            return QStringLiteral("<table width=\"100%\"><tr><td>").repeated(n) + QStringLiteral("<a href=\"https://x.org/\">deepest</a>")
+                   + QStringLiteral("</td></tr></table>").repeated(n);
+        };
+        for (const int n : {13, 100, 240}) {
+            const Rendered r = run(job(nested(n)), 30000);
+            QVERIFY2(r.doc, qPrintable(QString::number(n)));
+            QCOMPARE(r.links.size(), 1);   // laid out as HTML, not as <pre> text
+        }
+    }
+
     void garbage_html_renders()
     {
         const Rendered nested = run(job(QStringLiteral("<table><tr><td><div><b><i>").repeated(5000)), 30000);
