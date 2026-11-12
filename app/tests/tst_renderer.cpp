@@ -12,6 +12,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextDocument>
 
 using namespace om;
 
@@ -54,6 +55,43 @@ static int redPixels(const QImage &img)
         for (int x = 0; x < img.width(); ++x)
             n += isRed(img.pixel(x, y));
     return n;
+}
+
+static const QLatin1String kTextStyle("font-family:sans-serif;font-size:16px;line-height:20px");
+
+// The width of each line the words take, top to bottom, from the boxes of their pieces (findText, 1 px wider each
+// side). Each word needs text after it: findText ends the last piece of a document 1 px short
+static QList<qreal> lineWidths(const Rendered &r, const QStringList &words)
+{
+    QMap<int, QPair<int, int>> lines;   // top: left, right
+    for (const QString &word : words) {
+        bool found = false;
+        QVector<QRect> pieces;
+        r.doc->findText(word, QTextDocument::FindCaseSensitively, false, nullptr, &found, nullptr, &pieces);
+        if (!found)
+            return {};
+        for (const QRect &p : std::as_const(pieces)) {
+            if (p.width() <= 1)   // the element after the word, selected up to its start
+                continue;
+            const auto line = lines.constFind(p.top());
+            lines.insert(p.top(), line == lines.cend() ? qMakePair(p.left() + 1, p.right())
+                                                       : qMakePair(qMin(line->first, p.left() + 1), qMax(line->second, p.right())));
+        }
+    }
+    QList<qreal> widths;
+    for (const auto &[left, right] : std::as_const(lines))
+        widths << right - left;
+    return widths;
+}
+
+static void compareLines(const QList<qreal> &got, const QList<qreal> &want, const char *what = "")
+{
+    QString text;
+    for (qreal w : got)
+        text += QString::number(w) + QLatin1Char(' ');
+    QVERIFY2(got.size() == want.size(), qPrintable(QStringLiteral("%1: lines %2").arg(QLatin1String(what), text)));
+    for (qsizetype i = 0; i < got.size(); ++i)
+        QVERIFY2(qAbs(got.at(i) - want.at(i)) <= 1, qPrintable(QStringLiteral("%1: lines %2").arg(QLatin1String(what), text)));
 }
 
 // a 300x60 red picture as a data: URL
@@ -287,17 +325,71 @@ private Q_SLOTS:
     }
     void ordinary_words_stay_whole()
     {
-        // only words too long for a line break inside: these move to the next line whole
+        // a word that fits on a line moves to the next one whole, though it may break after its hyphen (Chromium 155:
+        // one word a line)
         const QString word = QStringLiteral("высокопроизводительный-сервер");   // 29 characters
         RenderJob j = job(QStringLiteral("<p>%1 %1 %1 %1</p>").arg(word));
         j.width = 300;
         const Rendered r = run(j);
         QVERIFY(r.doc);
-        bool found = false;
-        QVector<QRect> pieces;
-        r.doc->findText(word.chopped(1), {}, false, nullptr, &found, nullptr, &pieces);   // ends inside the word
-        QVERIFY(found);
-        QCOMPARE(pieces.size(), 1);   // one piece of text
+        QCOMPARE(lineWidths(r, {word}).size(), 1);
+    }
+
+    // litehtml split text only at white space: a line broke after no hyphen (Chromium 155: 80.95, 98.7, 50.7)
+    void lines_break_where_unicode_allows()
+    {
+        const Rendered r = run(job(QStringLiteral("<!DOCTYPE html><body style=\"margin:0\"><div style=\"width:100px;%1\">"
+                                                  "alpha-beta-gamma-delta-epsilon</div><p>.</p>").arg(kTextStyle)));
+        QVERIFY(r.doc);
+        compareLines(lineWidths(r, {QStringLiteral("alpha-beta-gamma-delta-epsilon")}), {80.95, 98.7, 50.7});
+        // a word with no break opportunity in it at all still makes its line (Chromium 155: 20 px)
+        const Rendered joiner = run(job(QStringLiteral("<body style=\"margin:0\"><div style=\"%1\">&#xFEFF;</div>").arg(kTextStyle)));
+        QVERIFY(joiner.doc);
+        QCOMPARE(joiner.size.height(), 20);
+    }
+
+    // a word too long for its line breaks at the box's edge when overflow-wrap or word-break lets it; anywhere and
+    // word-break (break-word, break-all) also let a table cell be narrower than the word. Chromium 155 on the same HTML
+    void overflow_wrap_breaks_a_word_that_does_not_fit()
+    {
+        const QStringList words{QStringLiteral("See"), QStringLiteral("abcdefghijklmnopqrstuvwxyz"), QStringLiteral("end")};
+        const QList<qreal> edge{28.47, 97.83, 97.83, 39.14}, overflow{28.47, 203.66, 26.7}, all{98.75, 94.27, 74.7};
+        const struct
+        {
+            const char *css;
+            QList<qreal> lines;
+            qreal table;   // the width of a 20 px cell's table: the word's, or the cell's
+        } cases[] = {
+            {"overflow-wrap:break-word", edge, 151.2},
+            {"word-wrap:break-word", edge, 151.2},
+            {"word-break:break-word", edge, 20},
+            {"overflow-wrap:anywhere", edge, 20},
+            {"word-break:break-all", all, 20},
+            {"", overflow, 151.2},   // neither
+        };
+        for (const auto &c : cases) {
+            const Rendered r = run(job(QStringLiteral(
+                "<!DOCTYPE html><body style=\"margin:0\"><div style=\"width:100px;%1;%2\">See abcdefghijklmnopqrstuvwxyz end</div>"
+                "<table style=\"border-spacing:0\"><tr><td style=\"padding:0;width:20px;%1;%2\">abcdefghijklmnopqrst</td></tr></table>")
+                                           .arg(kTextStyle, QLatin1String(c.css))));
+            QVERIFY(r.doc);
+            const char *what = *c.css ? c.css : "neither";
+            compareLines(lineWidths(r, words), c.lines, what);
+            const QRect table = r.doc->boxes(QStringLiteral("table")).value(0);
+            QVERIFY2(qAbs(table.width() - c.table) <= 1, qPrintable(QStringLiteral("%1: %2").arg(what).arg(table.width())));
+            QCOMPARE(table.height(), c.table > 100 ? 20 : 9 * 20);   // two letters a line, as in Chromium
+        }
+        // laid out again, wider: the word is whole again first, and cut where the new lines end
+        RenderJob narrow = job(QStringLiteral("<body style=\"margin:0\"><div style=\"%1;overflow-wrap:break-word\">"
+                                              "See abcdefghijklmnopqrstuvwxyz end</div>").arg(kTextStyle));
+        RenderJob wide = narrow;
+        narrow.width = 100;
+        wide.width = 150;
+        const Rendered again = run(narrow), once = run(wide);
+        QVERIFY(again.doc && once.doc);
+        again.doc->render(wide.width, wide.viewportHeight);
+        QCOMPARE(lineWidths(again, words), lineWidths(once, words));
+        QCOMPARE(lineWidths(once, words).size(), 3);
     }
 
     // 1pt = 4/3 px, as in browsers: at qlitehtml's 11/12 px a payslip in 8pt was unreadable

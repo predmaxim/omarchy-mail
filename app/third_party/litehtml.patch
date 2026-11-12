@@ -1,5 +1,58 @@
+diff --git a/include/litehtml/css_properties.h b/include/litehtml/css_properties.h
+index a1d4833e..818e57fc 100644
+--- a/include/litehtml/css_properties.h
++++ b/include/litehtml/css_properties.h
+@@ -36,6 +36,8 @@ namespace litehtml
+         text_align            m_text_align     = text_align_left;
+         overflow              m_overflow       = overflow_visible;
+         white_space           m_white_space    = white_space_normal;
++        overflow_wrap         m_overflow_wrap  = overflow_wrap_normal;
++        word_break            m_word_break     = word_break_normal;
+         style_display         m_display        = display_inline;
+         visibility            m_visibility     = visibility_visible;
+         appearance            m_appearance     = appearance_none;
+@@ -121,6 +123,12 @@ namespace litehtml
+         white_space get_white_space() const;
+         void        set_white_space(white_space mWhiteSpace);
+ 
++        overflow_wrap get_overflow_wrap() const;
++        void          set_overflow_wrap(overflow_wrap mOverflowWrap);
++
++        word_break get_word_break() const;
++        void       set_word_break(word_break mWordBreak);
++
+         style_display get_display() const;
+         void          set_display(style_display mDisplay);
+ 
+@@ -292,6 +300,26 @@ namespace litehtml
+         m_white_space = mWhiteSpace;
+     }
+ 
++    inline overflow_wrap css_properties::get_overflow_wrap() const
++    {
++        return m_overflow_wrap;
++    }
++
++    inline void css_properties::set_overflow_wrap(overflow_wrap mOverflowWrap)
++    {
++        m_overflow_wrap = mOverflowWrap;
++    }
++
++    inline word_break css_properties::get_word_break() const
++    {
++        return m_word_break;
++    }
++
++    inline void css_properties::set_word_break(word_break mWordBreak)
++    {
++        m_word_break = mWordBreak;
++    }
++
+     inline style_display css_properties::get_display() const
+     {
+         return m_display;
 diff --git a/include/litehtml/css_values.h b/include/litehtml/css_values.h
-index b3291c89..9b33edeb 100644
+index b3291c89..c92869e3 100644
 --- a/include/litehtml/css_values.h
 +++ b/include/litehtml/css_values.h
 @@ -385,14 +385,15 @@ namespace litehtml
@@ -20,14 +73,49 @@ index b3291c89..9b33edeb 100644
      };
  
      // ==========================================================
+@@ -422,6 +423,31 @@ namespace litehtml
+         white_space_pre_wrap
+     };
+ 
++    // ==========================================================
++    // CSS Property: overflow-wrap (word-wrap)
++    // ==========================================================
++    inline constexpr auto overflow_wrap_strings = split_css_values<3>("normal;break-word;anywhere");
++
++    enum overflow_wrap
++    {
++        overflow_wrap_normal,
++        overflow_wrap_break_word,
++        overflow_wrap_anywhere
++    };
++
++    // ==========================================================
++    // CSS Property: word-break
++    // ==========================================================
++    inline constexpr auto word_break_strings = split_css_values<4>("normal;break-all;keep-all;break-word");
++
++    enum word_break
++    {
++        word_break_normal,
++        word_break_break_all,
++        word_break_keep_all,
++        word_break_break_word
++    };
++
+     // ==========================================================
+     // CSS Property: overflow
+     // ==========================================================
 diff --git a/include/litehtml/document_container.h b/include/litehtml/document_container.h
-index 6928f6ce..dc9bd8a7 100644
+index 6928f6ce..dbc767b6 100644
 --- a/include/litehtml/document_container.h
 +++ b/include/litehtml/document_container.h
-@@ -83,6 +83,13 @@ namespace litehtml
+@@ -83,6 +83,16 @@ namespace litehtml
          }
          virtual void split_text(const char* text, const std::function<void(const char*)>& on_word,
                                  const std::function<void(const char*)>& on_space);
++        // Where overflow-wrap and word-break may cut a word: after each grapheme cluster. Appends the byte offsets in
++        // text where they end, the last one at its end; the default ends one after each code point
++        virtual void grapheme_ends(const char* text, std::vector<std::size_t>& ends);
 +        // To measure what else widens the layout: text that white-space keeps on one line (nowrap, pre) wraps as
 +        // in normal and pre-wrap, while the pictures and boxes of a fixed width it keeps side by side (only white
 +        // space or &nbsp; between) stay so
@@ -38,6 +126,61 @@ index 6928f6ce..dc9bd8a7 100644
  
        protected:
          virtual ~document_container() = default;
+diff --git a/include/litehtml/el_text.h b/include/litehtml/el_text.h
+index 365453a9..fe2a918a 100644
+--- a/include/litehtml/el_text.h
++++ b/include/litehtml/el_text.h
+@@ -14,6 +14,10 @@ namespace litehtml
+         size        m_size;
+         bool        m_use_transformed;
+         bool        m_draw_spaces;
++        // the word before cut() cut pieces off it: they go and it is whole again on join()
++        std::string m_whole_text, m_whole_transformed;
++        size        m_whole_size;
++        bool        m_piece = false; // a piece cut off the text before it
+ 
+       public:
+         el_text(const char* text, const document::ptr& doc);
+@@ -24,6 +28,26 @@ namespace litehtml
+         {
+             return true;
+         }
++        bool is_piece() const
++        {
++            return m_piece;
++        }
++        // cut already in this layout, or a piece: a float that moves its line (fix_line_width) cuts nothing again
++        bool was_cut() const
++        {
++            return m_piece || !m_whole_text.empty();
++        }
++
++        // overflow-wrap and word-break (CSS Text 3 §5.2, §5.5): whether the word may be cut between grapheme clusters
++        // where nothing else breaks it, or with `min_content`, whether these cuts narrow its min-content too (anywhere,
++        // break-word and break-all do, break-word of overflow-wrap does not)
++        bool    may_cut(bool min_content) const;
++        pixel_t widest_cluster();
++        // Cuts the word before each grapheme cluster that no longer fits: the first piece into `room`, the others into
++        // `width`. A cluster too wide for `room` alone stays in it if `keep_one`, else nothing is cut. Returns the pieces
++        // after the first, which follow it among its parent's children; this one keeps the first
++        std::vector<element::ptr> cut(pixel_t room, pixel_t width, bool keep_one);
++        void                      join();
+ 
+         void        draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
+                          const std::shared_ptr<render_item>& ri) override;
+diff --git a/include/litehtml/element.h b/include/litehtml/element.h
+index ca9fc380..814f1128 100644
+--- a/include/litehtml/element.h
++++ b/include/litehtml/element.h
+@@ -81,6 +81,8 @@ namespace litehtml
+ 
+         virtual bool appendChild(const ptr& el);
+         virtual bool removeChild(const ptr& el);
++        // puts el among the children right after `after` (the pieces el_text::cut cuts a word into)
++        void insert_child_after(const ptr& after, const ptr& el);
+         virtual void clearRecursive();
+ 
+         virtual string_id   id() const;
 diff --git a/include/litehtml/line_box.h b/include/litehtml/line_box.h
 index f9c33b79..f041754c 100644
 --- a/include/litehtml/line_box.h
@@ -99,11 +242,51 @@ index 36f27311..ab26ca1a 100644
  )##";
  }
  #endif // LITEHTML_MASTER_CSS_H
+diff --git a/include/litehtml/render_inline_context.h b/include/litehtml/render_inline_context.h
+index cab3e2ab..2fcf1329 100644
+--- a/include/litehtml/render_inline_context.h
++++ b/include/litehtml/render_inline_context.h
+@@ -52,6 +52,8 @@ namespace litehtml
+                              formatting_context* fmt_ctx);
+         pixel_t new_box(const std::unique_ptr<line_box_item>& el, const containing_block_context& self_size,
+                         formatting_context* fmt_ctx);
++        // cuts the word of a text item (el_text::cut), its first piece into `room`, the rest into lines as wide as this
++        void    cut_word(const std::unique_ptr<line_box_item>& item, pixel_t room, bool keep_one);
+         void    apply_vertical_align() override;
+ 
+       public:
+diff --git a/include/litehtml/render_item.h b/include/litehtml/render_item.h
+index 8517518c..ea6b0230 100644
+--- a/include/litehtml/render_item.h
++++ b/include/litehtml/render_item.h
+@@ -445,6 +445,9 @@ namespace litehtml
+             return m_element->css();
+         }
+ 
++        // The words the last layout cut into pieces (el_text::cut) are whole again, for a new one: in the inline
++        // content, and with `everywhere` in the blocks inside it too
++        void join_cut_words(bool everywhere);
+         void add_child(const std::shared_ptr<render_item>& ri)
+         {
+             m_children.push_back(ri);
+diff --git a/include/litehtml/string_id.h b/include/litehtml/string_id.h
+index 37d55f36..4aa2a3d3 100644
+--- a/include/litehtml/string_id.h
++++ b/include/litehtml/string_id.h
+@@ -85,7 +85,7 @@ namespace litehtml
+         _white_space_, _text_align_, _vertical_align_, _color_, _width_, _height_, _min_width_, _min_height_,
+         _max_width_, _max_height_, _position_, _overflow_, _display_, _visibility_, _appearance_, _box_sizing_,
+         _z_index_, _float_, _clear_, _text_indent_, _top_, _right_, _bottom_, _left_, _cursor_, _content_,
+-        _border_collapse_, _text_transform_,
++        _border_collapse_, _text_transform_, _overflow_wrap_, _word_wrap_, _word_break_,
+ 
+         _flex_, _flex_flow_, _flex_direction_, _flex_wrap_, _justify_content_, _align_items_, _align_content_,
+         _align_self_, _flex_grow_, _flex_shrink_, _flex_basis_,
 diff --git a/src/css_properties.cpp b/src/css_properties.cpp
-index 5b03ba4d..ca1ec449 100644
+index 5b03ba4d..86006222 100644
 --- a/src/css_properties.cpp
 +++ b/src/css_properties.cpp
-@@ -28,6 +28,11 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
+@@ -28,12 +28,21 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
      m_overflow = static_cast<overflow>(el->get_property<int>(_overflow_, false, overflow_visible, offset(m_overflow)));
      m_text_align =
          static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_left, offset(m_text_align)));
@@ -115,7 +298,17 @@ index 5b03ba4d..ca1ec449 100644
      m_vertical_align = static_cast<vertical_align>(
          el->get_property<int>(_vertical_align_, false, va_baseline, offset(m_vertical_align)));
      m_text_transform = static_cast<text_transform>(
-@@ -260,13 +265,19 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
+         el->get_property<int>(_text_transform_, true, text_transform_none, offset(m_text_transform)));
+     m_white_space =
+         static_cast<white_space>(el->get_property<int>(_white_space_, true, white_space_normal, offset(m_white_space)));
++    m_overflow_wrap = static_cast<overflow_wrap>(
++        el->get_property<int>(_overflow_wrap_, true, overflow_wrap_normal, offset(m_overflow_wrap)));
++    m_word_break =
++        static_cast<word_break>(el->get_property<int>(_word_break_, true, word_break_normal, offset(m_word_break)));
+     m_caption_side = static_cast<caption_side>(
+         el->get_property<int>(_caption_side_, true, caption_side_top, offset(m_caption_side)));
+ 
+@@ -260,13 +269,19 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
          m_line_height.computed_value = m_font_metrics.height;
      } else if(m_line_height.css_value.units() == css_units_none)
      {
@@ -137,7 +330,7 @@ index 5b03ba4d..ca1ec449 100644
      m_list_style_type = static_cast<list_style_type>(
          el->get_property<int>(_list_style_type_, true, list_style_type_disc, offset(m_list_style_type)));
 diff --git a/src/document.cpp b/src/document.cpp
-index 315749ab..098fbf1a 100644
+index 315749ab..29a25466 100644
 --- a/src/document.cpp
 +++ b/src/document.cpp
 @@ -22,6 +22,7 @@
@@ -165,6 +358,33 @@ index 315749ab..098fbf1a 100644
          if(user_styles != "")
          {
              m_user_css.parse_css_stylesheet(user_styles, "", shared_from_this());
+@@ -544,6 +549,7 @@ namespace litehtml
+             cb_context.height.type  = containing_block_context::cbc_value_type_absolute;
+             cb_context.render_width = cb_context.width;
+ 
++            m_root_render->join_cut_words(true);
+             m_root_render->update_intrinsic_size();
+ 
+             if(rt == render_fixed_only)
+diff --git a/src/document_container.cpp b/src/document_container.cpp
+index b0ece921..4a51167c 100644
+--- a/src/document_container.cpp
++++ b/src/document_container.cpp
+@@ -40,3 +40,14 @@ void litehtml::document_container::split_text(const char* text, const std::funct
+         on_word(utf32_to_utf8(str));
+     }
+ }
++
++void litehtml::document_container::grapheme_ends(const char* text, std::vector<std::size_t>& ends)
++{
++    for(std::size_t i = 1; text[i - 1]; i++)
++    {
++        if((text[i] & 0xC0) != 0x80) // not a UTF-8 continuation byte: a code point ends before it
++        {
++            ends.push_back(i);
++        }
++    }
++}
 diff --git a/src/el_div.cpp b/src/el_div.cpp
 index ca6ad2f0..47906c12 100644
 --- a/src/el_div.cpp
@@ -221,6 +441,127 @@ index 42c9883e..72167d16 100644
          }
  
          str = get_attr("valign");
+diff --git a/src/el_text.cpp b/src/el_text.cpp
+index bcaaa227..513293c0 100644
+--- a/src/el_text.cpp
++++ b/src/el_text.cpp
+@@ -34,6 +34,8 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
+         css().set_font(el_parent->css().get_font());
+         css().set_font_metrics(el_parent->css().get_font_metrics());
+         css().set_white_space(el_parent->css().get_white_space());
++        css().set_overflow_wrap(el_parent->css().get_overflow_wrap());
++        css().set_word_break(el_parent->css().get_word_break());
+         css().set_text_transform(el_parent->css().get_text_transform());
+     }
+     css().set_display(display_inline_text);
+@@ -103,6 +105,107 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
+     m_draw_spaces = fm.draw_spaces;
+ }
+ 
++bool litehtml::el_text::may_cut(bool min_content) const
++{
++    if(is_white_space())
++    {
++        return false;
++    }
++    const white_space   ws = css().get_white_space();
++    const word_break    wb = css().get_word_break();
++    const overflow_wrap ow = css().get_overflow_wrap();
++    return (ws == white_space_normal || ws == white_space_pre_wrap || ws == white_space_pre_line) &&
++           (wb == word_break_break_all || wb == word_break_break_word || ow == overflow_wrap_anywhere ||
++            (!min_content && ow == overflow_wrap_break_word));
++}
++
++litehtml::pixel_t litehtml::el_text::widest_cluster()
++{
++    const uint_ptr font = parent() ? parent()->css().get_font() : 0;
++    if(!font)
++    {
++        return m_size.width;
++    }
++    std::vector<std::size_t> ends;
++    get_document()->container()->grapheme_ends(m_text.c_str(), ends);
++    pixel_t     widest = 0;
++    std::size_t from   = 0;
++    for(std::size_t end : ends)
++    {
++        widest = std::max(widest, get_document()->container()->text_width(m_text.substr(from, end - from).c_str(), font));
++        from   = end;
++    }
++    return widest;
++}
++
++// shortcut: the cuts are measured untransformed and each piece is transformed on its own (text-transform: capitalize
++// would capitalise a piece); qlitehtml transforms nothing. Measure the transformed word if a container needs it
++std::vector<litehtml::element::ptr> litehtml::el_text::cut(pixel_t room, pixel_t width, bool keep_one)
++{
++    std::vector<element::ptr> pieces;
++    const element::ptr        el_parent = parent();
++    const uint_ptr            font      = el_parent ? el_parent->css().get_font() : 0;
++    if(!font)
++    {
++        return pieces;
++    }
++    document_container*      container = get_document()->container();
++    std::vector<std::size_t> ends;
++    container->grapheme_ends(m_text.c_str(), ends);
++    std::vector<std::size_t> cuts; // where each piece after the first starts
++    std::size_t              from = 0, fits = 0; // the piece being filled starts at `from`; its clusters up to `fits` fit
++    for(std::size_t end : ends)
++    {
++        if(container->text_width(m_text.substr(from, end - from).c_str(), font) > (cuts.empty() ? room : width))
++        {
++            if(fits > from)
++            {
++                cuts.push_back(fits);
++                from = fits;
++            } else if(cuts.empty() && !keep_one)
++            {
++                return pieces;
++            }
++        }
++        fits = end;
++    }
++    if(cuts.empty())
++    {
++        return pieces;
++    }
++    if(m_whole_text.empty())
++    {
++        m_whole_text        = m_text;
++        m_whole_transformed = m_transformed_text;
++        m_whole_size        = m_size;
++    }
++    element::ptr after = shared_from_this();
++    for(std::size_t i = 0; i < cuts.size(); i++)
++    {
++        const std::size_t end   = i + 1 < cuts.size() ? cuts[i + 1] : m_text.size();
++        auto              piece = std::make_shared<el_text>(m_text.substr(cuts[i], end - cuts[i]).c_str(), get_document());
++        piece->m_piece          = true;
++        el_parent->insert_child_after(after, piece);
++        piece->compute_styles(false);
++        pieces.push_back(piece);
++        after = piece;
++    }
++    m_text.resize(cuts.front());
++    compute_styles(false);
++    return pieces;
++}
++
++void litehtml::el_text::join()
++{
++    if(!m_whole_text.empty())
++    {
++        m_text             = std::move(m_whole_text);
++        m_transformed_text = std::move(m_whole_transformed);
++        m_size             = m_whole_size;
++        m_whole_text.clear();
++    }
++}
++
+ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
+                              const std::shared_ptr<render_item>& ri)
+ {
 diff --git a/src/el_tr.cpp b/src/el_tr.cpp
 index 35c5c3ff..07e2c8f6 100644
 --- a/src/el_tr.cpp
@@ -243,6 +584,23 @@ index 35c5c3ff..07e2c8f6 100644
      }
      str = get_attr("valign");
      if(str)
+diff --git a/src/element.cpp b/src/element.cpp
+index db445a95..a0343a80 100644
+--- a/src/element.cpp
++++ b/src/element.cpp
+@@ -467,6 +467,12 @@ namespace litehtml
+     bool element::is_only_child(const element::ptr& /*el*/, bool /*of_type*/) const LITEHTML_RETURN_FUNC(false);
+     void element::get_content_size(size& /*sz*/, pixel_t /*max_width*/) LITEHTML_EMPTY_FUNC;
+     bool element::appendChild(const ptr& /*el*/) LITEHTML_RETURN_FUNC(false);
++
++    void element::insert_child_after(const ptr& after, const ptr& el)
++    {
++        el->parent(shared_from_this());
++        m_children.insert(std::next(std::find(m_children.begin(), m_children.end(), after)), el);
++    }
+     bool element::removeChild(const ptr& /*el*/) LITEHTML_RETURN_FUNC(false);
+     void element::clearRecursive() LITEHTML_EMPTY_FUNC;
+     string_id   element::id() const LITEHTML_RETURN_FUNC(empty_id);
 diff --git a/src/line_box.cpp b/src/line_box.cpp
 index 48f79487..f77ecf70 100644
 --- a/src/line_box.cpp
@@ -431,18 +789,88 @@ index 0099ec97..9755fe79 100644
          m_intrinsic_min_size.width = 0_px;
      }
 diff --git a/src/render_inline_context.cpp b/src/render_inline_context.cpp
-index 648521cb..aaf5a222 100644
+index 648521cb..e9c2b223 100644
 --- a/src/render_inline_context.cpp
 +++ b/src/render_inline_context.cpp
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,8 @@
  #include "render_inline_context.h"
  #include "css_values.h"
  #include "document.h"
 +#include "document_container.h"
++#include "el_text.h"
  #include "iterators.h"
  #include "types.h"
  #include <algorithm>
-@@ -446,12 +447,26 @@ void litehtml::render_item_inline_context::calc_intrinsic_size()
+@@ -93,6 +95,7 @@ litehtml::pixel_t litehtml::render_item_inline_context::_render_content(pixel_t
+ {
+     m_line_boxes.clear();
+     m_max_line_width = 0;
++    join_cut_words(false);
+ 
+     for_each_inline(
+         [&](const std::shared_ptr<render_item>& el, iterator_item_type item_type) {
+@@ -325,6 +328,18 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
+         }
+     }
+ 
++    // overflow-wrap and word-break: where nothing else breaks a word too long for the room left, it is cut between
++    // grapheme clusters, a piece a line. break-all fills the line it is on; the others start a line of their own first
++    const auto text = item->get_el()->src_el()->is_text() ? std::static_pointer_cast<el_text>(item->get_el()->src_el())
++                                                          : nullptr;
++    const bool may_cut = text && !text->was_cut() && text->may_cut(false);
++    const auto room    = [this] { return m_line_boxes.back()->line_right() - m_line_boxes.back()->right(); };
++    if(may_cut && text->css().get_word_break() == word_break_break_all && !m_line_boxes.empty() &&
++       item->width() > room())
++    {
++        cut_word(item, room(), false);
++    }
++
+     bool add_box = true;
+ 
+     if(!m_line_boxes.empty())
+@@ -338,6 +353,10 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
+     {
+         new_box(item, self_size, fmt_ctx);
+     }
++    if(may_cut && item->width() > room() && !m_line_boxes.back()->get_last_text_part())
++    {
++        cut_word(item, room(), true);
++    }
+ 
+     if(!item->get_el()->src_el()->is_inline())
+     {
+@@ -374,6 +393,30 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
+     m_line_boxes.back()->add_item(std::move(item));
+ }
+ 
++void litehtml::render_item_inline_context::cut_word(const std::unique_ptr<line_box_item>& item, pixel_t room,
++                                                   bool keep_one)
++{
++    const auto& line   = m_line_boxes.back();
++    const auto  text   = std::static_pointer_cast<el_text>(item->get_el()->src_el());
++    const auto  pieces = text->cut(room, line->line_right() - line->left(), keep_one);
++    if(pieces.empty())
++    {
++        return;
++    }
++    // the pieces follow it in the render tree too: for_each_inline places them next
++    const auto parent   = item->get_el()->parent();
++    auto&      siblings = parent->children();
++    const auto at       = std::next(std::find(siblings.begin(), siblings.end(), item->get_el()));
++    for(const auto& piece : pieces)
++    {
++        siblings.insert(at, piece->create_render_item(parent)->init());
++    }
++    litehtml::size sz;
++    item->get_el()->src_el()->get_content_size(sz, 0_px);
++    item->get_el()->pos() = sz;
++    item->set_rendered_min_width(sz.width);
++}
++
+ void litehtml::render_item_inline_context::apply_vertical_align()
+ {
+     if(!m_line_boxes.empty())
+@@ -446,12 +489,26 @@ void litehtml::render_item_inline_context::calc_intrinsic_size()
  
      bool skip_spaces = ws == white_space_normal || ws == white_space_nowrap || ws == white_space_pre_line;
  
@@ -469,7 +897,7 @@ index 648521cb..aaf5a222 100644
                      if(skip_spaces)
                      {
                          if(el->src_el()->is_white_space())
-@@ -502,7 +517,10 @@ void litehtml::render_item_inline_context::calc_intrinsic_size()
+@@ -502,7 +559,10 @@ void litehtml::render_item_inline_context::calc_intrinsic_size()
      m_intrinsic_min_size.height  = std::max(m_intrinsic_min_size.height, line_height) + content_offset_height();
      m_intrinsic_min_size.width  += content_offset_width();
      m_intrinsic_max_size.height += content_offset_height();
@@ -482,10 +910,18 @@ index 648521cb..aaf5a222 100644
          m_intrinsic_min_size = m_intrinsic_max_size;
      }
 diff --git a/src/render_item.cpp b/src/render_item.cpp
-index e2a8344b..4f62e100 100644
+index e2a8344b..3ecf0105 100644
 --- a/src/render_item.cpp
 +++ b/src/render_item.cpp
-@@ -48,6 +48,11 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -2,6 +2,7 @@
+ #include "css_values.h"
+ #include "document.h"
+ #include "document_container.h"
++#include "el_text.h"
+ #include "types.h"
+ #include <algorithm>
+ #include <memory>
+@@ -48,6 +49,11 @@ void litehtml::render_item::update_intrinsic_size()
      calc_outlines(0_px);
      calc_intrinsic_size();
  
@@ -497,7 +933,7 @@ index e2a8344b..4f62e100 100644
      // Flex items have their intrisict size calculated based on the flex container, so we skip this step for them
      // We also skip this step for text elements, because they have their intrisict size calculated based on the text
      // content
-@@ -56,14 +61,21 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -56,14 +62,21 @@ void litehtml::render_item::update_intrinsic_size()
          if(!css().get_width().is_predefined() && css().get_width().units() != css_units_percentage)
          {
              auto w = doc->to_pixels(css().get_width(), fm, 0_px);
@@ -522,7 +958,7 @@ index e2a8344b..4f62e100 100644
              }
          } else if(css().get_overflow() > overflow_visible &&
                    !is_one_of(css().get_display(), display_table_cell, display_table))
-@@ -91,8 +103,8 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -91,8 +104,8 @@ void litehtml::render_item::update_intrinsic_size()
      {
          if(!css().get_max_width().is_predefined() && css().get_max_width().units() != css_units_percentage)
          {
@@ -533,7 +969,7 @@ index e2a8344b..4f62e100 100644
              // A table can't be narrower than its minimum content width.
              if(css().get_display() == display_table)
              {
-@@ -108,8 +120,8 @@ void litehtml::render_item::update_intrinsic_size()
+@@ -108,8 +121,8 @@ void litehtml::render_item::update_intrinsic_size()
  
          if(!css().get_min_width().is_predefined() && css().get_min_width().units() != css_units_percentage)
          {
@@ -544,7 +980,7 @@ index e2a8344b..4f62e100 100644
          }
          if(!css().get_min_height().is_predefined() && css().get_min_height().units() != css_units_percentage)
          {
-@@ -169,6 +181,15 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
+@@ -169,6 +182,15 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
      m_margins.top    = m_element->css().get_margins().top.calc_percent(parent_width);
      m_margins.bottom = m_element->css().get_margins().bottom.calc_percent(parent_width);
  
@@ -560,7 +996,7 @@ index e2a8344b..4f62e100 100644
      m_padding.top    = m_element->css().get_padding().top.calc_percent(parent_width);
      m_padding.bottom = m_element->css().get_padding().bottom.calc_percent(parent_width);
  }
-@@ -207,6 +228,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
+@@ -207,6 +229,19 @@ litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)
              m_margins.right = parent_width - el_width;
              m_margins.right = std::max<pixel_t>(m_margins.right, 0_px);
          }
@@ -580,7 +1016,40 @@ index e2a8344b..4f62e100 100644
      }
      return 0_px;
  }
-@@ -1710,6 +1744,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+@@ -1607,6 +1642,32 @@ litehtml::position litehtml::render_item::get_placement() const
+     return pos;
+ }
+ 
++void litehtml::render_item::join_cut_words(bool everywhere)
++{
++    for(auto it = m_children.begin(); it != m_children.end();)
++    {
++        const element::ptr el = (*it)->src_el();
++        if(el->is_text())
++        {
++            const auto text = std::static_pointer_cast<el_text>(el);
++            if(text->is_piece())
++            {
++                if(const auto el_parent = el->parent())
++                {
++                    el_parent->removeChild(el);
++                }
++                it = m_children.erase(it);
++                continue;
++            }
++            text->join();
++        } else if(everywhere || el->css().get_display() == display_inline)
++        {
++            (*it)->join_cut_words(everywhere);
++        }
++        ++it;
++    }
++}
++
+ std::shared_ptr<litehtml::render_item> litehtml::render_item::init()
+ {
+     src_el()->add_render(shared_from_this());
+@@ -1710,6 +1771,18 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
  
      calc_cb_length(src_el()->css().get_min_width(), cb_context.width, ret.min_width);
      calc_cb_length(src_el()->css().get_max_width(), cb_context.width, ret.max_width);
@@ -599,7 +1068,7 @@ index e2a8344b..4f62e100 100644
  
      calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
      calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
-@@ -1737,13 +1783,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
+@@ -1737,13 +1810,15 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
  
      ret.unclamped_render_width = ret.render_width.value;
  
@@ -669,6 +1138,27 @@ index 03a122c8..206aa65e 100644
                  } else
                  {
                      row_span_found = true;
+diff --git a/src/render_text.cpp b/src/render_text.cpp
+index ea5353ec..d4b42c8b 100644
+--- a/src/render_text.cpp
++++ b/src/render_text.cpp
+@@ -1,4 +1,5 @@
+ #include "render_text.h"
++#include "el_text.h"
+ 
+ void litehtml::render_text::calc_intrinsic_size()
+ {
+@@ -13,5 +14,10 @@ void litehtml::render_text::calc_intrinsic_size()
+         sz.height = src_el()->css().line_height().computed_value;
+     }
+     m_intrinsic_min_size.width = m_intrinsic_max_size.width = sz.width;
++    auto text                  = std::static_pointer_cast<el_text>(src_el());
++    if(text->may_cut(true))
++    {
++        m_intrinsic_min_size.width = text->widest_cluster();
++    }
+     m_intrinsic_min_size.height = m_intrinsic_max_size.height = sz.height;
+ }
 diff --git a/src/string_id.cpp b/src/string_id.cpp
 index 3a6c0a94..17be19de 100644
 --- a/src/string_id.cpp
@@ -691,6 +1181,40 @@ index 3a6c0a94..17be19de 100644
  
      static int init()
      {
+diff --git a/src/style.cpp b/src/style.cpp
+index fc87b2d4..6d76504a 100644
+--- a/src/style.cpp
++++ b/src/style.cpp
+@@ -40,6 +40,8 @@ namespace litehtml
+         {_vertical_align_,         vertical_align_strings              },
+         {_text_transform_,         text_transform_strings              },
+         {_white_space_,            white_space_strings                 },
++        {_overflow_wrap_,          overflow_wrap_strings               },
++        {_word_break_,             word_break_strings                  },
+ 
+         {_font_style_,             font_style_strings                  },
+         {_font_variant_,           font_variant_strings                },
+@@ -182,6 +184,11 @@ namespace litehtml
+     void style::add_property(string_id name, const css_token_vector& value, const std::string& baseurl, bool important,
+                              document_container* container)
+     {
++        // word-wrap is the legacy name of overflow-wrap (CSS Text 3)
++        if(name == _word_wrap_)
++        {
++            name = _overflow_wrap_;
++        }
+         // Note: empty value is a valid value for a custom property.
+         if(value.empty() && _s(name).substr(0, 2) != "--")
+         {
+@@ -225,6 +232,8 @@ namespace litehtml
+         case _vertical_align_:
+         case _text_transform_:
+         case _white_space_:
++        case _overflow_wrap_:
++        case _word_break_:
+ 
+         case _font_style_:
+         case _font_variant_:
 diff --git a/src/table.cpp b/src/table.cpp
 index cb321fdf..946620ef 100644
 --- a/src/table.cpp

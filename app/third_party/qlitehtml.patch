@@ -14,7 +14,7 @@ index cba179a..0e840aa 100644
      QT_NO_JAVA_STYLE_ITERATORS
      QT_NO_CAST_TO_ASCII QT_RESTRICTED_CAST_FROM_ASCII
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..ab1d9e2 100644
+index 6fa2c82..176f074 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,11 +20,15 @@
@@ -213,7 +213,43 @@ index 6fa2c82..ab1d9e2 100644
  }
  
  void DocumentContainerPrivate::loadAnimation(const QUrl &url, const QByteArray &data)
-@@ -999,37 +1053,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
+@@ -794,6 +848,8 @@ static bool isInBody(const litehtml::element::ptr &e)
+     return current.get() != nullptr;
+ }
+ 
++// The leaves in document order, as firstLeaf and nextLeaf go, but in one pass: nextLeaf looks for each element among
++// its siblings, and a 500 KB letter took 0.7 s per index (built again after each layout: overflow-wrap cuts words)
+ void DocumentContainerPrivate::buildIndex()
+ {
+     m_index.elementToIndex.clear();
+@@ -802,8 +858,12 @@ void DocumentContainerPrivate::buildIndex()
+ 
+     int index = 0;
+     bool inBody = false;
+-    litehtml::element::ptr current = firstLeaf(m_document->root(), nullptr);
+-    while (current != m_document->root()) {
++    const std::function<void(const litehtml::element::ptr &)> leaves = [&](const litehtml::element::ptr &current) {
++        if (!current->children().empty()) {
++            for (const litehtml::element::ptr &child : current->children())
++                leaves(child);
++            return;
++        }
+         m_index.elementToIndex.insert({current, index});
+         if (!inBody)
+             inBody = isInBody(current);
+@@ -817,8 +877,9 @@ void DocumentContainerPrivate::buildIndex()
+                 index += str.size();
+             }
+         }
+-        current = nextLeaf(current, m_document->root());
+-    }
++    };
++    for (const litehtml::element::ptr &child : m_document->root()->children())
++        leaves(child);
+ }
+ 
+ void DocumentContainerPrivate::updateSelection()
+@@ -999,37 +1060,37 @@ void DocumentContainerPrivate::draw_borders(litehtml::uint_ptr hdc,
      if (borders.top.style != litehtml::border_style_none
          && borders.top.style != litehtml::border_style_hidden) {
          painter->setPen(borderPen(borders.top));
@@ -262,7 +298,7 @@ index 6fa2c82..ab1d9e2 100644
      }
  }
  
-@@ -1065,7 +1119,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
+@@ -1065,7 +1126,7 @@ void DocumentContainerPrivate::set_cursor(const char *cursor)
      m_cursorCallback(toQCursor(QString::fromUtf8(cursor)));
  }
  
@@ -271,17 +307,20 @@ index 6fa2c82..ab1d9e2 100644
  {
      // TODO
      qWarning(log) << "transform_text not implemented";
-@@ -1073,15 +1127,52 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
+@@ -1073,15 +1134,78 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
      Q_UNUSED(tt)
  }
  
 -void DocumentContainerPrivate::import_css(litehtml::string &text,
 -                                          const litehtml::string &url,
 -                                          litehtml::string &baseurl)
-+// litehtml breaks a line between any two words that touch, never inside one: a word of more than 30
-+// characters (a URL, a key) goes out in pieces, joined the text stays the same — cut after / ? & = # - _ .
-+// and every 10 characters without one. ponytail: such a word breaks wherever the line ends, not only when it
-+// can't fit a line of its own, and up to 9 characters short of the end; exact needs litehtml's line layout.
++// litehtml splits text only at white space (and CJK), and breaks a line between any two pieces that touch: a line
++// broke after no hyphen. Each word is split where Unicode line breaking allows (UAX #14); the letter's overflow-wrap
++// and word-break cut a piece still too long for its line (litehtml.patch). A word of more than 30 characters (a URL,
++// a key) is also cut after / ? & = # - _ . and every 10 characters without one, joined the text stays the same: laid
++// out whole, as browsers do, it ran out of the letter or widened a table and so shrank the letter; overflow-wrap:
++// break-word in the window's sheet keeps its min-content whole, and anywhere moves every table's columns.
++// ponytail: such a word breaks wherever the line ends, not only when it can't fit a line of its own.
 +// Only its first 10 000 characters are cut, the rest stays one piece past the right edge: a 1 MiB word
 +// (inline base64) in 100 000 pieces took 8 s, and a later letter waits for the layout. setWrapAll drops the
 +// rest: its pieces would wrap like the first ones, so it widens nothing
@@ -299,16 +338,23 @@ index 6fa2c82..ab1d9e2 100644
 +        text,
 +        [&](const char *utf8) {
 +            const QString word = QString::fromUtf8(utf8);
++            QTextBoundaryFinder lines(QTextBoundaryFinder::Line, word);
++            qsizetype from = 0;
 +            if (word.size() <= 30) {
-+                on_word(utf8);
++                for (qsizetype at = lines.toNextBoundary(); at > 0 && at < word.size(); at = lines.toNextBoundary()) {
++                    on_word(word.mid(from, at - from).toUtf8().constData());
++                    from = at;
++                }
++                on_word(word.mid(from).toUtf8().constData());   // Qt finds no end after a lone U+FEFF
 +                return;
 +            }
 +            QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, word);
-+            qsizetype from = 0;
 +            int run = 0;
 +            for (qsizetype at = graphemes.toNextBoundary(); at > 0; at = graphemes.toNextBoundary()) {
 +                const bool last = at == word.size() || at >= 10000;
-+                if (!last && ++run < 10 && !(urlBreak(word.at(at - 1)) && !urlBreak(word.at(at))))
++                lines.setPosition(at);
++                if (!last && !lines.isAtBoundary() && ++run < 10
++                    && !(urlBreak(word.at(at - 1)) && !urlBreak(word.at(at))))
 +                    continue;
 +                m_unbroken = m_unbroken || (last && at < word.size());
 +                on_word(word.mid(from, last && !m_wrapAll ? -1 : at - from).toUtf8().constData());
@@ -319,6 +365,22 @@ index 6fa2c82..ab1d9e2 100644
 +            }
 +        },
 +        on_space);
++}
++
++// only a text's first 10 000 characters are clusters, the rest is one: as in split_text, overflow-wrap cuts no more
++void DocumentContainerPrivate::grapheme_ends(const char *text, std::vector<std::size_t> &ends)
++{
++    const QString s = QString::fromUtf8(text);
++    QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, s);
++    std::size_t bytes = 0;
++    qsizetype from = 0;
++    for (qsizetype at = graphemes.toNextBoundary(); at > 0 && at < qMin<qsizetype>(s.size(), 10000);
++         at = graphemes.toNextBoundary()) {
++        bytes += QStringView(s).mid(from, at - from).toUtf8().size();
++        ends.push_back(bytes);
++        from = at;
++    }
++    ends.push_back(std::strlen(text));
 +}
 +
 +void DocumentContainerPrivate::import_css(std::string &text,
@@ -332,7 +394,7 @@ index 6fa2c82..ab1d9e2 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1118,8 +1209,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
+@@ -1118,8 +1242,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
  
  void DocumentContainerPrivate::get_media_features(litehtml::media_features &media) const
  {
@@ -347,7 +409,7 @@ index 6fa2c82..ab1d9e2 100644
  }
  
  void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
-@@ -1129,7 +1225,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+@@ -1129,7 +1258,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
      Q_UNUSED(event)
  }
  
@@ -356,7 +418,7 @@ index 6fa2c82..ab1d9e2 100644
  {
      // TODO
      qWarning(log) << "get_language not implemented";
-@@ -1147,14 +1243,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
+@@ -1147,14 +1276,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
      d->m_scrollPosition = pos;
  }
  
@@ -389,7 +451,21 @@ index 6fa2c82..ab1d9e2 100644
      d->buildIndex();
  }
  
-@@ -1219,7 +1332,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+@@ -1181,6 +1327,13 @@ void DocumentContainer::render(int width, int height)
+     if (!d->m_document)
+         return;
+     d->m_document->render(width);
++    // overflow-wrap cut words into new text elements, and the layout before's pieces are gone
++    d->buildIndex();
++    const auto gone = [this](const Selection::Element &e) {
++        return e.element && !d->m_index.elementToIndex.count(e.element);
++    };
++    if (gone(d->m_selection.startElem) || gone(d->m_selection.endElem))
++        d->clearSelection();
+     d->updateSelection();
+ }
+ 
+@@ -1219,7 +1372,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
              return -1;
      }
      while (element) {
@@ -398,7 +474,7 @@ index 6fa2c82..ab1d9e2 100644
              return qRound(element->get_placement().y);
          element = element->parent();
      }
-@@ -1275,7 +1388,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+@@ -1275,7 +1428,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
      // post to litehtml
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_down(
@@ -408,7 +484,7 @@ index 6fa2c82..ab1d9e2 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1308,7 +1422,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+@@ -1308,7 +1462,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
      }
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_mouse_over(
@@ -418,7 +494,7 @@ index 6fa2c82..ab1d9e2 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1331,7 +1446,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+@@ -1331,7 +1486,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
          d->clearSelection();
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_up(
@@ -428,7 +504,7 @@ index 6fa2c82..ab1d9e2 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1380,7 +1496,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+@@ -1380,7 +1536,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
      if (!d->m_document)
          return {};
      litehtml::position::vector redrawBoxes;
@@ -438,7 +514,7 @@ index 6fa2c82..ab1d9e2 100644
          QVector<QRect> redrawRects;
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
-@@ -1589,11 +1706,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,11 +1746,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
@@ -533,10 +609,10 @@ index 0a7939e..a7748ff 100644
      std::unique_ptr<DocumentContainerPrivate> d;
  };
 diff --git a/src/container_qpainter_p.h b/src/container_qpainter_p.h
-index b767a32..65f3dec 100644
+index b767a32..73141b1 100644
 --- a/src/container_qpainter_p.h
 +++ b/src/container_qpainter_p.h
-@@ -136,8 +136,12 @@ public: // document_container API
+@@ -136,8 +136,13 @@ public: // document_container API
      void on_anchor_click(const char *url, const litehtml::element::ptr &el) override;
      void on_mouse_event(const litehtml::element::ptr &el, litehtml::mouse_event event) override;
      void set_cursor(const char *cursor) override;
@@ -546,12 +622,13 @@ index b767a32..65f3dec 100644
 +    void split_text(const char *text,
 +                    const std::function<void(const char *)> &on_word,
 +                    const std::function<void(const char *)> &on_space) override;
++    void grapheme_ends(const char *text, std::vector<std::size_t> &ends) override;
 +    bool wrap_all_text() const override { return m_wrapAll; }
 +    void import_css(std::string &text, const std::string &url, std::string &baseurl) override;
      void set_clip(const litehtml::position &pos,
                    const litehtml::border_radiuses &bdr_radius) override;
      void del_clip() override;
-@@ -147,7 +151,7 @@ public: // document_container API
+@@ -147,7 +152,7 @@ public: // document_container API
          const litehtml::string_map &attributes,
          const std::shared_ptr<litehtml::document> &doc) override;
      void get_media_features(litehtml::media_features &media) const override;
@@ -560,7 +637,7 @@ index b767a32..65f3dec 100644
  
      QPixmap getPixmap(const QUrl &url);
      QPixmap getPixmap(const QString &imageUrl, const QString &baseUrl);
-@@ -166,6 +170,8 @@ public: // document_container API
+@@ -166,6 +171,8 @@ public: // document_container API
      QString sansSerifFont() const;
      QString monospaceFont() const;
      QUrl resolveUrl(const QString &url, const QString &baseUrl) const;
@@ -569,7 +646,7 @@ index b767a32..65f3dec 100644
      void drawSelection(QPainter *painter, const QRect &clip) const;
      void buildIndex();
      void updateSelection();
-@@ -193,8 +199,11 @@ public: // document_container API
+@@ -193,8 +200,11 @@ public: // document_container API
      DocumentContainer::PaletteCallback m_paletteCallback;
      DocumentContainer::ClipboardCallback m_clipboardCallback;
      DocumentContainer::RepaintCallback m_repaintCallback;
