@@ -107,7 +107,7 @@ One cursor moves through the whole window; the letters work in the Russian layou
 | Ctrl+Enter, Ctrl+V, Ctrl+O | in the form: send, paste a screenshot, attach a file |
 | Ctrl+D | in the form: discard the draft; press twice |
 
-In the message the cursor moves as in Lynx ([design §6](docs/superpowers/specs/2026-11-11-mail-round2-design.md#6-ход-по-письму-lynx)). Right or Enter from the list goes to the unsent mail's buttons, else the attachments, else the text, where the first link on screen becomes current; Down from the attachments works the same way.
+In the message the cursor moves as in Lynx ([design §6](docs/superpowers/specs/2026-11-11-mail-round2-design.md#6-ход-по-письму-lynx)). Right or Enter from the list goes to the unsent mail's buttons, else the attachments, else the text, where the first link on screen becomes current; Down from the attachments works the same way. A thin frame around the text shows that the cursor is in it; the current link has an accent ring around its whole box.
 
 Selecting several messages works as in a file manager:
 

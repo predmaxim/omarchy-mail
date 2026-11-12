@@ -186,6 +186,18 @@ Item {
         currentLink: nav.row === 6 ? nav.col : -1
     }
 
+    Rectangle {   // the cursor is in the text: the cursor's border around the letter
+        objectName: "bodyCursor"
+        visible: nav.row === 6
+        anchors.fill: body
+        anchors.margins: theme.space(4)
+        anchors.topMargin: -theme.space(9)
+        radius: theme.space(8)
+        color: "transparent"
+        border.width: 1
+        border.color: theme.cursorBorder
+    }
+
     Text {
         objectName: "noText"
         anchors.centerIn: body

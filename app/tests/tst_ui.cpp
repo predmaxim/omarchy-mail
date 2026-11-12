@@ -252,6 +252,29 @@ private Q_SLOTS:
         QTest::keyClick(win, Qt::Key_Up);
         QCOMPARE(s->nav.row(), int(Row::Attachments));
     }
+    void cursor_in_the_text_shows_on_screen()
+    {
+        h.d->on("message", [](const QJsonObject &r) {
+            QJsonObject f = letter(r.value("message").toInteger());
+            f.insert("html", "<p>Only text, no links.</p>");
+            return QJsonObject{{"result", f}};
+        });
+        start();
+        letterShown();
+        QQuickItem *frame = item("bodyCursor");
+        QVERIFY(!frame->isVisible());
+        const QPoint edge = frame->mapToScene(QPointF(0, frame->height() / 2)).toPoint();
+        const QColor before = win->grabWindow().pixelColor(edge);
+        QTest::keyClick(win, Qt::Key_Right);
+        QVERIFY(!frame->isVisible());
+        QTest::keyClick(win, Qt::Key_Down);
+        QCOMPARE(s->nav.row(), int(Row::Body));
+        QCOMPARE(s->nav.col(), -1);
+        QVERIFY(frame->isVisible());
+        QVERIFY(win->grabWindow().pixelColor(edge) != before);
+        QTest::keyClick(win, Qt::Key_Left);
+        QVERIFY(!frame->isVisible());
+    }
     void open_picker_keeps_the_keys_then_gives_them_back()
     {
         start();
