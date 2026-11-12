@@ -396,6 +396,27 @@ private Q_SLOTS:
                                     "Banner</a></body>"), 760).width(), 380);
     }
 
+    // align=center, <center> and <div align=center> centre up to the next <table>: browsers reset -webkit-center there
+    // (Blink's StyleAdjuster), so two hybrid columns that wrap stay on the left; a CSS text-align:center goes on
+    void tables_reset_align_center()
+    {
+        const QString block = QStringLiteral("<div id=\"x\" style=\"display:inline-block;width:100px;height:10px\"></div>");
+        const QString table = QStringLiteral("<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td>%1</td></tr></table>").arg(block);
+        const auto left = [&](const QString &body) {
+            const Rendered r = run(job(QStringLiteral("<!DOCTYPE html><body style=\"margin:12px\">%1</body>").arg(body)));
+            return r.doc ? r.doc->boxes(QStringLiteral("#x")).value(0, QRect(-1, -1, 0, 0)).left() : -1;
+        };
+        const QString cell = QStringLiteral("<table cellpadding=\"0\" cellspacing=\"0\"><tr><td %1 style=\"width:540px;%2\">%3</td></tr></table>");
+        // Chromium 155: 232, 12, 12, 12, 232, 232
+        QCOMPARE(left(cell.arg("align=\"center\"", "", block)), 232);
+        QCOMPARE(left(cell.arg("align=\"center\"", "", table)), 12);
+        QCOMPARE(left(QStringLiteral("<div align=\"center\" style=\"width:540px\">%1</div>").arg(table)), 12);
+        QCOMPARE(left(QStringLiteral("<center style=\"width:540px\">%1</center>").arg(table)), 12);
+        QCOMPARE(left(cell.arg("", "text-align:center", table)), 232);
+        const QString cssTable = QStringLiteral("<div style=\"display:table;width:100%\"><div style=\"display:table-cell\">%1</div></div>");
+        QCOMPARE(left(cell.arg("align=\"center\"", "", cssTable.arg(block))), 232);   // only the <table> element resets it
+    }
+
     // our user-agent sheet, like Geary's: roomier lines, quotes with a bar; the letter's own CSS wins
     void ua_sheet_like_geary()
     {

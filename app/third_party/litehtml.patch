@@ -34,10 +34,22 @@ index 36f27311..6676234b 100644
  }
  
 diff --git a/src/css_properties.cpp b/src/css_properties.cpp
-index 5b03ba4d..f1bab8f0 100644
+index 5b03ba4d..ca1ec449 100644
 --- a/src/css_properties.cpp
 +++ b/src/css_properties.cpp
-@@ -260,13 +260,19 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
+@@ -28,6 +28,11 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
+     m_overflow = static_cast<overflow>(el->get_property<int>(_overflow_, false, overflow_visible, offset(m_overflow)));
+     m_text_align =
+         static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_left, offset(m_text_align)));
++    // a table starts its text over: browsers reset -webkit-center there (Blink's StyleAdjuster), not text-align:center
++    if(el->tag() == _table_ && m_text_align == text_align_webkit_center)
++    {
++        m_text_align = text_align_left;
++    }
+     m_vertical_align = static_cast<vertical_align>(
+         el->get_property<int>(_vertical_align_, false, va_baseline, offset(m_vertical_align)));
+     m_text_transform = static_cast<text_transform>(
+@@ -260,13 +265,19 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr&
          m_line_height.computed_value = m_font_metrics.height;
      } else if(m_line_height.css_value.units() == css_units_none)
      {
