@@ -47,7 +47,8 @@ public:
     QString sendError() const { return m_full.value(QStringLiteral("send_error")).toString(); }
     QString state() const { return m_state; }   // "", "loading", "remote"
     QString error() const { return m_error; }
-    int linkCount() const { return int(m_links.size()); }   // links with a box: the keyboard steps through these
+    // every a[href] in document order, boxed or not: an index is the same link across re-layouts
+    int linkCount() const { return int(m_links.size()); }
     bool blank() const { return m_blank; }                   // laid out with no text and no image
 
     void show(const QJsonObject &summary);

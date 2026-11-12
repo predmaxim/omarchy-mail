@@ -275,9 +275,9 @@ private Q_SLOTS:
         QCOMPARE(notes.at(0).at(1).toBool(), true);
         QVERIFY(sent(*d, "attachment").isEmpty());
     }
-    void links_skip_anchors_with_no_box()
+    void links_keep_anchors_with_no_box()
     {
-        // an empty anchor, or one around an image that isn't there, has nowhere to scroll to
+        // an empty anchor, or one around an image that isn't there, has no box but keeps its index (Nav skips it)
         d->on("message", [](const QJsonObject &req) {
             QJsonObject f = full(req.value("message").toInteger());
             f.insert("html", "<p><a href=\"https://a.example/\"></a> one <a href=\"https://c.example/\"><img src=\"cid:missing\"></a>"
@@ -287,8 +287,11 @@ private Q_SLOTS:
         QSignalSpy docs(letter, &Letter::documentChanged);
         letter->show({{"id", 42}});
         QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
-        QCOMPARE(letter->linkCount(), 1);
-        QCOMPARE(letter->links().at(0).url, QUrl("https://b.example/"));
+        QCOMPARE(letter->linkCount(), 3);
+        QVERIFY(letter->links().at(0).rect.isEmpty());
+        QVERIFY(letter->links().at(1).rect.isEmpty());
+        QCOMPARE(letter->links().at(2).url, QUrl("https://b.example/"));
+        QVERIFY(!letter->links().at(2).rect.isEmpty());
     }
     void plain_text_links_and_mail()
     {
@@ -389,6 +392,29 @@ private Q_SLOTS:
         QCOMPARE(docs.at(1).at(0).toBool(), true);
         QCOMPARE(srv.hits, 1);
         QVERIFY(QFile::exists(Images::pathFor(imgDir->path(), QUrl(url))));
+    }
+    void link_indices_survive_images_arriving()
+    {
+        // the image link gets its box only once the image is in: the link after it must keep its index
+        ImageServer srv;
+        srv.hold = true;   // else both layouts may land within one wait
+        const QString url = srv.url("/a.png");
+        d->on("message", [url](const QJsonObject &req) {
+            QJsonObject f = full(req.value("message").toInteger());
+            f.insert("html", QStringLiteral("<p><a href=\"https://img.example/\"><img src=\"%1\"></a>"
+                                            " <a href=\"https://b.example/\">b</a></p>").arg(url));
+            return QJsonObject{{"result", f}};
+        });
+        QSignalSpy docs(letter, &Letter::documentChanged);
+        letter->show({{"id", 42}});
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 1, 10000);
+        QCOMPARE(letter->linkCount(), 2);
+        QVERIFY(letter->links().at(0).rect.isEmpty());
+        QCOMPARE(letter->links().at(1).url, QUrl("https://b.example/"));
+        srv.release();
+        QTRY_COMPARE_WITH_TIMEOUT(docs.size(), 2, 10000);   // the image is in
+        QVERIFY(!letter->links().at(0).rect.isEmpty());
+        QCOMPARE(letter->links().at(1).url, QUrl("https://b.example/"));
     }
     void quoted_history_expands_for_that_letter()
     {

@@ -319,10 +319,7 @@ void Letter::rendered(const Rendered &r)
     m_docZoom = qMin(m_jobZoom, qreal(m_jobWidth) / r.width);
     m_dark = r.dark;
     m_blank = r.blank;
-    m_links.clear();
-    for (const DocumentContainer::Link &l : r.links)
-        if (!l.rect.isEmpty())   // an empty anchor, or an image one whose image isn't there: nowhere to go
-            m_links << l;
+    m_links = r.links;
     // once per letter: a reload or resize neither repeats a batch in flight nor retries failed images
     if (!r.wanted.isEmpty() && m_imagesLetter != m_letter) {
         m_imagesLetter = m_letter;
