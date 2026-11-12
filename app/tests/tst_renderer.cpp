@@ -5,6 +5,8 @@
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QFontInfo>
+#include <QFontMetrics>
 #include <QImage>
 #include <QPainter>
 #include <QSignalSpy>
@@ -359,6 +361,34 @@ private Q_SLOTS:
         QCOMPARE(widths("Helvetica, Arial, sans-serif", sample), widths("sans-serif", sample));
         // else the default font (the job's is sans-serif), as with no font-family
         QCOMPARE(widths("NoSuchFamilyOmTest", word), widths("sans-serif", word));
+    }
+
+    // litehtml measures each word and each space on its own; QFontMetrics rounded every one to whole px, so a line of
+    // short words ended a few px away from Chromium's and took a word more or less
+    void text_width_is_not_rounded_per_word()
+    {
+        const QString family = QFontInfo(QFont(QStringLiteral("sans-serif"))).family();   // installed: used as it is
+        QFont font(family);
+        font.setPixelSize(16);
+        const QFontMetricsF exact(font);
+        const QFontMetrics rounded(font);
+        const QStringList words = QStringLiteral("il ti if it fil lit tilt fit if il it lift ti tif ").repeated(3).trimmed().split(' ');
+        qreal exactSum = 0;
+        int roundedSum = 0;
+        for (const QString &w : words) {
+            exactSum += exact.horizontalAdvance(w);
+            roundedSum += rounded.horizontalAdvance(w);
+        }
+        exactSum += (words.size() - 1) * exact.horizontalAdvance(QLatin1Char(' '));
+        roundedSum += (words.size() - 1) * rounded.horizontalAdvance(QLatin1Char(' '));
+        QVERIFY2(qAbs(roundedSum - exactSum) > 3, qPrintable(QString("%1: whole px advances, the case tells nothing").arg(family)));
+        const Rendered r = run(job(QStringLiteral("<body style=\"margin:0\"><span style=\"display:inline-block;white-space:nowrap;"
+                                                  "font-family:'%1';font-size:16px\">%2</span></body>").arg(family, words.join(' '))));
+        QVERIFY(r.doc);
+        const QList<QRect> line = r.doc->boxes(QStringLiteral("span"));
+        QCOMPARE(line.size(), 1);
+        QVERIFY2(qAbs(line.at(0).width() - exactSum) <= 1,
+                 qPrintable(QString("%1: %2 px, not %3 (rounded words: %4)").arg(family).arg(line.at(0).width()).arg(exactSum).arg(roundedSum)));
     }
 
     // A newsletter's 600 px shell: its rule for phones applies only in a narrow window, and a centred
