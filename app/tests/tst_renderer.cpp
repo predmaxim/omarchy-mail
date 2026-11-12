@@ -332,7 +332,7 @@ private Q_SLOTS:
         j.width = 300;
         const Rendered r = run(j);
         QVERIFY(r.doc);
-        QCOMPARE(lineWidths(r, {word}).size(), 1);
+        QCOMPARE(lineWidths(r, {word, word, word, word}).size(), 4);   // findText goes on from the last copy found
     }
 
     // litehtml split text only at white space: a line broke after no hyphen (Chromium 155: 80.95, 98.7, 50.7)
@@ -390,6 +390,9 @@ private Q_SLOTS:
         again.doc->render(wide.width, wide.viewportHeight);
         QCOMPARE(lineWidths(again, words), lineWidths(once, words));
         QCOMPARE(lineWidths(once, words).size(), 3);
+        // a letter's CSS can give an element the display of text: it is no text, and nothing of it is cut
+        for (const char *css : {"word-break:break-all", "overflow-wrap:anywhere"})
+            QVERIFY(run(job(QStringLiteral("<div style=\"display:inline-text;%1\">abc</div>").arg(QLatin1String(css)))).doc);
     }
 
     // 1pt = 4/3 px, as in browsers: at qlitehtml's 11/12 px a payslip in 8pt was unreadable

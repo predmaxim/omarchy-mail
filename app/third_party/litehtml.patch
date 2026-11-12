@@ -1139,7 +1139,7 @@ index 03a122c8..206aa65e 100644
                  {
                      row_span_found = true;
 diff --git a/src/render_text.cpp b/src/render_text.cpp
-index ea5353ec..d4b42c8b 100644
+index ea5353ec..7c2b4a75 100644
 --- a/src/render_text.cpp
 +++ b/src/render_text.cpp
 @@ -1,4 +1,5 @@
@@ -1148,14 +1148,18 @@ index ea5353ec..d4b42c8b 100644
  
  void litehtml::render_text::calc_intrinsic_size()
  {
-@@ -13,5 +14,10 @@ void litehtml::render_text::calc_intrinsic_size()
+@@ -13,5 +14,14 @@ void litehtml::render_text::calc_intrinsic_size()
          sz.height = src_el()->css().line_height().computed_value;
      }
      m_intrinsic_min_size.width = m_intrinsic_max_size.width = sz.width;
-+    auto text                  = std::static_pointer_cast<el_text>(src_el());
-+    if(text->may_cut(true))
++    // a letter's CSS can give any element display: inline-text; only text is cut
++    if(src_el()->is_text())
 +    {
-+        m_intrinsic_min_size.width = text->widest_cluster();
++        auto text = std::static_pointer_cast<el_text>(src_el());
++        if(text->may_cut(true))
++        {
++            m_intrinsic_min_size.width = text->widest_cluster();
++        }
 +    }
      m_intrinsic_min_size.height = m_intrinsic_max_size.height = sz.height;
  }

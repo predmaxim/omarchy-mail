@@ -14,7 +14,7 @@ index cba179a..0e840aa 100644
      QT_NO_JAVA_STYLE_ITERATORS
      QT_NO_CAST_TO_ASCII QT_RESTRICTED_CAST_FROM_ASCII
 diff --git a/src/container_qpainter.cpp b/src/container_qpainter.cpp
-index 6fa2c82..176f074 100644
+index 6fa2c82..d5289ec 100644
 --- a/src/container_qpainter.cpp
 +++ b/src/container_qpainter.cpp
 @@ -20,11 +20,15 @@
@@ -307,7 +307,7 @@ index 6fa2c82..176f074 100644
  {
      // TODO
      qWarning(log) << "transform_text not implemented";
-@@ -1073,15 +1134,78 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
+@@ -1073,15 +1134,79 @@ void DocumentContainerPrivate::transform_text(litehtml::string &text, litehtml::
      Q_UNUSED(tt)
  }
  
@@ -320,7 +320,8 @@ index 6fa2c82..176f074 100644
 +// a key) is also cut after / ? & = # - _ . and every 10 characters without one, joined the text stays the same: laid
 +// out whole, as browsers do, it ran out of the letter or widened a table and so shrank the letter; overflow-wrap:
 +// break-word in the window's sheet keeps its min-content whole, and anywhere moves every table's columns.
-+// ponytail: such a word breaks wherever the line ends, not only when it can't fit a line of its own.
++// shortcut: such a word breaks wherever the line ends, not only when it can't fit a line of its own, and up to 9
++// characters short of the edge; upgrade when overflow-wrap can lower a long word's min-content without moving tables.
 +// Only its first 10 000 characters are cut, the rest stays one piece past the right edge: a 1 MiB word
 +// (inline base64) in 100 000 pieces took 8 s, and a later letter waits for the layout. setWrapAll drops the
 +// rest: its pieces would wrap like the first ones, so it widens nothing
@@ -394,7 +395,7 @@ index 6fa2c82..176f074 100644
  }
  
  void DocumentContainerPrivate::set_clip(const litehtml::position &pos,
-@@ -1118,8 +1242,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
+@@ -1118,8 +1243,13 @@ std::shared_ptr<litehtml::element> DocumentContainerPrivate::create_element(
  
  void DocumentContainerPrivate::get_media_features(litehtml::media_features &media) const
  {
@@ -409,7 +410,7 @@ index 6fa2c82..176f074 100644
  }
  
  void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
-@@ -1129,7 +1258,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
+@@ -1129,7 +1259,7 @@ void DocumentContainerPrivate::on_mouse_event(const litehtml::element::ptr &el,
      Q_UNUSED(event)
  }
  
@@ -418,7 +419,7 @@ index 6fa2c82..176f074 100644
  {
      // TODO
      qWarning(log) << "get_language not implemented";
-@@ -1147,14 +1276,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
+@@ -1147,14 +1277,31 @@ void DocumentContainer::setScrollPosition(const QPoint &pos)
      d->m_scrollPosition = pos;
  }
  
@@ -451,7 +452,7 @@ index 6fa2c82..176f074 100644
      d->buildIndex();
  }
  
-@@ -1181,6 +1327,13 @@ void DocumentContainer::render(int width, int height)
+@@ -1181,6 +1328,13 @@ void DocumentContainer::render(int width, int height)
      if (!d->m_document)
          return;
      d->m_document->render(width);
@@ -465,7 +466,7 @@ index 6fa2c82..176f074 100644
      d->updateSelection();
  }
  
-@@ -1219,7 +1372,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
+@@ -1219,7 +1373,7 @@ int DocumentContainer::anchorY(const QString &anchorName) const
              return -1;
      }
      while (element) {
@@ -474,7 +475,7 @@ index 6fa2c82..176f074 100644
              return qRound(element->get_placement().y);
          element = element->parent();
      }
-@@ -1275,7 +1428,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
+@@ -1275,7 +1429,8 @@ QVector<QRect> DocumentContainer::mousePressEvent(const QPoint &documentPos,
      // post to litehtml
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_down(
@@ -484,7 +485,7 @@ index 6fa2c82..176f074 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1308,7 +1462,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
+@@ -1308,7 +1463,8 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
      }
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_mouse_over(
@@ -494,7 +495,7 @@ index 6fa2c82..176f074 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1331,7 +1486,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
+@@ -1331,7 +1487,8 @@ QVector<QRect> DocumentContainer::mouseReleaseEvent(const QPoint &documentPos,
          d->clearSelection();
      litehtml::position::vector redrawBoxes;
      if (d->m_document->on_lbutton_up(
@@ -504,7 +505,7 @@ index 6fa2c82..176f074 100644
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
      }
-@@ -1380,7 +1536,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
+@@ -1380,7 +1537,8 @@ QVector<QRect> DocumentContainer::leaveEvent()
      if (!d->m_document)
          return {};
      litehtml::position::vector redrawBoxes;
@@ -514,7 +515,7 @@ index 6fa2c82..176f074 100644
          QVector<QRect> redrawRects;
          for (const litehtml::position &box : redrawBoxes)
              redrawRects.append(toQRect(box));
-@@ -1589,11 +1746,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
+@@ -1589,11 +1747,52 @@ void DocumentContainer::setRepaintCallback(const DocumentContainer::RepaintCallb
      d->m_repaintCallback = callback;
  }
  
